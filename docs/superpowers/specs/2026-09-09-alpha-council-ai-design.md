@@ -4,9 +4,9 @@
 
 ## 1. 目标与范围
 
-Alpha Council AI 是面向 WEEX AI Wars II 的多智能体虚拟合约交易系统。首版使用 WEEX 虚拟盘，交易 BTC-USDT 与 ETH-USDT 永续合约，覆盖 5m、1h、4h 周期。系统每 5 分钟自动评估一次，生成交易提案，经确定性风控引擎校验后才允许虚拟盘下单。
+Alpha Council AI 是一个可演示、可扩展为 SaaS 的多智能体虚拟合约交易平台。首版使用 WEEX 虚拟盘，交易 BTC-USDT 与 ETH-USDT 永续合约，覆盖 5m、1h、4h 周期。系统每 5 分钟自动评估一次，生成交易提案，经确定性风控引擎校验后才允许虚拟盘下单。
 
-首版目标是跑通“数据采集 → 清洗与摘要 → RAG → 多 Agent 分析 → 风控 → 虚拟盘执行 → 复盘展示”的闭环。暂不追求实盘交易、付费数据源、海量交易对、高频盘口策略或复杂分布式基础设施。
+首版目标是跑通“数据采集 → 清洗与摘要 → RAG → 多 Agent 分析 → 风控 → 虚拟盘执行 → 复盘展示”的闭环，并为用户级数据隔离和后续 SaaS 化保留稳定边界。参赛不是首版成功标准，是否参加 WEEX 比赛由后续实盘资金、规则和风险评估决定。暂不追求实盘交易、付费数据源、海量交易对、高频盘口策略或复杂分布式基础设施。
 
 ## 2. 已确认的约束
 
@@ -16,6 +16,7 @@ Alpha Council AI 是面向 WEEX AI Wars II 的多智能体虚拟合约交易系�
 - PostgreSQL、Milvus、Ark 和模型路径等配置参考 `treasury-sentinel/apps/api/.env`；本项目只提供脱敏 `.env.example`，不复制密钥。
 - 前端和后端分别维护自己的 Dockerfile、Compose 与环境文件。
 - 首版优先使用免费外部数据源。
+- 首版支持最小可用登录和用户级数据隔离；不在首版实现订阅计费、团队协作或复杂 OAuth。
 - LLM 不得直接调用交易 API；所有新增仓位必须经过确定性风控引擎。
 
 ## 3. 总体架构
@@ -106,9 +107,42 @@ Pipeline 状态为“采集 → 校验去重 → 入库 → 摘要 → 向量化
 
 实时价格、账户和风险数值始终以 PostgreSQL/WEEX 最新数据为准；RAG 只提供历史经验和解释性证据。
 
-## 6. Agent 与决策协议
+## 6. Agent 架构与决策协议
 
-使用 LangGraph 编排以下节点：
+### 6.1 图结构
+
+使用 LangGraph 编排一个按交易周期运行的 `TradingCycleGraph`。图的共享状态是结构化对象 `TradingCycleState`，至少包含：
+
+- `tenant_id`、`user_id`、`cycle_id`、`started_at`、`symbol`。
+- `market_snapshot`、`candles_by_timeframe`、`technical_indicators`。
+- `news_items`、`macro_events`、`retrieved_evidence`。
+- `market_analysis`、`quant_analysis`、`macro_analysis`、`risk_assessment`。
+- `trade_proposal`、`risk_decision`、`execution_result`、`errors`。
+- `data_versions`、`model_versions`、`trace_ids`，用于审计和复盘。
+
+主图结构如下：
+
+```text
+load_context
+    ↓
+validate_freshness ──失败──→ safe_hold
+    ↓
+┌──────────────┬──────────────┬──────────────┐
+│ market_node  │ quant_node   │ macro_node   │  并行分析
+└──────────────┴──────────────┴──────────────┘
+          ↓
+retrieve_evidence → committee_node
+          ↓
+proposal_validator ──失败──→ safe_hold
+          ↓
+deterministic_risk_node ──拒绝──→ persist_decision
+          ↓
+execution_node → reconcile_node → persist_decision
+```
+
+`load_context` 只从当前用户/租户可见的数据读取上下文；`validate_freshness` 检查行情、账户和系统状态。Market、Quant、Macro 三个节点相互独立，可以单测、重试和替换。`committee_node` 只产生交易提案，不拥有下单工具。`deterministic_risk_node` 是不可被 LLM 覆盖的闸门；`execution_node` 和 `reconcile_node` 不使用 LLM。任何失败路径都汇聚到 `safe_hold` 或仅允许减仓/平仓的安全动作。
+
+### 6.2 Agent 职责、输入与输出
 
 - **Market Agent**：分析新闻摘要、市场快照和 RAG 证据，输出市场状态、事件方向、影响期限和置信度。
 - **Quant Agent**：读取 5m/1h/4h K 线；Python 指标服务计算 EMA、RSI、MACD、ATR、布林带、波动率、成交量变化和趋势一致性，LLM 负责解释并形成信号。
@@ -117,7 +151,9 @@ Pipeline 状态为“采集 → 校验去重 → 入库 → 摘要 → 向量化
 - **Committee Agent**：使用 Ark 的 `deepseek-v4-pro-ga-260813` 汇总分析，输出严格 JSON：`HOLD/LONG/SHORT/CLOSE`、symbol、entry 偏好、stop loss、take profit、杠杆、仓位比例、置信度、理由和引用证据。
 - **Execution/Reconciliation Service**：非 LLM，负责风控通过后的下单、幂等 client order ID、订单状态同步和异常修复。
 
-任何 JSON 解析失败、证据不足、分析冲突或模型超时都默认 `HOLD`。LLM 只能生成交易提案，不能直接调用交易 API。
+所有 LLM 节点使用版本化 Prompt 和结构化输出 Schema。节点输出必须包含 `status`、`confidence`、`reasoning_summary`、`evidence_refs`、`model_version` 和 `trace_id`；分析节点不得输出订单参数以外的任意工具调用。Committee 提案还必须包含 `proposal_id`、`action`、`symbol`、`side`、`position_size_pct`、`leverage`、`stop_loss`、`take_profit`、`valid_until` 和 `invalidation_conditions`。
+
+任何 JSON 解析失败、证据不足、分析冲突或模型超时都默认 `HOLD`。LLM 只能生成交易提案，不能直接调用交易 API。每个节点的输入快照和输出都写入 `trading_decisions` 关联的 trace，便于解释“哪个 Agent 依据什么信息提出了什么建议”。
 
 ## 7. 决策周期、风控与故障处理
 
@@ -136,7 +172,31 @@ Pipeline 状态为“采集 → 校验去重 → 入库 → 摘要 → 向量化
 
 下单超时后先查询订单，禁止盲目重试。每次决策保存输入数据版本、模型响应、风控命中规则、订单请求、交易所响应和最终仓位。Dashboard 支持暂停、恢复和手动平仓，但不提供绕过风控的能力。
 
-## 8. API 与 Dashboard
+## 8. 用户登录、鉴权与 SaaS 演进
+
+### 8.1 结论
+
+建议首版加入最小可用鉴权。原因是用户级交易配置、策略、虚拟账户、决策记录和审计数据从第一天就应具备归属关系；否则后续增加付费 SaaS 时，需要重做数据库主键、API 授权、前端状态和敏感配置隔离。鉴权不会改变虚拟盘交易逻辑，也不会要求首版实现计费。
+
+### 8.2 首版范围
+
+- `users`：用户身份、状态、创建时间和最后登录时间。
+- `sessions` 或短期 Access Token：登录态和注销/失效能力。
+- `trading_accounts`：用户自己的 WEEX 虚拟盘凭据引用、环境标识和启用状态；密钥只存后端，数据库中加密或存密钥引用，绝不返回前端。
+- `strategies`、`risk_profiles`、`trading_decisions`、`orders`、`positions`、`pnl_snapshots` 均带 `user_id`；未来可增加 `tenant_id`。
+- 所有业务 API 在服务层进行用户归属校验，不能只依赖前端传入的 ID。
+- Worker 任务必须携带 `user_id`/`tenant_id` 上下文；查询、RAG 过滤和执行均不得跨用户读取。
+- 首版可提供开发环境种子用户或本地登录方式，但生产配置必须关闭通用默认账户。
+
+### 8.3 演进策略与选项
+
+- **无鉴权**：最省时间，但不适合后续 SaaS，不推荐。
+- **应用内最小鉴权（推荐）**：首版实现邮箱/密码或本地账号、短期 Token、刷新/注销、用户级隔离；后续再加 OAuth、组织、邀请和计费。控制力强且不依赖第三方身份服务。
+- **托管身份服务**：登录体验和 OAuth 更快，但增加外部依赖、费用和部署耦合；待产品验证后再评估。
+
+首版推荐第二种：建立正确的身份与授权边界，但严格控制功能范围，不提前实现收费订阅。WEEX 虚拟盘凭据仍由后端统一管理，未来可在此边界上增加套餐额度、策略数量、运行频率和组织权限。
+
+## 9. API 与 Dashboard
 
 后端 API 初始范围：
 
@@ -151,7 +211,7 @@ Pipeline 状态为“采集 → 校验去重 → 入库 → 摘要 → 向量化
 
 前端页面：总览、市场、AI 委员会、交易、事件与审计。总览展示权益、PnL、回撤、胜率和风险状态；委员会页面展示 Agent 观点、最终提案、RAG 引用和拒单原因；交易页面展示订单、成交、仓位和止损止盈。首版使用后端轮询，不引入 WebSocket。所有页面明确标识“WEEX Virtual Futures”。
 
-## 9. 测试与验收
+## 10. 测试与验收
 
 - 单元测试：指标、数据标准化、去重、窗口、RAG 元数据过滤、重排、仓位/止损和风险规则。
 - 契约测试：WEEX 请求/响应映射，使用固定 Fixture，不触发真实订单。
@@ -160,12 +220,14 @@ Pipeline 状态为“采集 → 校验去重 → 入库 → 摘要 → 向量化
 - Pipeline 测试：重复抓取不重复入库；LLM/Embedding 失败可重试；断点续跑完成后可检索。
 - 端到端 Smoke Test：健康检查 → 行情 → 决策 → 风控 → 虚拟盘订单 → 成交同步 → Dashboard 可见。
 - 前端测试：关键页面、暂停/恢复、手动平仓确认、错误状态和虚拟盘标识。
+- 鉴权测试：未登录拒绝、用户 A 不能读取或操作用户 B 的账户/订单/决策、Worker 上下文隔离、注销后 Token 失效和虚拟盘凭据不出现在 API 响应中。
 
 验收条件：本地 Docker 启动应用后，在仅配置 Ark、WEEX 虚拟盘凭据以及已有 PostgreSQL/Milvus 连接的情况下，能够完成至少一个决策周期；所有交易和拒单均有审计记录；任何依赖异常不会产生未授权新增仓位。
 
-## 10. 非目标
+## 11. 非目标
 
 - 不接入真实账户交易。
 - 不部署 PostgreSQL 或 Milvus。
 - 不依赖付费新闻、宏观或链上服务。
 - 不在首版实现高频盘口策略、自动模型训练或复杂消息队列。
+- 不在首版实现付费订阅、账单、组织协作、OAuth 社交登录或多租户计费策略。
