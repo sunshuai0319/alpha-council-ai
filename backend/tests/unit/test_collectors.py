@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 
+import httpx
+
+from app.collectors.fetching import ConditionalFetcher
 from app.collectors.macro import MacroCollector
 from app.collectors.rss import RSSCollector, canonicalize_url
 
@@ -56,6 +59,49 @@ def test_rss_failure_is_recorded_without_losing_other_sources() -> None:
     assert len(result.items) == 1
     assert result.partial
     assert "bad" in result.errors[0]
+
+
+def test_conditional_fetcher_sends_validators_and_reports_unchanged() -> None:
+    """feed 没变就不该重复下载：带上 ETag 后命中 304。"""
+    seen: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers)
+        if len(seen) == 1:
+            return httpx.Response(200, content=b"feed", headers={"ETag": '"v1"'})
+        return httpx.Response(304)
+
+    fetcher = ConditionalFetcher(client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+    assert fetcher("https://example.com/feed") == b"feed"
+    assert fetcher("https://example.com/feed") is None
+    assert seen[0].get("If-None-Match") is None
+    assert seen[1]["If-None-Match"] == '"v1"'
+
+
+def test_conditional_fetcher_returns_new_content_when_the_feed_changed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, content=b"new", headers={"ETag": '"v2"'})
+
+    fetcher = ConditionalFetcher(client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+    assert fetcher("https://example.com/feed") == b"new"
+
+
+def test_rss_skips_parsing_when_the_feed_is_unchanged() -> None:
+    parsed: list[object] = []
+
+    collector = RSSCollector(
+        fetcher=lambda url: None,  # 304 Not Modified
+        parser=lambda payload: parsed.append(payload) or SimpleNamespace(entries=[]),
+    )
+
+    result = collector.collect()
+
+    assert parsed == []  # 未变更就不解析
+    assert result.errors == []
+    assert set(result.succeeded) == {"coindesk", "cointelegraph", "bitcoin-magazine"}
 
 
 def test_fred_csv_is_normalized_and_missing_values_are_preserved() -> None:

@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     market_data_max_age_seconds: int = 90
     decision_interval_seconds: int = 300
 
+    #: FRED 序列的重抓间隔，按各自更新频率决定。月度数据按分钟级频率重抓没有
+    #: 收益，还会招来 503。
+    fred_monthly_interval_seconds: int = 86400
+    fred_daily_interval_seconds: int = 3600
+
 
 @lru_cache
 def get_settings() -> Settings:

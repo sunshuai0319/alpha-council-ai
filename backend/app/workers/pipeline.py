@@ -1,5 +1,6 @@
 import logging
 import time as time_module
+from collections.abc import Callable
 from datetime import UTC, datetime, time
 from typing import Any
 from uuid import uuid4
@@ -7,14 +8,16 @@ from uuid import uuid4
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.collectors.macro import MacroCollector
+from app.collectors.macro import DEFAULT_FRED_SERIES, FRED_SERIES_CADENCE, MacroCollector
 from app.collectors.rss import RSSCollector
+from app.config import Settings, get_settings
+from app.db.models import CollectorError, MacroObservationRecord, SourceDocument
 from app.db.models import DocumentSummary as DocumentSummaryRecord
-from app.db.models import MacroObservationRecord, SourceDocument
 from app.processing.ark import ArkSummaryClient, DocumentSummary
 from app.processing.documents import DocumentInput, chunk_text, prepare_document
 from app.rag.embeddings import BGEEmbedder
 from app.rag.milvus import IndexedChunk, MilvusVectorStore
+from app.workers.schedule import SourceSchedule
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,8 @@ class DocumentPipeline:
         summary_client: Any | None = None,
         embedder: Any | None = None,
         indexer: Any | None = None,
+        settings: Settings | None = None,
+        clock: Callable[[], float] = time_module.monotonic,
     ) -> None:
         self.db = db
         self.rss = rss or RSSCollector()
@@ -36,11 +41,26 @@ class DocumentPipeline:
         self.summary_client = summary_client or ArkSummaryClient()
         self.embedder = embedder or BGEEmbedder()
         self.indexer = indexer or MilvusVectorStore()
+        self.settings = settings or get_settings()
+        self._schedule = SourceSchedule(self._fred_intervals(), clock=clock)
+
+    def _fred_intervals(self) -> dict[str, int]:
+        monthly = self.settings.fred_monthly_interval_seconds
+        daily = self.settings.fred_daily_interval_seconds
+        return {
+            series: monthly if cadence == "monthly" else daily
+            for series, cadence in FRED_SERIES_CADENCE.items()
+        }
 
     def run_once(self) -> dict[str, int]:
         started = time_module.monotonic()
         news = self.rss.collect()
-        observations, events = self.macro.collect()
+        due_series = tuple(self._schedule.due_keys(DEFAULT_FRED_SERIES))
+        observations, events = self.macro.collect(due_series)
+        # 只把抓取成功的序列推进到下一个间隔：失败必须下一轮立刻重试，
+        # 否则一次短暂故障会让该序列停摆一整天。
+        for series_id in observations.succeeded:
+            self._schedule.mark(series_id)
         logger.info(
             "collected: news=%d macro_obs=%d fed_events=%d",
             len(news.items),
@@ -102,10 +122,12 @@ class DocumentPipeline:
                 skipped += 1
             else:
                 failed += 1
-        self.db.commit()
         collector_errors = [*news.errors, *observations.errors, *events.errors]
         for source in collector_errors:
             logger.warning("collector error: %s", source)
+        # 必须在 commit 之前：生产会话是 autoflush=False，放在后面会推迟一轮才落库。
+        self._record_errors(news, observations, events)
+        self.db.commit()
         logger.info(
             "collection: news=%d macro_obs=%d(+%d new) fed_events=%d | docs processed=%d skipped=%d failed=%d | collector_errors=%d | %.2fs",
             len(news.items),
@@ -124,6 +146,36 @@ class DocumentPipeline:
             "failed": failed,
             "collector_errors": len(collector_errors),
         }
+
+    def _record_errors(self, *results: Any) -> None:
+        """把采集错误按 (collector, message) 归并落库。
+
+        只打日志的话，"网络到底稳不稳"无从判断 —— 翻日志数不出错误率，也分不清
+        是单个站点的波动还是整条出口的故障。归并计数避免每轮写一行撑爆表。
+        """
+
+        now = datetime.now(UTC)
+        for result in results:
+            for message in result.errors:
+                row = self.db.scalar(
+                    select(CollectorError).where(
+                        CollectorError.collector == result.source,
+                        CollectorError.message == message,
+                    )
+                )
+                if row is None:
+                    self.db.add(
+                        CollectorError(
+                            collector=result.source,
+                            message=message,
+                            occurrences=1,
+                            first_seen_at=now,
+                            last_seen_at=now,
+                        )
+                    )
+                else:
+                    row.occurrences += 1
+                    row.last_seen_at = now
 
     def _process(self, document: DocumentInput) -> bool | None:
         """Return True when indexed, None when already indexed, False on failure."""

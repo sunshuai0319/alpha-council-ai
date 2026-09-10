@@ -7,9 +7,9 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import feedparser  # type: ignore[import-untyped]
-import httpx
 
 from app.collectors.base import CollectorResult
+from app.collectors.fetching import ConditionalFetcher
 
 
 @dataclass(frozen=True)
@@ -64,23 +64,12 @@ class RSSCollector:
     def __init__(
         self,
         sources: dict[str, str] | None = None,
-        fetcher: Callable[[str], bytes] | None = None,
+        fetcher: Callable[[str], bytes | None] | None = None,
         parser: Callable[[Any], Any] | None = None,
     ) -> None:
         self.sources = sources or RSS_SOURCES
-        self._fetcher = fetcher or self._fetch
+        self._fetcher = fetcher or ConditionalFetcher()
         self._parser = parser or feedparser.parse
-
-    @staticmethod
-    def _fetch(url: str) -> bytes:
-        response = httpx.get(
-            url,
-            headers={"User-Agent": "alpha-council-ai/0.1 (+https://example.invalid)"},
-            timeout=20,
-            follow_redirects=True,
-        )
-        response.raise_for_status()
-        return response.content
 
     def collect(self, urls: dict[str, str] | None = None) -> CollectorResult[NewsItem]:
         result: CollectorResult[NewsItem] = CollectorResult(source="rss")
@@ -88,7 +77,12 @@ class RSSCollector:
         seen_hashes: set[str] = set()
         for source, url in (urls or self.sources).items():
             try:
-                feed = self._parser(self._fetcher(url))
+                payload = self._fetcher(url)
+                if payload is None:
+                    # 304 Not Modified：源是健康的，只是没有新内容。
+                    result.succeeded.append(source)
+                    continue
+                feed = self._parser(payload)
                 for entry in getattr(feed, "entries", []) or []:
                     title = _clean_text(str(entry.get("title", "")))
                     summary = _entry_summary(entry)
@@ -111,6 +105,7 @@ class RSSCollector:
                             fetched_at=result.collected_at,
                         )
                     )
+                result.succeeded.append(source)
             except Exception as exc:  # noqa: BLE001 - a broken feed is non-fatal
                 result.errors.append(f"{source}: {exc}")
         return result

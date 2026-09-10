@@ -7,6 +7,7 @@
 import os
 
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
 
 from alembic import command
@@ -68,6 +69,24 @@ def test_migrations_are_idempotent(tmp_path) -> None:
     assert "risk_limits" in _columns(url, "trading_accounts")
 
 
+def test_new_tables_reach_databases_that_already_migrated(tmp_path) -> None:
+    """已迁移的库不会重跑 001，新增的表必须靠后续迁移补上。
+
+    只加模型不加迁移的话，worker 一跑就撞 "relation does not exist"。
+    """
+    url = f"sqlite+pysqlite:///{tmp_path / 'new_table.db'}"
+    _upgrade(url, "002_trading_account_risk_limits")
+
+    engine = create_engine(url)
+    with engine.begin() as connection:
+        connection.exec_driver_sql("DROP TABLE collector_errors")  # 模拟该表尚未存在
+    engine.dispose()
+
+    _upgrade(url)
+
+    assert "collector_errors" in inspect(create_engine(url)).get_table_names()
+
+
 def test_migrations_record_the_applied_revision(tmp_path) -> None:
     """版本号必须落库：否则每次 upgrade 都会重跑一遍迁移。"""
     url = f"sqlite+pysqlite:///{tmp_path / 'version.db'}"
@@ -78,4 +97,6 @@ def test_migrations_record_the_applied_revision(tmp_path) -> None:
     with engine.connect() as connection:
         stamped = connection.exec_driver_sql("select version_num from alembic_version").scalar()
     engine.dispose()
-    assert stamped == "002_trading_account_risk_limits"
+
+    head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+    assert stamped == head

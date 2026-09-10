@@ -6,9 +6,9 @@ from datetime import date, datetime
 from typing import Any
 
 import feedparser  # type: ignore[import-untyped]
-import httpx
 
 from app.collectors.base import CollectorResult
+from app.collectors.fetching import ConditionalFetcher
 from app.collectors.rss import _clean_text, _published_at, canonicalize_url
 
 
@@ -39,6 +39,16 @@ DEFAULT_FRED_SERIES = (
     "DFF",  # daily effective federal funds rate, a free dollar-liquidity proxy
     "DGS10",  # 10-year Treasury constant maturity rate
 )
+
+#: 各序列的更新频率，用于决定重抓间隔。月度序列按分钟级频率重抓毫无收益，
+#: 还可能是 FRED 返回 503 的来源。
+FRED_SERIES_CADENCE = {
+    "FEDFUNDS": "monthly",
+    "CPIAUCSL": "monthly",
+    "UNRATE": "monthly",
+    "DFF": "daily",
+    "DGS10": "daily",
+}
 FRED_GRAPH_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 FED_PRESS_RSS_URL = "https://www.federalreserve.gov/feeds/press_all.xml"
 
@@ -51,19 +61,8 @@ class MacroCollector:
         fetcher: Callable[[str], bytes | str] | None = None,
         parser: Callable[[Any], Any] | None = None,
     ) -> None:
-        self._fetcher = fetcher or self._fetch
+        self._fetcher = fetcher or ConditionalFetcher()
         self._parser = parser or feedparser.parse
-
-    @staticmethod
-    def _fetch(url: str) -> bytes:
-        response = httpx.get(
-            url,
-            headers={"User-Agent": "alpha-council-ai/0.1 (+https://example.invalid)"},
-            timeout=20,
-            follow_redirects=True,
-        )
-        response.raise_for_status()
-        return response.content
 
     def collect_fred(
         self,
@@ -90,6 +89,7 @@ class MacroCollector:
                             fetched_at=result.collected_at,
                         )
                     )
+                result.succeeded.append(series_id)
             except Exception as exc:  # noqa: BLE001 - isolate failures per external series
                 result.errors.append(f"{series_id}: {exc}")
         return result
@@ -100,7 +100,11 @@ class MacroCollector:
     ) -> CollectorResult[MacroEvent]:
         result: CollectorResult[MacroEvent] = CollectorResult(source="federal-reserve")
         try:
-            feed = self._parser(self._fetcher(feed_url))
+            payload = self._fetcher(feed_url)
+            if payload is None:  # 304 Not Modified
+                result.succeeded.append("federal-reserve")
+                return result
+            feed = self._parser(payload)
             for entry in getattr(feed, "entries", []) or []:
                 title = _clean_text(str(entry.get("title", "")))
                 link = canonicalize_url(str(entry.get("link") or entry.get("id") or ""))

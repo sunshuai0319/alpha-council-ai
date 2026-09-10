@@ -205,6 +205,26 @@ class Fill(Base):
     filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class CollectorError(Base):
+    """采集错误，按 (collector, message) 归并计数。
+
+    只写日志的话，"网络到底稳不稳"这类问题无从回答 —— 翻日志数不出错误率，
+    也看不出是单个站点的波动还是整条出口的故障。
+    """
+
+    __tablename__ = "collector_errors"
+    __table_args__ = (UniqueConstraint("collector", "message", name="uq_collector_error"),)
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+    )
+    collector: Mapped[str] = mapped_column(String(64), index=True)
+    message: Mapped[str] = mapped_column(Text)
+    occurrences: Mapped[int] = mapped_column(Integer, default=1)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class TradingDecision(TimestampMixin, Base):
     __tablename__ = "trading_decisions"
 
