@@ -41,7 +41,9 @@ class Settings(BaseSettings):
     clerk_webhook_signing_secret: str = ""
 
     trading_enabled: bool = True
-    max_leverage: int = 3
+    #: 平台硬上限。虚拟盘实际杠杆固定 20x 且不可调，上限必须与之对齐，
+    #: 否则虚拟盘一开仓就再也无法加仓（max_leverage 会拒掉）。
+    max_leverage: int = 20
     max_position_notional_pct: float = 0.20
     max_single_trade_risk_pct: float = 0.005
     max_daily_loss_pct: float = 0.05

@@ -10,7 +10,7 @@ from app.domain.schemas import RiskDecision
 
 @dataclass(frozen=True)
 class RiskLimits:
-    max_leverage: int = 3
+    max_leverage: int = 20
     max_position_notional_pct: Decimal = Decimal("0.20")
     max_single_trade_risk_pct: Decimal = Decimal("0.005")
     max_daily_loss_pct: Decimal = Decimal("0.05")

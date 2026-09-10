@@ -23,6 +23,7 @@ from app.domain.schemas import (
     TradingCycleState,
 )
 from app.exchange.base import ExchangeBalance, ExchangeOrder, ExchangePosition, OrderRequest
+from app.risk.engine import RiskLimits
 from app.services.cycle import TradingCycleService
 
 
@@ -272,7 +273,10 @@ def test_risk_uses_exchange_reported_leverage_over_the_proposal() -> None:
     校验提案里 LLM 自己填的数字没有意义：那个数字从来不参与下单。
     """
     exchange = ClosingExchange(exit_price=Decimal(100), leverage=20)  # 实际 20x
-    service = TradingCycleService(exchange_factory=lambda: exchange)
+    # 显式钉住上限，避免测试结果随开发机 .env 变化
+    service = TradingCycleService(
+        settings=Settings(max_leverage=10), exchange_factory=lambda: exchange
+    )
 
     decision = service._evaluate_proposal(exchange, _long_state())  # 提案声明 leverage=1
 
@@ -281,7 +285,24 @@ def test_risk_uses_exchange_reported_leverage_over_the_proposal() -> None:
 
 def test_risk_falls_back_to_the_proposal_when_leverage_is_unobservable() -> None:
     exchange = RecordingExchange()  # 空仓，没有真实杠杆可读
-    service = TradingCycleService(exchange_factory=lambda: exchange)
+    service = TradingCycleService(
+        settings=Settings(max_leverage=10), exchange_factory=lambda: exchange
+    )
+
+    decision = service._evaluate_proposal(exchange, _long_state())
+
+    assert "max_leverage" not in decision.reasons
+
+
+def test_virtual_account_leverage_fits_under_the_default_cap() -> None:
+    """平台默认上限必须容纳虚拟盘固定的 20x，否则一开仓就再也加不了仓。"""
+    assert RiskLimits().max_leverage >= 20
+    assert Settings.model_fields["max_leverage"].default >= 20
+
+    exchange = ClosingExchange(exit_price=Decimal(100), leverage=20)
+    service = TradingCycleService(
+        settings=Settings(max_leverage=20), exchange_factory=lambda: exchange
+    )
 
     decision = service._evaluate_proposal(exchange, _long_state())
 
