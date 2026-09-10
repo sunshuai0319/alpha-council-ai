@@ -174,13 +174,23 @@ class TradingCycleService:
         )
         state = state.model_copy(update={"data_versions": {"technical_indicators": INDICATOR_VERSION}})
         self._persist_market_data(candle_result.items, snapshot_result.items)
-        if self.control_status(user_id) == "PAUSED":
-            logger.info("cycle paused: user=%s symbol=%s (no committee, no order)", user_id, symbol)
-            state.errors.append("paused")
-            state = state.model_copy(
-                update={"trade_proposal": self._hold_proposal(state, "paused")}
+        halt_reason = (
+            None
+            if self.control_status(user_id) != "PAUSED"
+            else "paused"
+        )
+        if halt_reason is None and not self.settings.trading_enabled:
+            halt_reason = "trading_disabled"
+        if halt_reason is not None:
+            logger.info(
+                "cycle halted: user=%s symbol=%s reason=%s (no committee, no order)",
+                user_id,
+                symbol,
+                halt_reason,
             )
-            risk_decision = RiskDecision(status=RiskStatus.PAUSED, reasons=["paused"])
+            state.errors.append(halt_reason)
+            state = state.model_copy(update={"trade_proposal": self._hold_proposal(state, halt_reason)})
+            risk_decision = RiskDecision(status=RiskStatus.PAUSED, reasons=[halt_reason])
             execution = None
         else:
             graph = (
@@ -279,10 +289,8 @@ class TradingCycleService:
             return RiskDecision(status=RiskStatus.REJECTED, reasons=[f"account_unavailable:{exc}"], checked_at=now_ms)
         if balance is None or state.market_snapshot is None:
             return RiskDecision(status=RiskStatus.REJECTED, reasons=["account_or_market_missing"], checked_at=now_ms)
-        current_notional = sum(
-            (abs(position.entry_value) for position in positions if position.symbol == state.symbol),
-            Decimal(0),
-        )
+        # 账户总敞口，跨品种合计：按品种各算一次上限，两个品种就能到两倍。
+        current_notional = sum((abs(position.entry_value) for position in positions), Decimal(0))
         proposed_notional = balance.balance * Decimal(str(proposal.position_size_pct))
         is_reducing = proposal.action is Action.CLOSE
         current_equity = balance.balance + balance.unrealized_pnl
@@ -301,6 +309,7 @@ class TradingCycleService:
             entry=state.market_snapshot.last_price,
             daily_loss_pct=self._daily_loss_pct(state.user_id, current_equity),
             consecutive_losses=self._consecutive_losses(state.user_id),
+            daily_trades=self._daily_trades(state.user_id),
             paused=False,
             data_age_s=data_age,
             side="LONG" if proposal.action is Action.LONG else "SHORT",
@@ -332,6 +341,28 @@ class TradingCycleService:
             )
         )
         self.db.commit()
+
+    def _daily_trades(self, user_id: str) -> int:
+        """今天真正成交过的开仓单数（CLOSE 不算额度）。"""
+
+        if self.db is None:
+            return 0
+        day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        return (
+            self.db.scalar(
+                select(func.count())
+                .select_from(TradingDecision)
+                .where(
+                    TradingDecision.user_id == user_id,
+                    TradingDecision.created_at >= day_start,
+                    TradingDecision.action.in_([Action.LONG.value, Action.SHORT.value]),
+                    # 必须 as_string()：直接比 JSON 路径会被包成 JSON_QUOTE(...)，
+                    # 而 JSON_QUOTE(NULL) 是字符串 'null'，IS NOT NULL 恒真。
+                    TradingDecision.execution_result["exchange_order_id"].as_string().is_not(None),
+                )
+            )
+            or 0
+        )
 
     def _consecutive_losses(self, user_id: str) -> int:
         """最近连续亏损的平仓次数（跨品种，按账户计）。

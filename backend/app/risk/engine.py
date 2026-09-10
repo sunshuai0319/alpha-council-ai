@@ -15,6 +15,7 @@ class RiskLimits:
     max_single_trade_risk_pct: Decimal = Decimal("0.005")
     max_daily_loss_pct: Decimal = Decimal("0.05")
     max_consecutive_losses: int = 3
+    max_daily_trades: int = 20
     market_data_max_age_seconds: int = 90
 
     @classmethod
@@ -25,6 +26,7 @@ class RiskLimits:
             max_single_trade_risk_pct=Decimal(str(settings.max_single_trade_risk_pct)),
             max_daily_loss_pct=Decimal(str(settings.max_daily_loss_pct)),
             max_consecutive_losses=settings.max_consecutive_losses,
+            max_daily_trades=settings.max_daily_trades,
             market_data_max_age_seconds=settings.market_data_max_age_seconds,
         )
 
@@ -57,6 +59,7 @@ def evaluate_risk(
     entry: Decimal | float,
     daily_loss_pct: Decimal | float,
     consecutive_losses: int,
+    daily_trades: int = 0,
     paused: bool,
     data_age_s: Decimal | float,
     side: str | None = None,
@@ -97,6 +100,9 @@ def evaluate_risk(
         halting_reasons.append("consecutive_loss_cooldown")
     if not is_reducing:
         reasons.extend(halting_reasons)
+        # 每日开仓额度：用完了就停到明天，所以只拒单、不熔断账户。
+        if daily_trades >= active_limits.max_daily_trades:
+            reasons.append("daily_trade_limit")
         if leverage < 1 or leverage > active_limits.max_leverage:
             reasons.append("max_leverage")
         if equity_value > 0 and current_value + proposed_value > equity_value * active_limits.max_position_notional_pct:

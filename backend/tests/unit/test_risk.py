@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from app.domain.enums import RiskStatus
-from app.risk.engine import daily_loss_pct, evaluate_risk
+from app.risk.engine import RiskLimits, daily_loss_pct, evaluate_risk
 
 
 def _risk(**overrides):
@@ -41,6 +41,21 @@ def test_reducing_orders_are_allowed_through_loss_breakers() -> None:
     assert decision.allowed is True
     assert decision.reasons == []
     assert decision.halt is True  # 仍然要求暂停开新仓
+
+
+def test_daily_trade_limit_blocks_further_entries() -> None:
+    """每日开仓次数上限：防失控换手。它是当日额度，不是账户级熔断。"""
+    limits = RiskLimits(max_daily_trades=20)
+    decision = _risk(daily_trades=20, limits=limits)
+
+    assert decision.allowed is False
+    assert "daily_trade_limit" in decision.reasons
+    assert decision.halt is False
+
+
+def test_daily_trade_limit_still_allows_reducing() -> None:
+    limits = RiskLimits(max_daily_trades=20)
+    assert _risk(daily_trades=20, is_reducing=True, limits=limits).allowed is True
 
 
 def test_daily_loss_pct_measures_drawdown_from_day_start() -> None:

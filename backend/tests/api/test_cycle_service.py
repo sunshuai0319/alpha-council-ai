@@ -189,6 +189,83 @@ def test_persisting_a_filled_order_round_trips_into_the_loss_streak(tmp_path) ->
         assert service._consecutive_losses("u-1") == 3
 
 
+class MultiPositionExchange(RecordingExchange):
+    """同时持有 BTC 和 ETH 两个仓位。"""
+
+    def __init__(self, btc_notional: Decimal, eth_notional: Decimal) -> None:
+        super().__init__(balance=Decimal(10000))
+        self._notionals = {"BTC-USDT": btc_notional, "ETH-USDT": eth_notional}
+
+    def get_positions(self) -> list[ExchangePosition]:
+        return [
+            ExchangePosition(
+                position_id=f"p-{symbol}",
+                symbol=symbol,
+                side="LONG",
+                quantity=Decimal(1),
+                entry_value=notional,
+                margin=Decimal(1),
+                leverage=1,
+                unrealized_pnl=Decimal(0),
+                liquidation_price=None,
+            )
+            for symbol, notional in self._notionals.items()
+        ]
+
+
+def test_notional_cap_counts_exposure_across_symbols() -> None:
+    """敞口上限必须算账户总敞口。
+
+    按品种各算 20%，两个品种就能到 40%。BTC 500 + ETH 2000 = 2500 已经超过
+    equity 10000 的 20%，此时再开 BTC 必须被拒。
+    """
+    exchange = MultiPositionExchange(btc_notional=Decimal(500), eth_notional=Decimal(2000))
+    service = TradingCycleService(exchange_factory=lambda: exchange)
+
+    decision = service._evaluate_proposal(exchange, _long_state())
+
+    assert "max_notional" in decision.reasons
+
+
+def test_daily_trades_counts_only_filled_entries(tmp_path) -> None:
+    """额度只算今天真正成交过的开仓单：没成交的开仓和平仓都不占额度。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'trades.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.commit()
+        service = TradingCycleService(db=db)
+
+        filled = ExecutionResult(
+            status="FILLED", proposal_id="p", client_order_id="c", exchange_order_id="order-1"
+        )
+        for state, execution in [
+            (_long_state(), filled),  # 成交的开仓 -> 计数
+            (_long_state(), filled),  # 成交的开仓 -> 计数
+            (_long_state(), None),  # 没下单的开仓 -> 不计数
+            (_close_state(), filled),  # 平仓 -> 不占额度
+        ]:
+            service._persist(
+                result_state=state, risk=RiskDecision(status=RiskStatus.ALLOWED), execution=execution
+            )
+
+        assert service._daily_trades("u-1") == 2
+
+
+def test_global_kill_switch_stops_all_trading() -> None:
+    """运维需要一键停掉所有账户的开关，而不是逐个暂停。"""
+    service = TradingCycleService(
+        settings=Settings(trading_enabled=False), exchange_factory=FakeExchange
+    )
+
+    result = service.run(user_id="u-1")
+
+    assert result.action == "HOLD"
+    assert result.risk_decision.status is RiskStatus.PAUSED
+    assert result.execution_result is None  # FakeExchange 的下单会直接断言失败
+
+
 def test_risk_uses_exchange_reported_leverage_over_the_proposal() -> None:
     """系统不下发杠杆，实际杠杆由账户决定（虚拟盘实测固定 20x）。
 
