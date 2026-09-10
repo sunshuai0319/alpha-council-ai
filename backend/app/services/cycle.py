@@ -30,9 +30,9 @@ from app.domain.schemas import (
     TradeProposal,
     TradingCycleState,
 )
-from app.exchange.base import ExchangeClient
+from app.exchange.base import ExchangeBalance, ExchangeClient
 from app.exchange.weex import WeexClient, WeexCredentials
-from app.execution.service import ExecutionService
+from app.execution.service import ExecutionService, stable_client_order_id
 from app.rag.embeddings import BGEEmbedder, BGEReranker
 from app.rag.milvus import MilvusVectorStore
 from app.rag.retriever import Retriever
@@ -256,8 +256,7 @@ class TradingCycleService:
         if proposal.action is Action.HOLD:
             return RiskDecision(status=RiskStatus.ALLOWED, reasons=["hold_no_order"], checked_at=now_ms)
         try:
-            balances = exchange.get_balances()
-            balance = next((item for item in balances if item.asset in {"SUSDT", "USDT"}), None)
+            balance = self._balance_for(exchange)
             positions = exchange.get_positions()
         except Exception as exc:  # noqa: BLE001 - exchange outage fails closed
             return RiskDecision(status=RiskStatus.REJECTED, reasons=[f"account_unavailable:{exc}"], checked_at=now_ms)
@@ -301,8 +300,26 @@ class TradingCycleService:
             position = next((item for item in positions if item.symbol == proposal.symbol), None)
             quantity = position.quantity if position else Decimal(0)
         else:
-            quantity = Decimal(str(proposal.position_size_pct)) / Decimal(str(state.market_snapshot.last_price))
+            balance = self._balance_for(exchange)
+            if balance is None:
+                return ExecutionResult(
+                    status="REJECTED",
+                    proposal_id=proposal.proposal_id,
+                    client_order_id=stable_client_order_id(proposal.proposal_id),
+                    message="account balance unavailable",
+                )
+            # 名义价值 = 余额 × position_size_pct（与 _evaluate_proposal 同一口径），
+            # 数量 = 名义价值 / 价格。漏掉余额因子会让下单量小 balance 倍。
+            notional = balance.balance * Decimal(str(proposal.position_size_pct))
+            quantity = notional / Decimal(str(state.market_snapshot.last_price))
         return self.execution_service.execute(exchange, proposal, risk_decision, quantity=quantity)
+
+    @staticmethod
+    def _balance_for(exchange: ExchangeClient) -> ExchangeBalance | None:
+        return next(
+            (item for item in exchange.get_balances() if item.asset in {"SUSDT", "USDT"}),
+            None,
+        )
 
     def enabled_user_ids(self) -> list[str]:
         if self.db is None:
