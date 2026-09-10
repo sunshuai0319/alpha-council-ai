@@ -60,6 +60,7 @@ class MacroCollector:
             url,
             headers={"User-Agent": "alpha-council-ai/0.1 (+https://example.invalid)"},
             timeout=20,
+            follow_redirects=True,
         )
         response.raise_for_status()
         return response.content
