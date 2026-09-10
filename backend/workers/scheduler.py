@@ -4,6 +4,7 @@ from logging import getLogger
 
 from app.config import get_settings
 from app.db.session import SessionLocal
+from app.logging import configure_logging
 from app.services.cycle import TradingCycleService
 from app.workers.pipeline import DocumentPipeline
 
@@ -29,6 +30,9 @@ class TradingScheduler:
                 self.pipeline.run_once()
             except Exception:
                 logger.exception("document pipeline failed")
+                # 失败的 flush/commit 会把共享会话置于待回滚状态，必须先回滚才能复用。
+                if self.service.db is not None:
+                    self.service.db.rollback()
         user_ids = self.service.enabled_user_ids()
         succeeded = 0
         for user_id in user_ids:
@@ -39,6 +43,8 @@ class TradingScheduler:
                 except Exception as exc:
                     # The service's next cycle is still eligible; a failure must not stop other tenants.
                     logger.exception("trading cycle failed", extra={"user_id": user_id, "symbol": symbol})
+                    if self.service.db is not None:
+                        self.service.db.rollback()
                     self.service.record_failure(user_id, symbol, exc)
         total = len(user_ids) * len(self.symbols)
         if total:
@@ -56,6 +62,7 @@ class TradingScheduler:
 
 def main() -> None:
     settings = get_settings()
+    configure_logging(settings.log_level)
     with SessionLocal() as db:
         service = TradingCycleService(db=db, settings=settings)
         TradingScheduler(service, pipeline=DocumentPipeline(db=db)).run_forever()

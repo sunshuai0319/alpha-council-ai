@@ -105,3 +105,33 @@ def test_document_pipeline_persists_summary_macro_observation_and_indexes(tmp_pa
         assert len(db.scalars(select(DocumentSummary)).all()) == 2
         assert len(db.scalars(select(MacroObservationRecord)).all()) == 1
         assert indexer.chunks
+
+
+def test_document_pipeline_commits_with_autoflush_off_and_foreign_keys_enforced(tmp_path):
+    """autoflush=False（与 worker 的 SessionLocal 一致）时，父表与子表在同一 flush 中
+    一起插入，必须保证 source_documents 先于 document_summaries，否则外键违例。"""
+    from sqlalchemy import event
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'pipeline_fk.db'}")
+
+    def _fk_on(dbapi_conn, _record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    event.listen(engine, "connect", _fk_on)
+    Base.metadata.create_all(engine)
+    indexer = FakeIndexer()
+    with Session(engine, autoflush=False) as db:
+        pipeline = DocumentPipeline(
+            db=db,
+            rss=FakeRSS(),
+            macro=FakeMacro(),
+            summary_client=FakeSummary(),
+            embedder=FakeEmbedder(),
+            indexer=indexer,
+        )
+        result = pipeline.run_once()
+        assert result["processed"] == 2
+        assert len(db.scalars(select(SourceDocument)).all()) == 2
+        assert len(db.scalars(select(DocumentSummary)).all()) == 2

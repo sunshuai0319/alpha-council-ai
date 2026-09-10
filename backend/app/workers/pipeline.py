@@ -4,7 +4,7 @@ from datetime import UTC, datetime, time
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.collectors.macro import MacroCollector
@@ -41,6 +41,12 @@ class DocumentPipeline:
         started = time_module.monotonic()
         news = self.rss.collect()
         observations, events = self.macro.collect()
+        logger.info(
+            "collected: news=%d macro_obs=%d fed_events=%d",
+            len(news.items),
+            len(observations.items),
+            len(events.items),
+        )
         new_observations = 0
         for observation in observations.items:
             observation_date = datetime.combine(
@@ -123,7 +129,12 @@ class DocumentPipeline:
         """Return True when indexed, None when already indexed, False on failure."""
         prepared = prepare_document(document)
         record = self.db.scalar(
-            select(SourceDocument).where(SourceDocument.canonical_url == prepared.canonical_url)
+            select(SourceDocument).where(
+                or_(
+                    SourceDocument.canonical_url == prepared.canonical_url,
+                    SourceDocument.content_hash == prepared.content_hash,
+                )
+            )
         )
         if record is not None and record.processing_status == "INDEXED":
             return None
@@ -140,6 +151,9 @@ class DocumentPipeline:
                 published_at=prepared.published_at,
             )
             self.db.add(record)
+            # autoflush=False 的会话不会在查询时自动写入；先 flush 让父记录落库，
+            # 既保证 document_summaries 外键可解析，也让后续去重能查到本批次记录。
+            self.db.flush()
         record.processing_attempts = (record.processing_attempts or 0) + 1
         try:
             summary: DocumentSummary = self.summary_client.summarize(prepared)
