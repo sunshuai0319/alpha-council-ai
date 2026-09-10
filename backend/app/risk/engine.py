@@ -74,6 +74,7 @@ def evaluate_risk(
     loss_value = Decimal(str(daily_loss_pct))
     age_value = Decimal(str(data_age_s))
     reasons: list[str] = []
+    halting_reasons: list[str] = []
     status = RiskStatus.REJECTED
 
     if paused:
@@ -84,16 +85,22 @@ def evaluate_risk(
         )
     if equity_value <= 0:
         reasons.append("equity_non_positive")
+        halting_reasons.append("equity_non_positive")
     if age_value > active_limits.market_data_max_age_seconds:
         reasons.append("market_data_stale")
+    # 熔断信号只看账户状态，与订单方向无关：平仓单被放行不代表亏损没发生。
+    # 但这些亏损类理由以及敞口/杠杆上限只拦开新仓 —— 拦平仓会把仓位锁死，
+    # 反而加大风险。
     if loss_value >= active_limits.max_daily_loss_pct:
-        reasons.append("daily_loss_limit")
+        halting_reasons.append("daily_loss_limit")
     if consecutive_losses >= active_limits.max_consecutive_losses:
-        reasons.append("consecutive_loss_cooldown")
-    if leverage < 1 or leverage > active_limits.max_leverage:
-        reasons.append("max_leverage")
-    if equity_value > 0 and current_value + proposed_value > equity_value * active_limits.max_position_notional_pct:
-        reasons.append("max_notional")
+        halting_reasons.append("consecutive_loss_cooldown")
+    if not is_reducing:
+        reasons.extend(halting_reasons)
+        if leverage < 1 or leverage > active_limits.max_leverage:
+            reasons.append("max_leverage")
+        if equity_value > 0 and current_value + proposed_value > equity_value * active_limits.max_position_notional_pct:
+            reasons.append("max_notional")
 
     if proposed_value > 0 and not is_reducing:
         if stop_loss is None:
@@ -117,6 +124,7 @@ def evaluate_risk(
         reasons=reasons,
         adjusted_position_size_pct=(float(proposed_value / equity_value) if equity_value > 0 else None),
         checked_at=checked_at or int(time() * 1000),
+        halt=bool(halting_reasons),
         metadata={
             "max_leverage": active_limits.max_leverage,
             "max_position_notional_pct": str(active_limits.max_position_notional_pct),

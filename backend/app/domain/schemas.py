@@ -69,6 +69,9 @@ class RiskDecision(BaseModel):
     adjusted_position_size_pct: float | None = Field(default=None, ge=0, le=1)
     checked_at: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    #: 账户级熔断（日亏损、连亏、权益非正）。True 表示应当暂停该账户，
+    #: 而不只是拒掉当前这一单。
+    halt: bool = False
 
     @property
     def allowed(self) -> bool:

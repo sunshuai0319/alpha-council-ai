@@ -1,10 +1,17 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from app.db.models import AccountSnapshot, Base, TradingAccount, TradingDecision, User
+from app.db.models import (
+    AccountSnapshot,
+    Base,
+    RiskEvent,
+    TradingAccount,
+    TradingDecision,
+    User,
+)
 from app.domain.enums import Action, RiskStatus
 from app.domain.schemas import (
     Candle,
@@ -121,6 +128,27 @@ def _long_state(*, price: float = 100, pct: float = 0.1) -> TradingCycleState:
             trace_id="trace-1",
         ),
     )
+
+
+def test_circuit_breaker_pauses_the_account(tmp_path) -> None:
+    """账户级熔断必须真的暂停账户，而不只是拒掉这一单。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'halt.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.commit()
+        service = TradingCycleService(db=db)
+        assert service.control_status("u-1") == "RUNNING"
+
+        service._halt(
+            "u-1",
+            RiskDecision(status=RiskStatus.REJECTED, reasons=["daily_loss_limit"], halt=True),
+        )
+
+        assert service.control_status("u-1") == "PAUSED"
+        events = db.scalars(select(RiskEvent)).all()
+        assert [event.event_type for event in events] == ["CIRCUIT_BREAKER"]
+        assert "daily_loss_limit" in events[0].reason
 
 
 def test_daily_loss_pct_uses_todays_first_snapshot(tmp_path) -> None:

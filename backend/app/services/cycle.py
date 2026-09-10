@@ -203,6 +203,8 @@ class TradingCycleService:
                 state.macro_analysis.status if state.macro_analysis else None,
             )
             risk_decision = self._evaluate_proposal(exchange, state)
+            if risk_decision.halt:
+                self._halt(state.user_id, risk_decision)
             logger.info(
                 "cycle risk: user=%s symbol=%s status=%s reasons=%s",
                 user_id,
@@ -299,6 +301,31 @@ class TradingCycleService:
             is_reducing=is_reducing,
             checked_at=now_ms,
         )
+
+    def _halt(self, user_id: str, decision: RiskDecision) -> None:
+        """账户级熔断：暂停该账户并留痕。
+
+        暂停只阻止新决策产生；已有仓位不会被自动平掉 —— 自动强平太激进，
+        交给操作者手动处理（控制台已有平仓入口）。
+        """
+
+        self.pause(user_id)
+        logger.warning(
+            "circuit breaker halted trading: user=%s reasons=%s", user_id, decision.reasons
+        )
+        if self.db is None:
+            return
+        self.db.add(
+            RiskEvent(
+                id=str(uuid4()),
+                user_id=user_id,
+                event_type="CIRCUIT_BREAKER",
+                status=decision.status,
+                reason=";".join(dict.fromkeys(decision.reasons)) or "halt",
+                metadata_json=decision.metadata,
+            )
+        )
+        self.db.commit()
 
     def _consecutive_losses(self, user_id: str) -> int:
         """最近连续亏损的平仓次数（跨品种，按账户计）。
