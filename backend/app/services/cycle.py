@@ -12,8 +12,8 @@ from app.agents.graph import TradingCycleGraph, build_trading_cycle_graph
 from app.agents.llm import ArkChatClient
 from app.collectors.weex import WeexCollector
 from app.config import Settings, get_settings
-from app.db.models import MarketCandle, MarketSnapshot as MarketSnapshotModel
-from app.db.models import Position, RiskEvent, TradingAccount, TradingDecision
+from app.db.models import MarketCandle, Position, RiskEvent, TradingAccount, TradingDecision
+from app.db.models import MarketSnapshot as MarketSnapshotModel
 from app.domain.enums import Action, RiskStatus
 from app.domain.schemas import (
     ExecutionResult,
