@@ -1,0 +1,13 @@
+services:
+  api:
+    build: .
+    env_file:
+      - ${BACKEND_ENV_FILE:-.env}
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+  worker:
+    build: .
+    env_file:
+      - ${BACKEND_ENV_FILE:-.env}
+    command: python -m workers.scheduler

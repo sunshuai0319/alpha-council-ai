@@ -1,0 +1,43 @@
+[project]
+name = "alpha-council-ai-backend"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "uvicorn[standard]>=0.35,<1",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.10,<3",
+  "sqlalchemy>=2.0,<3",
+  "psycopg[binary]>=3.2,<4",
+  "alembic>=1.16,<2",
+  "pymilvus>=2.6,<3",
+  "sentence-transformers>=5,<6",
+  "langgraph>=0.6,<1",
+  "langchain-core>=0.3,<1",
+  "httpx>=0.28,<1",
+  "feedparser>=6.0,<7",
+  "cryptography>=44,<47",
+  "PyJWT[crypto]>=2.10,<3",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1,<2",
+  "ruff>=0.12,<1",
+  "mypy>=1.17,<2",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+ignore = ["DTZ001"]
+
+[[tool.mypy.overrides]]
+module = ["pymilvus", "pymilvus.*", "sentence_transformers", "sentence_transformers.*"]
+ignore_missing_imports = true
