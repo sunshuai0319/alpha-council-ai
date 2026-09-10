@@ -1,3 +1,5 @@
+import logging
+import time as time_module
 from datetime import UTC, datetime, time
 from typing import Any
 from uuid import uuid4
@@ -13,6 +15,8 @@ from app.processing.ark import ArkSummaryClient, DocumentSummary
 from app.processing.documents import DocumentInput, chunk_text, prepare_document
 from app.rag.embeddings import BGEEmbedder
 from app.rag.milvus import IndexedChunk, MilvusVectorStore
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentPipeline:
@@ -34,8 +38,10 @@ class DocumentPipeline:
         self.indexer = indexer or MilvusVectorStore()
 
     def run_once(self) -> dict[str, int]:
+        started = time_module.monotonic()
         news = self.rss.collect()
         observations, events = self.macro.collect()
+        new_observations = 0
         for observation in observations.items:
             observation_date = datetime.combine(
                 observation.observation_date,
@@ -58,6 +64,7 @@ class DocumentPipeline:
                         fetched_at=observation.fetched_at,
                     )
                 )
+                new_observations += 1
         inputs = [
             DocumentInput(
                 url=item.canonical_url,
@@ -79,22 +86,47 @@ class DocumentPipeline:
             for item in events.items
         )
         processed = 0
+        skipped = 0
         failed = 0
         for document in inputs:
-            if self._process(document):
+            outcome = self._process(document)
+            if outcome is True:
                 processed += 1
+            elif outcome is None:
+                skipped += 1
             else:
                 failed += 1
         self.db.commit()
-        return {"processed": processed, "failed": failed, "collector_errors": len(news.errors) + len(observations.errors) + len(events.errors)}
+        collector_errors = [*news.errors, *observations.errors, *events.errors]
+        for source in collector_errors:
+            logger.warning("collector error: %s", source)
+        logger.info(
+            "collection: news=%d macro_obs=%d(+%d new) fed_events=%d | docs processed=%d skipped=%d failed=%d | collector_errors=%d | %.2fs",
+            len(news.items),
+            len(observations.items),
+            new_observations,
+            len(events.items),
+            processed,
+            skipped,
+            failed,
+            len(collector_errors),
+            time_module.monotonic() - started,
+        )
+        return {
+            "processed": processed,
+            "skipped": skipped,
+            "failed": failed,
+            "collector_errors": len(collector_errors),
+        }
 
-    def _process(self, document: DocumentInput) -> bool:
+    def _process(self, document: DocumentInput) -> bool | None:
+        """Return True when indexed, None when already indexed, False on failure."""
         prepared = prepare_document(document)
         record = self.db.scalar(
             select(SourceDocument).where(SourceDocument.canonical_url == prepared.canonical_url)
         )
         if record is not None and record.processing_status == "INDEXED":
-            return False
+            return None
         if record is None:
             record = SourceDocument(
                 id=prepared.document_id,
