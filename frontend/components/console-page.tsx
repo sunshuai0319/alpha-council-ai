@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, PortfolioTable, RiskBadge, VirtualBadge } from "@/components/console-primitives"
 import { ApiError, apiRequest } from "@/lib/api"
 import { useI18n } from "@/lib/i18n"
-import type { DashboardView, Decision, ItemsResponse, MarketSnapshot, Position, RiskEvent, TradingAccount } from "@/lib/types"
+import type { DashboardView, Decision, ItemsResponse, MarketSnapshot, Position, RiskEvent, RiskLimits, TradingAccount } from "@/lib/types"
 
 type DashboardData = {
   market: MarketSnapshot[]
@@ -79,6 +79,97 @@ function SyncNote({ error, updatedAt }: { error: string | null; updatedAt: Date 
   return <div className="sync-note"><span className={error ? "sync-dot sync-dot--error" : "sync-dot"} />{error ? t("console.offline") : t("console.synced", { value: updatedAt ? formatDate(updatedAt.toISOString()) : "—" })}</div>
 }
 
+const PERCENT_FIELDS = [
+  { key: "max_position_notional_pct", label: "console.maxPositionNotionalPct" },
+  { key: "max_single_trade_risk_pct", label: "console.maxSingleTradeRiskPct" },
+  { key: "max_daily_loss_pct", label: "console.maxDailyLossPct" },
+] as const
+
+/** 百分比在后端存小数（0.05），UI 用百分数（5）更好输入。 */
+const toPercent = (value: number) => String(Number((value * 100).toFixed(4)))
+
+function RiskLimitsForm({ account, onSave, busy }: {
+  account: TradingAccount
+  onSave: (limits: RiskLimits) => Promise<void>
+  busy: boolean
+}) {
+  const { t } = useI18n()
+  const effective = account.effective_risk_limits
+  const platform = account.platform_limits
+  const [draft, setDraft] = useState<Record<string, string>>({})
+
+  const current = PERCENT_FIELDS.map((field) => ({
+    ...field,
+    value: draft[field.key] ?? toPercent(account.risk_limits?.[field.key] ?? platform?.[field.key] ?? 0),
+    cap: platform?.[field.key],
+  }))
+  const losses = {
+    value: draft.max_consecutive_losses ?? String(account.risk_limits?.max_consecutive_losses ?? platform?.max_consecutive_losses ?? ""),
+    cap: platform?.max_consecutive_losses,
+  }
+
+  const submit = () => {
+    const limits: RiskLimits = {}
+    for (const field of PERCENT_FIELDS) {
+      const raw = draft[field.key]
+      if (raw !== undefined) limits[field.key] = Number(raw) / 100
+    }
+    if (draft.max_consecutive_losses !== undefined) {
+      limits.max_consecutive_losses = Number(draft.max_consecutive_losses)
+    }
+    return onSave(limits)
+  }
+
+  const dirty = Object.keys(draft).length > 0
+
+  return <div className="account-risk">
+    <div className="account-risk-head">
+      <span className="eyebrow">{t("console.riskLimits")}</span>
+      <small>{t("console.riskLimitsHint")}</small>
+    </div>
+    <div className="account-risk-grid">
+      {current.map((field) => (
+        <label key={field.key}>
+          <span>{t(field.label)}</span>
+          <input
+            type="number"
+            min={0}
+            max={field.cap}
+            step="0.1"
+            // 默认值来自平台上限，用户改了才提交，避免一进来就把默认值写成偏好
+            value={field.value}
+            onChange={(event) => setDraft({ ...draft, [field.key]: event.target.value })}
+          />
+        </label>
+      ))}
+      <label>
+        <span>{t("console.maxConsecutiveLosses")}</span>
+        <input
+          type="number"
+          min={1}
+          max={losses.cap}
+          step={1}
+          value={losses.value}
+          onChange={(event) => setDraft({ ...draft, max_consecutive_losses: event.target.value })}
+        />
+      </label>
+      {/* 虚拟盘杠杆改不了，所以只读展示；给输入框会让人以为能改 */}
+      <label>
+        <span>{t("console.leverage")}</span>
+        <input
+          type="text"
+          readOnly
+          value={effective ? `${effective.max_leverage}x` : "—"}
+          title={t("console.leverageFixed")}
+        />
+      </label>
+    </div>
+    <button className="button button--quiet" disabled={busy || !dirty} onClick={() => void submit()}>
+      {t("console.saveRiskLimits")}
+    </button>
+  </div>
+}
+
 function AccountCard({ accounts, refresh }: { accounts: TradingAccount[]; refresh: () => Promise<void> }) {
   const { getToken } = useAuth()
   const { t } = useI18n()
@@ -129,6 +220,23 @@ function AccountCard({ accounts, refresh }: { accounts: TradingAccount[]; refres
     }
   }
 
+  const saveRiskLimits = async (account: TradingAccount, limits: RiskLimits) => {
+    setBusy(true)
+    try {
+      await apiRequest(`/accounts/${account.id}`, getToken, {
+        method: "PATCH",
+        // enabled 必须带上：这是整体更新，漏掉会把它重置
+        body: JSON.stringify({ enabled: account.enabled, risk_limits: limits }),
+      })
+      setMessage(t("console.riskLimitsSaved"))
+      await refresh()
+    } catch {
+      setMessage(t("console.riskLimitsFailed"))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return <section className="section-block">
     <div className="section-heading">
       <div><span className="eyebrow">trading account</span><h2>WEEX virtual account</h2></div>
@@ -145,6 +253,11 @@ function AccountCard({ accounts, refresh }: { accounts: TradingAccount[]; refres
                 {account.enabled ? t("console.disable") : t("console.enable")}
               </button>
             </div>
+            <RiskLimitsForm
+              account={account}
+              busy={busy}
+              onSave={(limits) => saveRiskLimits(account, limits)}
+            />
           </div>
         ))}
       </div>

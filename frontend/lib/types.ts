@@ -79,12 +79,31 @@ export type RiskEvent = {
   created_at?: string | null
 }
 
+export type RiskLimits = {
+  max_position_notional_pct?: number
+  max_single_trade_risk_pct?: number
+  max_daily_loss_pct?: number
+  max_consecutive_losses?: number
+}
+
+export type PlatformLimits = {
+  max_position_notional_pct: number
+  max_single_trade_risk_pct: number
+  max_daily_loss_pct: number
+  max_consecutive_losses: number
+}
+
+export type EffectiveRiskLimits = PlatformLimits & { max_leverage: number }
+
 export type TradingAccount = {
   id: string
   provider: string
   environment: string
   enabled: boolean
   configured: boolean
+  risk_limits: RiskLimits | null
+  effective_risk_limits: EffectiveRiskLimits | null
+  platform_limits: PlatformLimits | null
 }
 
 export type ItemsResponse<T> = {

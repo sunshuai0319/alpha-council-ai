@@ -7,13 +7,35 @@ vi.mock("@clerk/nextjs", () => ({
 
 import { ConsolePage } from "@/components/console-page"
 
-function stubApi(controlStatus: string) {
+const virtualAccount = {
+  id: "a-1",
+  provider: "weex",
+  environment: "virtual",
+  enabled: true,
+  configured: true,
+  risk_limits: null,
+  effective_risk_limits: {
+    max_leverage: 20,
+    max_position_notional_pct: 0.2,
+    max_single_trade_risk_pct: 0.005,
+    max_daily_loss_pct: 0.05,
+    max_consecutive_losses: 3,
+  },
+  platform_limits: {
+    max_position_notional_pct: 0.2,
+    max_single_trade_risk_pct: 0.005,
+    max_daily_loss_pct: 0.05,
+    max_consecutive_losses: 3,
+  },
+}
+
+function stubApi(controlStatus: string, accounts: unknown[] = []) {
   const payloads: Record<string, unknown> = {
     "/market": { items: [] },
     "/decisions": { items: [] },
     "/portfolio": { items: [] },
     "/events": { items: [] },
-    "/accounts": { items: [] },
+    "/accounts": { items: accounts },
     "/control/status": { status: controlStatus },
   }
   vi.stubGlobal(
@@ -51,5 +73,33 @@ describe("console control panel", () => {
     render(<ConsolePage view="overview" />)
 
     expect(await screen.findByText("委员会运行中")).toBeVisible()
+  })
+
+  it("shows leverage read-only: the virtual account cannot change it", async () => {
+    stubApi("RUNNING", [virtualAccount])
+
+    render(<ConsolePage view="overview" />)
+
+    expect(await screen.findByLabelText("杠杆")).toHaveAttribute("readonly")
+    expect(screen.getByLabelText("杠杆")).toHaveValue("20x")
+  })
+
+  it("shows stored risk limits as percentages", async () => {
+    stubApi("RUNNING", [
+      { ...virtualAccount, risk_limits: { max_position_notional_pct: 0.05 } },
+    ])
+
+    render(<ConsolePage view="overview" />)
+
+    // 0.05 存的是小数，输入框要显示 5
+    expect(await screen.findByLabelText("仓位上限 (%)")).toHaveValue(5)
+  })
+
+  it("falls back to the platform limit when no preference is stored", async () => {
+    stubApi("RUNNING", [virtualAccount])
+
+    render(<ConsolePage view="overview" />)
+
+    expect(await screen.findByLabelText("仓位上限 (%)")).toHaveValue(20)
   })
 })
