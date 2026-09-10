@@ -9,6 +9,14 @@ from app.services.cycle import TradingCycleService
 router = APIRouter(prefix="/api/control", tags=["control"])
 
 
+@router.get("/status")
+def status(
+    user=Depends(get_current_user),
+    service: TradingCycleService = Depends(get_cycle_service),
+) -> dict[str, Any]:
+    return {"status": service.control_status(user.id)}
+
+
 @router.post("/pause")
 def pause(
     user=Depends(get_current_user),

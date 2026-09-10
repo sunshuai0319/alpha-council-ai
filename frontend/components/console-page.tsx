@@ -15,9 +15,10 @@ type DashboardData = {
   positions: Position[]
   events: RiskEvent[]
   accounts: TradingAccount[]
+  control: string
 }
 
-const emptyData: DashboardData = { market: [], decisions: [], positions: [], events: [], accounts: [] }
+const emptyData: DashboardData = { market: [], decisions: [], positions: [], events: [], accounts: [], control: "RUNNING" }
 
 function useDashboardData() {
   const { getToken, isLoaded, isSignedIn } = useAuth()
@@ -29,14 +30,15 @@ function useDashboardData() {
   const refresh = useCallback(async () => {
     if (!isLoaded || !isSignedIn) return
     try {
-      const [market, decisions, portfolio, events, accounts] = await Promise.all([
+      const [market, decisions, portfolio, events, accounts, control] = await Promise.all([
         apiRequest<ItemsResponse<MarketSnapshot>>("/market", getToken),
         apiRequest<ItemsResponse<Decision>>("/decisions", getToken),
         apiRequest<ItemsResponse<Position>>("/portfolio", getToken),
         apiRequest<ItemsResponse<RiskEvent>>("/events", getToken),
         apiRequest<ItemsResponse<TradingAccount>>("/accounts", getToken),
+        apiRequest<{ status: string }>("/control/status", getToken),
       ])
-      setData({ market: market.items, decisions: decisions.items, positions: portfolio.items, events: events.items, accounts: accounts.items })
+      setData({ market: market.items, decisions: decisions.items, positions: portfolio.items, events: events.items, accounts: accounts.items, control: control.status })
       setError(null)
       setUpdatedAt(new Date())
     } catch (cause) {
@@ -165,9 +167,10 @@ export function ConsolePage({ view }: { view: DashboardView }) {
   const { getToken } = useAuth()
   const { t } = useI18n()
   const { data, error, updatedAt, refresh } = useDashboardData()
-  const [controlStatus, setControlStatus] = useState("RUNNING")
   const [controlBusy, setControlBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  // 状态来自服务端：熔断会自动暂停账户，本地默认值会让用户误以为还在交易。
+  const controlStatus = data.control
 
   const latest = data.decisions[0]
   const latestMarket = data.market[0]
@@ -180,8 +183,8 @@ export function ConsolePage({ view }: { view: DashboardView }) {
     setControlBusy(true)
     try {
       const endpoint = next === "PAUSED" ? "/control/pause" : "/control/resume"
-      const response = await apiRequest<{ status: string }>(endpoint, getToken, { method: "POST" })
-      setControlStatus(response.status)
+      await apiRequest<{ status: string }>(endpoint, getToken, { method: "POST" })
+      await refresh()
       setMessage(next === "PAUSED" ? t("console.pausedMessage") : t("console.resumedMessage"))
     } catch {
       setMessage(t("console.controlFailed"))

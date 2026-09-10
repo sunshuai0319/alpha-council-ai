@@ -29,6 +29,21 @@ def test_pause_endpoint_changes_control_state() -> None:
         app.dependency_overrides.clear()
 
 
+def test_control_status_endpoint_reports_current_state() -> None:
+    """前端靠它显示真实的开关状态，否则刷新后永远显示「运行中」。"""
+    service = TradingCycleService()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="user-status")
+    app.dependency_overrides[get_cycle_service] = lambda: service
+    try:
+        assert TestClient(app).get("/api/control/status").json() == {"status": "RUNNING"}
+
+        TestClient(app).post("/api/control/pause")
+
+        assert TestClient(app).get("/api/control/status").json() == {"status": "PAUSED"}
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_dashboard_routes_use_authenticated_user_scope() -> None:
     service = TradingCycleService()
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="user-a")
