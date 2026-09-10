@@ -1,0 +1,252 @@
+from datetime import datetime
+from decimal import Decimal
+
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from app.domain.enums import OrderStatus, RiskStatus
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class TimestampMixin:
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class User(TimestampMixin, Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    clerk_user_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WalletAddress(TimestampMixin, Base):
+    __tablename__ = "wallet_addresses"
+    __table_args__ = (UniqueConstraint("user_id", "address", "chain", name="uq_wallet_user_address"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    clerk_wallet_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    address: Mapped[str] = mapped_column(String(128))
+    chain: Mapped[str] = mapped_column(String(32))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+
+
+class TradingAccount(TimestampMixin, Base):
+    __tablename__ = "trading_accounts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="weex")
+    environment: Mapped[str] = mapped_column(String(32), default="virtual")
+    api_key_ref: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    api_secret_ref: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    passphrase_ref: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class MarketCandle(Base):
+    __tablename__ = "market_candles"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timeframe", "open_time", name="uq_market_candle_identity"),
+        Index("ix_market_candles_lookup", "symbol", "timeframe", "open_time"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32))
+    timeframe: Mapped[str] = mapped_column(String(8))
+    open_time: Mapped[int] = mapped_column(BigInteger)
+    open: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    high: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    low: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    close: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    volume: Mapped[Decimal] = mapped_column(Numeric(40, 12))
+    source: Mapped[str] = mapped_column(String(32), default="weex")
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class MarketSnapshot(Base):
+    __tablename__ = "market_snapshots"
+    __table_args__ = (Index("ix_market_snapshots_lookup", "symbol", "captured_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    last_price: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    bid: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    ask: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    funding_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    open_interest: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume_24h: Mapped[float | None] = mapped_column(Float, nullable=True)
+    orderbook_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class AccountSnapshot(Base):
+    __tablename__ = "account_snapshots"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    trading_account_id: Mapped[str] = mapped_column(ForeignKey("trading_accounts.id"), index=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    balance: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    available_margin: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    equity: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    margin_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class Position(TimestampMixin, Base):
+    __tablename__ = "positions"
+    __table_args__ = (UniqueConstraint("user_id", "trading_account_id", "symbol", name="uq_position_scope"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    trading_account_id: Mapped[str] = mapped_column(ForeignKey("trading_accounts.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32))
+    side: Mapped[str] = mapped_column(String(8))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    mark_price: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    leverage: Mapped[int] = mapped_column(Integer, default=1)
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    take_profit: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="OPEN")
+
+
+class Order(TimestampMixin, Base):
+    __tablename__ = "orders"
+    __table_args__ = (UniqueConstraint("user_id", "client_order_id", name="uq_order_client_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    trading_account_id: Mapped[str] = mapped_column(ForeignKey("trading_accounts.id"), index=True)
+    decision_id: Mapped[str | None] = mapped_column(ForeignKey("trading_decisions.id"), nullable=True)
+    symbol: Mapped[str] = mapped_column(String(32))
+    side: Mapped[str] = mapped_column(String(8))
+    order_type: Mapped[str] = mapped_column(String(16), default="MARKET")
+    quantity: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    leverage: Mapped[int] = mapped_column(Integer, default=1)
+    client_order_id: Mapped[str] = mapped_column(String(128))
+    exchange_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default=OrderStatus.PENDING.value)
+    request_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    response_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class Fill(Base):
+    __tablename__ = "fills"
+    __table_args__ = (UniqueConstraint("user_id", "exchange_fill_id", name="uq_fill_exchange_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
+    exchange_fill_id: Mapped[str] = mapped_column(String(128))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    price: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    fee: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class TradingDecision(TimestampMixin, Base):
+    __tablename__ = "trading_decisions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    trading_account_id: Mapped[str | None] = mapped_column(ForeignKey("trading_accounts.id"), nullable=True)
+    cycle_id: Mapped[str] = mapped_column(String(64), index=True)
+    trace_id: Mapped[str] = mapped_column(String(128), index=True)
+    symbol: Mapped[str] = mapped_column(String(32))
+    action: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(32))
+    proposal: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    analyses: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    risk_decision: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    execution_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    data_versions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    model_versions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class PnlSnapshot(Base):
+    __tablename__ = "pnl_snapshots"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    trading_account_id: Mapped[str] = mapped_column(ForeignKey("trading_accounts.id"), index=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    equity: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    drawdown_pct: Mapped[float] = mapped_column(Float, default=0)
+
+
+class RiskEvent(Base):
+    __tablename__ = "risk_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    decision_id: Mapped[str | None] = mapped_column(ForeignKey("trading_decisions.id"), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    status: Mapped[RiskStatus] = mapped_column(String(32))
+    reason: Mapped[str] = mapped_column(Text)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+
+
+class SourceDocument(TimestampMixin, Base):
+    __tablename__ = "source_documents"
+    __table_args__ = (
+        UniqueConstraint("canonical_url", name="uq_source_document_url"),
+        UniqueConstraint("content_hash", name="uq_source_document_hash"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source: Mapped[str] = mapped_column(String(64), index=True)
+    canonical_url: Mapped[str] = mapped_column(String(2048))
+    title: Mapped[str] = mapped_column(Text)
+    raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cleaned_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(128), index=True)
+    language: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    processing_status: Mapped[str] = mapped_column(String(32), default="NEW")
+    processing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class DocumentSummary(TimestampMixin, Base):
+    __tablename__ = "document_summaries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("source_documents.id"), unique=True)
+    summary: Mapped[str] = mapped_column(Text)
+    event_type: Mapped[str] = mapped_column(String(64))
+    assets: Mapped[list] = mapped_column(JSON, default=list)
+    direction: Mapped[str] = mapped_column(String(16))
+    impact_horizon: Mapped[str] = mapped_column(String(32))
+    confidence: Mapped[float] = mapped_column(Float)
+    model_version: Mapped[str] = mapped_column(String(128))
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
