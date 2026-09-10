@@ -123,7 +123,13 @@ def market_node(state: TradingCycleState, *, llm: CompletionClient | Any | None 
 def quant_node(state: TradingCycleState, *, llm: CompletionClient | Any | None = None, now_ms: int | None = None) -> dict[str, Any]:
     current = _as_state(state)
     candle_context = json.dumps(
-        {timeframe: [candle.model_dump() for candle in candles[-20:]] for timeframe, candles in current.candles_by_timeframe.items()},
+        {
+            "indicators": current.technical_indicators,
+            "candles": {
+                timeframe: [candle.model_dump() for candle in candles[-20:]]
+                for timeframe, candles in current.candles_by_timeframe.items()
+            },
+        },
         default=str,
     )
     result = _analysis(current, "Quant Agent", candle_context, llm, now_ms or _now_ms())

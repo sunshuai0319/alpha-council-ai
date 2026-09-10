@@ -19,6 +19,7 @@ dependencies = [
   "cryptography>=44,<47",
   "PyJWT[crypto]>=2.10,<3",
   "svix>=1.40,<2",
+  "eth-account>=0.13,<1",
 ]
 
 [dependency-groups]

@@ -10,9 +10,17 @@ from sqlalchemy.orm import Session
 
 from app.agents.graph import TradingCycleGraph, build_trading_cycle_graph
 from app.agents.llm import ArkChatClient
+from app.analytics.indicators import INDICATOR_VERSION, calculate_indicators
 from app.collectors.weex import WeexCollector
 from app.config import Settings, get_settings
-from app.db.models import MarketCandle, Position, RiskEvent, TradingAccount, TradingDecision
+from app.db.models import (
+    ControlState,
+    MarketCandle,
+    Position,
+    RiskEvent,
+    TradingAccount,
+    TradingDecision,
+)
 from app.db.models import MarketSnapshot as MarketSnapshotModel
 from app.domain.enums import Action, RiskStatus
 from app.domain.schemas import (
@@ -27,6 +35,7 @@ from app.execution.service import ExecutionService
 from app.rag.embeddings import BGEEmbedder, BGEReranker
 from app.rag.milvus import MilvusVectorStore
 from app.rag.retriever import Retriever
+from app.reconciliation.service import ReconciliationService
 from app.risk.engine import RiskEngine
 
 
@@ -88,6 +97,7 @@ class TradingCycleService:
         self.graph_factory = graph_factory or self._default_graph
         self.risk_engine = risk_engine or RiskEngine(self.settings)
         self.execution_service = execution_service or ExecutionService()
+        self.reconciliation = ReconciliationService(db=db)
         self._memory_results: dict[str, list[CycleResult]] = {}
         self._memory_market: list[dict[str, Any]] = []
 
@@ -127,10 +137,17 @@ class TradingCycleService:
                 timeframe: [candle for candle in candle_result.items if candle.timeframe == timeframe]
                 for timeframe in ("5m", "1h", "4h")
             },
+            technical_indicators=calculate_indicators(
+                {
+                    timeframe: [candle for candle in candle_result.items if candle.timeframe == timeframe]
+                    for timeframe in ("5m", "1h", "4h")
+                }
+            ),
             errors=[*candle_result.errors, *snapshot_result.errors],
         )
+        state = state.model_copy(update={"data_versions": {"technical_indicators": INDICATOR_VERSION}})
         self._persist_market_data(candle_result.items, snapshot_result.items)
-        if ControlRegistry.status(user_id) == "PAUSED":
+        if self.control_status(user_id) == "PAUSED":
             state.errors.append("paused")
             state = state.model_copy(
                 update={"trade_proposal": self._hold_proposal(state, "paused")}
@@ -147,6 +164,15 @@ class TradingCycleService:
             risk_decision = self._evaluate_proposal(exchange, state)
             execution = self._execute(exchange, state, risk_decision)
             state = state.model_copy(update={"risk_assessment": risk_decision, "execution_result": execution})
+            account = self._account_for_user(user_id)
+            if account is not None:
+                self.reconciliation.reconcile(
+                    exchange,
+                    user_id=user_id,
+                    trading_account_id=account.id,
+                    order_ids=[execution.exchange_order_id] if execution and execution.exchange_order_id else [],
+                    symbol=symbol,
+                )
         persisted = self._persist(result_state=state, risk=risk_decision, execution=execution)
         result = CycleResult(state, risk_decision, execution, persisted)
         self._memory_results.setdefault(user_id, []).append(result)
@@ -239,7 +265,19 @@ class TradingCycleService:
                     TradingAccount.provider == "weex",
                     TradingAccount.environment == "virtual",
                 )
-            ).all()
+        ).all()
+        )
+
+    def _account_for_user(self, user_id: str) -> TradingAccount | None:
+        if self.db is None:
+            return None
+        return self.db.scalar(
+            select(TradingAccount).where(
+                TradingAccount.user_id == user_id,
+                TradingAccount.provider == "weex",
+                TradingAccount.environment == "virtual",
+                TradingAccount.enabled.is_(True),
+            )
         )
 
     def _persist(
@@ -252,9 +290,11 @@ class TradingCycleService:
         if self.db is None:
             return True
         proposal = result_state.trade_proposal
+        account = self._account_for_user(result_state.user_id)
         decision = TradingDecision(
             id=str(uuid4()),
             user_id=result_state.user_id,
+            trading_account_id=account.id if account else None,
             cycle_id=result_state.cycle_id,
             trace_id=result_state.trace_ids[-1] if result_state.trace_ids else str(uuid4()),
             symbol=result_state.symbol,
@@ -265,6 +305,7 @@ class TradingCycleService:
                 "market": result_state.market_analysis.model_dump() if result_state.market_analysis else None,
                 "quant": result_state.quant_analysis.model_dump() if result_state.quant_analysis else None,
                 "macro": result_state.macro_analysis.model_dump() if result_state.macro_analysis else None,
+                "technical_indicators": result_state.technical_indicators,
             },
             risk_decision=risk.model_dump(),
             execution_result=execution.model_dump() if execution else None,
@@ -331,10 +372,44 @@ class TradingCycleService:
         self.db.flush()
 
     def pause(self, user_id: str) -> dict[str, str]:
-        return {"status": ControlRegistry.pause(user_id)}
+        return {"status": self._set_control_status(user_id, "PAUSED")}
 
     def resume(self, user_id: str) -> dict[str, str]:
-        return {"status": ControlRegistry.resume(user_id)}
+        return {"status": self._set_control_status(user_id, "RUNNING")}
+
+    def control_status(self, user_id: str) -> str:
+        if self.db is None:
+            return ControlRegistry.status(user_id)
+        state = self.db.get(ControlState, user_id)
+        return state.status if state else "RUNNING"
+
+    def _set_control_status(self, user_id: str, status: str) -> str:
+        if self.db is None:
+            return ControlRegistry.pause(user_id) if status == "PAUSED" else ControlRegistry.resume(user_id)
+        state = self.db.get(ControlState, user_id)
+        if state is None:
+            state = ControlState(user_id=user_id, status=status)
+            self.db.add(state)
+        else:
+            state.status = status
+            state.updated_at = datetime.now(UTC)
+        self.db.commit()
+        return status
+
+    def record_failure(self, user_id: str, symbol: str, error: Exception) -> None:
+        if self.db is None:
+            return
+        self.db.add(
+            RiskEvent(
+                id=str(uuid4()),
+                user_id=user_id,
+                event_type="CYCLE_FAILURE",
+                status=RiskStatus.REJECTED,
+                reason=str(error),
+                metadata_json={"symbol": symbol},
+            )
+        )
+        self.db.commit()
 
     def market(self, user_id: str) -> dict[str, Any]:
         del user_id

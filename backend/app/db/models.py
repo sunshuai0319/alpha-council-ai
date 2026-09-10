@@ -42,6 +42,37 @@ class User(TimestampMixin, Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ClerkWebhookEvent(Base):
+    __tablename__ = "clerk_webhook_events"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSON)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class WalletChallenge(Base):
+    __tablename__ = "wallet_challenges"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    address: Mapped[str] = mapped_column(String(128))
+    chain: Mapped[str] = mapped_column(String(32))
+    nonce: Mapped[str] = mapped_column(String(128), unique=True)
+    message: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class ControlState(Base):
+    __tablename__ = "control_states"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="RUNNING")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class WalletAddress(TimestampMixin, Base):
     __tablename__ = "wallet_addresses"
     __table_args__ = (UniqueConstraint("user_id", "address", "chain", name="uq_wallet_user_address"),)
@@ -235,6 +266,7 @@ class SourceDocument(TimestampMixin, Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     processing_status: Mapped[str] = mapped_column(String(32), default="NEW")
     processing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    processing_attempts: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class DocumentSummary(TimestampMixin, Base):
@@ -250,3 +282,17 @@ class DocumentSummary(TimestampMixin, Base):
     confidence: Mapped[float] = mapped_column(Float)
     model_version: Mapped[str] = mapped_column(String(128))
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class MacroObservationRecord(Base):
+    __tablename__ = "macro_observations"
+    __table_args__ = (
+        UniqueConstraint("series_id", "observation_date", name="uq_macro_observation"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    series_id: Mapped[str] = mapped_column(String(64), index=True)
+    observation_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_url: Mapped[str] = mapped_column(String(2048))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
