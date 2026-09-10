@@ -15,6 +15,7 @@ from app.db.models import (
 from app.domain.enums import Action, RiskStatus
 from app.domain.schemas import (
     Candle,
+    ExecutionResult,
     MarketSnapshot,
     RiskDecision,
     TradeProposal,
@@ -128,6 +129,63 @@ def _long_state(*, price: float = 100, pct: float = 0.1) -> TradingCycleState:
             trace_id="trace-1",
         ),
     )
+
+
+def test_persisting_a_filled_order_stores_json_safe_values(tmp_path) -> None:
+    """成交回报带 Decimal，而 execution_result 是 JSON 列。
+
+    只有订单真正成交时才会走到这里 —— 新鲜度门曾经把订单全拦掉，掩盖了它。
+    """
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'persist.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.commit()
+        service = TradingCycleService(db=db)
+
+        service._persist(
+            result_state=_close_state(),
+            risk=RiskDecision(status=RiskStatus.ALLOWED),
+            execution=ExecutionResult(
+                status="FILLED",
+                proposal_id="proposal-1",
+                client_order_id="alpha-1",
+                exchange_order_id="order-1",
+                average_price=Decimal("100.5"),
+                realized_pnl=Decimal("-1.25"),
+            ),
+        )
+
+        row = db.scalars(select(TradingDecision)).all()[0]
+        assert row.execution_result["realized_pnl"] == "-1.25"
+        assert row.execution_result["average_price"] == "100.5"
+
+
+def test_persisting_a_filled_order_round_trips_into_the_loss_streak(tmp_path) -> None:
+    """写进去的盈亏要能被连亏统计读出来（Decimal -> JSON -> Decimal）。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'roundtrip.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.commit()
+        service = TradingCycleService(db=db)
+
+        for _ in range(3):
+            service._persist(
+                result_state=_close_state(),
+                risk=RiskDecision(status=RiskStatus.ALLOWED),
+                execution=ExecutionResult(
+                    status="FILLED",
+                    proposal_id="proposal-1",
+                    client_order_id="alpha-1",
+                    average_price=Decimal(90),
+                    realized_pnl=Decimal(-10),
+                ),
+            )
+
+        assert service._consecutive_losses("u-1") == 3
 
 
 def test_circuit_breaker_pauses_the_account(tmp_path) -> None:

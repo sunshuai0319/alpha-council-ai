@@ -501,8 +501,9 @@ class TradingCycleService:
                 "macro": result_state.macro_analysis.model_dump() if result_state.macro_analysis else None,
                 "technical_indicators": result_state.technical_indicators,
             },
-            risk_decision=risk.model_dump(),
-            execution_result=execution.model_dump() if execution else None,
+            risk_decision=risk.model_dump(mode="json"),
+            # JSON 列：必须用 mode="json"，否则 Decimal（成交均价/已实现盈亏）存不进去。
+            execution_result=execution.model_dump(mode="json") if execution else None,
             data_versions=result_state.data_versions,
             model_versions=result_state.model_versions,
         )
