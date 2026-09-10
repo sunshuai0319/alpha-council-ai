@@ -22,6 +22,10 @@ def test_fixture_virtual_cycle_persists_authenticated_decision(tmp_path) -> None
     app.dependency_overrides[get_cycle_service] = lambda: service
     try:
         with TestClient(app) as client:
+            health = client.get("/api/health")
+            assert health.status_code == 200
+            assert health.json()["weex_mode"] == "virtual"
+
             response = client.post("/api/test/run-cycle", headers={"X-Test-Exchange": "fixture"})
             assert response.status_code == 200
             assert response.json()["action"] == "HOLD"
