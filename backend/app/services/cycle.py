@@ -15,6 +15,7 @@ from app.analytics.indicators import INDICATOR_VERSION, calculate_indicators
 from app.collectors.weex import WeexCollector
 from app.config import Settings, get_settings
 from app.db.models import (
+    AccountSnapshot,
     ControlState,
     MarketCandle,
     Position,
@@ -37,7 +38,7 @@ from app.rag.embeddings import BGEEmbedder, BGEReranker
 from app.rag.milvus import MilvusVectorStore
 from app.rag.retriever import Retriever
 from app.reconciliation.service import ReconciliationService
-from app.risk.engine import RiskEngine
+from app.risk.engine import RiskEngine, daily_loss_pct
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +269,7 @@ class TradingCycleService:
         )
         proposed_notional = balance.balance * Decimal(str(proposal.position_size_pct))
         is_reducing = proposal.action is Action.CLOSE
+        current_equity = balance.balance + balance.unrealized_pnl
         return self.risk_engine.evaluate(
             equity=balance.balance,
             current_notional=current_notional,
@@ -275,13 +277,42 @@ class TradingCycleService:
             leverage=proposal.leverage,
             stop_loss=proposal.stop_loss,
             entry=state.market_snapshot.last_price,
-            daily_loss_pct=0,
+            daily_loss_pct=self._daily_loss_pct(state.user_id, current_equity),
             consecutive_losses=0,
             paused=False,
             data_age_s=data_age,
             side="LONG" if proposal.action is Action.LONG else "SHORT",
             is_reducing=is_reducing,
             checked_at=now_ms,
+        )
+
+    def _daily_loss_pct(self, user_id: str, current_equity: Decimal) -> Decimal:
+        """当日权益回撤，基准是当天观测到的第一笔快照。
+
+        系统当天首次启动时基准就是当时权益，因此早于系统启动的亏损不计入。
+        """
+
+        if self.db is None:
+            return Decimal(0)
+        account = self._account_for_user(user_id)
+        if account is None:
+            return Decimal(0)
+        day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        day_open_equity = self.db.scalar(
+            select(AccountSnapshot.equity)
+            .where(
+                AccountSnapshot.user_id == user_id,
+                AccountSnapshot.trading_account_id == account.id,
+                AccountSnapshot.captured_at >= day_start,
+            )
+            .order_by(AccountSnapshot.captured_at.asc(), AccountSnapshot.id.asc())
+            .limit(1)
+        )
+        if day_open_equity is None:
+            return Decimal(0)
+        return daily_loss_pct(
+            day_start_equity=day_open_equity,
+            current_equity=current_equity,
         )
 
     def _execute(

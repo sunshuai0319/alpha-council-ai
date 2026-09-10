@@ -1,6 +1,10 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+from app.db.models import AccountSnapshot, Base, TradingAccount, User
 from app.domain.enums import Action, RiskStatus
 from app.domain.schemas import (
     Candle,
@@ -117,6 +121,72 @@ def _long_state(*, price: float = 100, pct: float = 0.1) -> TradingCycleState:
             trace_id="trace-1",
         ),
     )
+
+
+def test_daily_loss_pct_uses_todays_first_snapshot(tmp_path) -> None:
+    """熔断输入必须来自真实权益，而不是写死的 0。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'cycle.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        now = datetime.now(UTC)
+        db.add(
+            AccountSnapshot(
+                user_id="u-1",
+                trading_account_id="a-1",
+                captured_at=now.replace(hour=0, minute=1),
+                balance=Decimal(10000),
+                available_margin=Decimal(10000),
+                equity=Decimal(10000),
+            )
+        )
+        db.add(
+            AccountSnapshot(
+                user_id="u-1",
+                trading_account_id="a-1",
+                captured_at=now,
+                balance=Decimal(8000),
+                available_margin=Decimal(8000),
+                equity=Decimal(8000),
+            )
+        )
+        db.commit()
+
+        service = TradingCycleService(db=db)
+        assert service._daily_loss_pct("u-1", Decimal(9500)) == Decimal("0.05")
+
+
+def test_daily_loss_breaker_actually_reaches_the_risk_engine(tmp_path) -> None:
+    """日亏损超限必须真的拒单。
+
+    ``_evaluate_proposal`` 以前把 daily_loss_pct 硬编码成 0，导致
+    MAX_DAILY_LOSS_PCT 永远不触发；这条断言把它钉住。
+    """
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'breaker.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.add(
+            AccountSnapshot(
+                user_id="u-1",
+                trading_account_id="a-1",
+                captured_at=datetime.now(UTC).replace(hour=0, minute=1),
+                balance=Decimal(10000),
+                available_margin=Decimal(10000),
+                equity=Decimal(10000),
+            )
+        )
+        db.commit()
+
+        exchange = RecordingExchange(balance=Decimal(9000))  # 当日 -10%
+        service = TradingCycleService(db=db, exchange_factory=lambda: exchange)
+
+        decision = service._evaluate_proposal(exchange, _long_state())
+
+        assert decision.allowed is False
+        assert "daily_loss_limit" in decision.reasons
 
 
 def test_entry_quantity_is_notional_over_price() -> None:

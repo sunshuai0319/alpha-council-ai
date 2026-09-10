@@ -1,5 +1,21 @@
+from decimal import Decimal
+
 from app.domain.enums import RiskStatus
-from app.risk.engine import evaluate_risk
+from app.risk.engine import daily_loss_pct, evaluate_risk
+
+
+def test_daily_loss_pct_measures_drawdown_from_day_start() -> None:
+    assert daily_loss_pct(day_start_equity=Decimal(10000), current_equity=Decimal(9500)) == Decimal("0.05")
+
+
+def test_daily_loss_pct_is_zero_when_in_profit_or_flat() -> None:
+    assert daily_loss_pct(day_start_equity=Decimal(10000), current_equity=Decimal(10500)) == Decimal(0)
+    assert daily_loss_pct(day_start_equity=Decimal(10000), current_equity=Decimal(10000)) == Decimal(0)
+
+
+def test_daily_loss_pct_needs_a_positive_baseline() -> None:
+    """没有基准（权益为 0）时不能除零，也不能假装亏损。"""
+    assert daily_loss_pct(day_start_equity=Decimal(0), current_equity=Decimal(0)) == Decimal(0)
 
 
 def test_risk_rejects_position_above_equity_limit() -> None:

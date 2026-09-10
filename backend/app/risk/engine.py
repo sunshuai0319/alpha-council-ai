@@ -29,6 +29,24 @@ class RiskLimits:
         )
 
 
+def daily_loss_pct(
+    *,
+    day_start_equity: Decimal | float,
+    current_equity: Decimal | float,
+) -> Decimal:
+    """当日回撤比例，用于 ``max_daily_loss_pct`` 熔断。
+
+    以当天观测到的第一笔权益为基准；盈利或持平时为 0（熔断只看亏损）。
+    基准非正时无法计算比例，返回 0 —— 不猜。
+    """
+
+    start = Decimal(str(day_start_equity))
+    current = Decimal(str(current_equity))
+    if start <= 0:
+        return Decimal(0)
+    return max(Decimal(0), (start - current) / start)
+
+
 def evaluate_risk(
     *,
     equity: Decimal | float,
