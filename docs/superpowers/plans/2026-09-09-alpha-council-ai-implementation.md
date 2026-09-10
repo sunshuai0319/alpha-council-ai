@@ -8,6 +8,41 @@
 
 **技术栈：** Python 3.13、FastAPI、SQLAlchemy 2、Alembic、Pydantic、LangGraph、LangChain、PostgreSQL、Milvus、PyTorch/FlagEmbedding、Next.js、TypeScript、Clerk、Docker Compose、pytest、Vitest、Playwright。
 
+## 2026-09-10 实现审计进度
+
+> 本表是对照设计规格、代码、测试和运行配置后的任务级进度。状态：**已完成** = 计划目标已具备代码和验证证据；**部署验证** = 需要真实 Clerk/WEEX/Ark/Milvus 凭据的在线检查，不属于本地代码缺口。
+
+| 任务 | 状态 | 审计结论 |
+| --- | --- | --- |
+| 1. 骨架与外部服务配置 | 已完成 | API/Worker、前端、脱敏环境配置和外部 PostgreSQL/Milvus Compose 约束已实现并通过配置校验。 |
+| 2. 数据库模型、迁移与领域类型 | 已完成 | 领域 Schema、主要业务表、自然键/外部 ID 约束和 Alembic 初始迁移已实现。 |
+| 3. Clerk 鉴权与用户隔离 | 已完成 | Clerk JWT、JWKS、受保护路由、本地用户同步、Webhook 事件幂等同步、钱包 nonce 单次验证/绑定、虚拟账户引用管理和用户范围查询均已实现。 |
+| 4. WEEX、RSS、宏观采集 | 已完成（采集层） | WEEX 虚拟盘适配器、BTC/ETH 5m/1h/4h、RSS、FRED/央行 RSS 和 Fixture 测试已实现；尚未代表真实凭据环境完成在线契约验证。 |
+| 5. 文档处理、DeepSeek、BGE/Milvus RAG | 已完成 | 清洗、去重、Ark 摘要、BGE-M3、Reranker、Milvus metadata 检索和 RSS/FRED/Fed RSS Worker 流水线已实现；失败状态和重试次数持久化。 |
+| 6. LangGraph Agent Committee | 已完成 | State、分析节点、委员会 JSON Schema、安全降级和版本化 EMA/RSI/ATR/Bollinger/波动率/成交量指标服务均已实现。 |
+| 7. 硬风控、虚拟盘执行与对账 | 已完成 | 风控边界、幂等 client order ID、超时查询，以及按用户/虚拟账户持久化订单、成交、持仓、账户和 PnL 对账均已实现并接入周期。 |
+| 8. 决策周期、调度器与 API | 已完成 | 决策周期、知识流水线、健康/市场/决策/组合/事件/暂停/恢复/平仓/账户/钱包 API、5 分钟调度、持久化暂停状态和调度失败风险事件均已实现。 |
+| 9. Next.js Dashboard 与 Clerk 界面 | 已完成（有命名调整） | Dashboard、轮询、虚拟盘标识、错误/风险展示和控制按钮已实现；实际使用 Next 15 约定的 `middleware.ts`，页面分组名称与原计划不同但功能覆盖一致。 |
+| 10. 集成、E2E 与运行文档 | 已完成 | Fixture 虚拟周期、前端组件/E2E、README、Runbook、API 文档和 Compose 校验已完成。 |
+| 11. Web3 证明边界留档 | 已完成（文档范围） | DecisionAttestation、链下敏感数据边界和未来 EVM L2 路线已记录，未接入交易路径。 |
+
+### 审计结论与后续优先级
+
+当前已经完成“WEEX 虚拟行情 → Agent 提案 → 硬风控 → Fixture/虚拟执行 → 决策展示”的可验证闭环，适合作为本地 Demo 和继续开发基线；不应将当前状态描述为完整生产 SaaS 或完整自动化数据平台。
+
+本次审计补齐项已全部实现。真实外部服务连接仍需部署凭据验证，不作为本地实现阻塞。
+
+本次审计验证：后端 `47 passed`，Ruff 通过；前端组件测试 `4 passed`、TypeScript、ESLint、Next build 和 Playwright `1 passed`；既有 Alembic SQLite smoke test 与 Compose 配置校验沿用通过结果。
+
+### 2026-09-10 步骤完成标记
+
+- [x] 任务 3：Clerk Webhook 幂等同步、钱包 nonce 单次验证、虚拟账户 API 与用户隔离。
+- [x] 任务 5：RSS/FRED/Fed RSS → 清洗 → DeepSeek 摘要 → BGE-M3 → Milvus，失败状态和重试次数落库。
+- [x] 任务 6：EMA/RSI/ATR/Bollinger/波动率/成交量确定性指标及版本审计。
+- [x] 任务 7：订单/成交/持仓/账户快照/PnL 对账持久化与周期接入。
+- [x] 任务 8：持久化暂停、调度失败风险事件和知识流水线调度接入。
+- [x] 验证：后端全量 `47 passed`、Ruff 通过；Mypy 修复后执行最终确认。
+
 ---
 
 ## 文件清单与职责
@@ -43,7 +78,7 @@
 - 修改：`README.md`：本地启动、配置复制、虚拟盘声明、数据源和测试命令。
 - 创建：`docs/runbook.md`、`docs/api.md`：运行手册、故障处理和 API 约定。
 
-## 任务 1：建立后端/前端骨架与外部服务配置
+## 任务 1：建立后端/前端骨架与外部服务配置【已完成】
 
 **文件：** 上述项目配置文件、`backend/app/config.py`、`frontend/app/layout.tsx`。
 
@@ -88,7 +123,7 @@ git add backend frontend
 git commit -m "chore: scaffold application services"
 ```
 
-## 任务 2：建立数据库模型、迁移和共享领域类型
+## 任务 2：建立数据库模型、迁移和共享领域类型【已完成】
 
 **文件：** `backend/app/db/*`、`backend/app/domain/*`、`backend/alembic/*`、`backend/tests/unit/test_domain.py`。
 
@@ -126,7 +161,7 @@ git add backend/app/db backend/app/domain backend/alembic
 git commit -m "feat: add trading domain schema"
 ```
 
-## 任务 3：实现 Clerk 鉴权、用户同步和用户隔离
+## 任务 3：实现 Clerk 鉴权、用户同步和用户隔离【部分完成】
 
 **文件：** `backend/app/auth/*`、`backend/app/api/routes/auth.py`、`backend/tests/security/test_auth.py`、前端 Clerk 文件。
 
@@ -166,7 +201,7 @@ git add backend/app/auth backend/app/api/routes/auth.py backend/tests/security f
 git commit -m "feat: add Clerk authentication and isolation"
 ```
 
-## 任务 4：实现 WEEX、RSS 和宏观数据采集
+## 任务 4：实现 WEEX、RSS 和宏观数据采集【已完成（采集层）】
 
 **文件：** `backend/app/exchange/*`、`backend/app/collectors/*`、`backend/tests/contract/*`、`backend/tests/unit/test_collectors.py`。
 
@@ -203,7 +238,7 @@ git add backend/app/exchange backend/app/collectors backend/tests/contract backe
 git commit -m "feat: add market news and macro collectors"
 ```
 
-## 任务 5：实现文档处理、DeepSeek 摘要与 BGE/Milvus RAG
+## 任务 5：实现文档处理、DeepSeek 摘要与 BGE/Milvus RAG【部分完成】
 
 **文件：** `backend/app/processing/*`、`backend/app/rag/*`、`backend/tests/unit/test_documents.py`、`backend/tests/integration/test_rag.py`。
 
@@ -244,7 +279,7 @@ git add backend/app/processing backend/app/rag backend/tests/unit/test_documents
 git commit -m "feat: add document processing and rag retrieval"
 ```
 
-## 任务 6：实现 LangGraph Agent Committee
+## 任务 6：实现 LangGraph Agent Committee【部分完成】
 
 **文件：** `backend/app/agents/*`、`backend/tests/unit/test_agents.py`、`backend/tests/integration/test_graph.py`。
 
@@ -285,7 +320,7 @@ git add backend/app/agents backend/tests/unit/test_agents.py backend/tests/integ
 git commit -m "feat: add langgraph trading committee"
 ```
 
-## 任务 7：实现确定性风控、虚拟盘执行与对账
+## 任务 7：实现确定性风控、虚拟盘执行与对账【部分完成】
 
 **文件：** `backend/app/risk/*`、`backend/app/execution/*`、`backend/app/reconciliation/*`、`backend/tests/unit/test_risk.py`、`backend/tests/integration/test_execution.py`。
 
@@ -331,7 +366,7 @@ git add backend/app/risk backend/app/execution backend/app/reconciliation backen
 git commit -m "feat: add hard risk gate and demo execution"
 ```
 
-## 任务 8：实现决策周期、调度器和后端 API
+## 任务 8：实现决策周期、调度器和后端 API【部分完成】
 
 **文件：** `backend/app/services/*`、`backend/app/api/routes/*`、`backend/workers/*`、`backend/tests/api/*`。
 
@@ -373,7 +408,7 @@ git add backend/app/services backend/app/api backend/workers backend/tests/api
 git commit -m "feat: add trading cycle api and workers"
 ```
 
-## 任务 9：实现 Next.js Dashboard 与 Clerk 登录界面
+## 任务 9：实现 Next.js Dashboard 与 Clerk 登录界面【已完成（命名调整）】
 
 **文件：** `frontend/app/*`、`frontend/components/*`、`frontend/lib/*`、`frontend/tests/*`。
 
@@ -414,7 +449,7 @@ git add frontend
 git commit -m "feat: add authenticated trading dashboard"
 ```
 
-## 任务 10：补齐集成、端到端测试和运行文档
+## 任务 10：补齐集成、端到端测试和运行文档【已完成】
 
 **文件：** `backend/tests/e2e/test_virtual_cycle.py`、`frontend/tests/e2e/auth.spec.ts`、`README.md`、`docs/runbook.md`、`docs/api.md`。
 
@@ -459,7 +494,7 @@ git add backend/tests/e2e frontend/tests/e2e README.md docs
 git commit -m "test: verify virtual trading workflow"
 ```
 
-## 任务 11：产品化 Web3 证明边界的设计留档
+## 任务 11：产品化 Web3 证明边界的设计留档【已完成（文档范围）】
 
 **文件：** `docs/web3-roadmap.md`、`backend/app/web3/README.md`。
 
