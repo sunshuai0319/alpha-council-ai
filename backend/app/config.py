@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     max_single_trade_risk_pct: float = 0.005
     max_daily_loss_pct: float = 0.05
     max_consecutive_losses: int = 3
+    max_consecutive_failures: int = 5
     market_data_max_age_seconds: int = 90
     decision_interval_seconds: int = 300
 

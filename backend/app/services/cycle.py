@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any, ClassVar
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agents.graph import TradingCycleGraph, build_trading_cycle_graph
@@ -605,6 +605,36 @@ class TradingCycleService:
             )
         )
         self.db.commit()
+        if self._consecutive_failures(user_id) >= self.settings.max_consecutive_failures:
+            self._halt(
+                user_id,
+                RiskDecision(
+                    status=RiskStatus.PAUSED, reasons=["repeated_cycle_failures"], halt=True
+                ),
+            )
+
+    def _consecutive_failures(self, user_id: str) -> int:
+        """自最近一次成功落库的决策以来，连续失败的周期数。
+
+        没有成功决策做基准时，统计全部失败记录。
+        """
+
+        if self.db is None:
+            return 0
+        last_success = self.db.scalar(
+            select(func.max(TradingDecision.created_at)).where(TradingDecision.user_id == user_id)
+        )
+        query = (
+            select(func.count())
+            .select_from(RiskEvent)
+            .where(
+                RiskEvent.user_id == user_id,
+                RiskEvent.event_type == "CYCLE_FAILURE",
+            )
+        )
+        if last_success is not None:
+            query = query.where(RiskEvent.created_at > last_success)
+        return self.db.scalar(query) or 0
 
     def market(self, user_id: str) -> dict[str, Any]:
         del user_id

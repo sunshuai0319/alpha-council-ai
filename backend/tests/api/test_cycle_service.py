@@ -4,6 +4,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from app.config import Settings
 from app.db.models import (
     AccountSnapshot,
     Base,
@@ -186,6 +187,48 @@ def test_persisting_a_filled_order_round_trips_into_the_loss_streak(tmp_path) ->
             )
 
         assert service._consecutive_losses("u-1") == 3
+
+
+def test_repeated_cycle_failures_pause_the_account(tmp_path) -> None:
+    """连续失败必须停下来。
+
+    之前每轮失败只写一条 RiskEvent 就继续：数据库挂掉会每 5 分钟撞一次，
+    永远不停。
+    """
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'failures.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.commit()
+        service = TradingCycleService(db=db, settings=Settings(max_consecutive_failures=3))
+
+        service.record_failure("u-1", "BTC-USDT", RuntimeError("boom 1"))
+        service.record_failure("u-1", "BTC-USDT", RuntimeError("boom 2"))
+        assert service.control_status("u-1") == "RUNNING"
+
+        service.record_failure("u-1", "BTC-USDT", RuntimeError("boom 3"))
+        assert service.control_status("u-1") == "PAUSED"
+
+
+def test_a_successful_cycle_resets_the_failure_streak(tmp_path) -> None:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'reset.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.commit()
+        service = TradingCycleService(db=db, settings=Settings(max_consecutive_failures=2))
+
+        service.record_failure("u-1", "BTC-USDT", RuntimeError("boom 1"))
+        service._persist(
+            result_state=_long_state(),
+            risk=RiskDecision(status=RiskStatus.ALLOWED),
+            execution=None,
+        )
+        service.record_failure("u-1", "BTC-USDT", RuntimeError("boom 2"))
+
+        assert service.control_status("u-1") == "RUNNING"
+        assert service._consecutive_failures("u-1") == 1
 
 
 def test_circuit_breaker_pauses_the_account(tmp_path) -> None:
