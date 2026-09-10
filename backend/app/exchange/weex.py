@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any, Self
 from urllib.parse import urlencode
 
@@ -54,6 +54,18 @@ def _exchange_symbol(symbol: str, virtual: bool = False) -> str:
     return normalized
 
 
+def _round_down(value: Decimal, precision: int | None) -> Decimal:
+    """向下舍入到合约允许的精度。
+
+    交易所把精度当硬校验：实测数量带 37 位小数、触发价带 3 位小数都会直接回
+    500。统一向下取，保证不会放大到超出风控算出来的名义价值。
+    """
+
+    if precision is None:
+        return value
+    return value.quantize(Decimal(1).scaleb(-precision), rounding=ROUND_DOWN)
+
+
 def _decimal(value: Any, default: str = "0") -> Decimal:
     if value is None or value == "":
         return Decimal(default)
@@ -93,6 +105,7 @@ class WeexClient(ExchangeClient):
     ) -> None:
         self.settings = settings or get_settings()
         self.credentials = credentials
+        self._contracts: dict[str, ContractInfo] | None = None
         self._client = client or httpx.Client(
             base_url=self.settings.weex_base_url.rstrip("/"),
             timeout=self.settings.ark_timeout_seconds,
@@ -238,7 +251,11 @@ class WeexClient(ExchangeClient):
         ticker = raw[0] if isinstance(raw, list) and raw else raw
         if not isinstance(ticker, dict):
             raise ExchangeError("WEEX ticker response is not an object")
-        captured_at = int(ticker.get("closeTime") or ticker.get("timestamp") or self._clock_ms())
+        # 24h ticker 不提供「本次报价时间」：closeTime 是 24h 滚动窗口的边界，
+        # 实测比当前时刻落后约 12 分钟。拿它当 captured_at 会让
+        # market_data_max_age_seconds(默认 90s) 永远判定过期，整个系统一笔都不下。
+        # 所以 captured_at 取本地观测时刻 —— 行情就是此刻从交易所取回的。
+        captured_at = self._clock_ms()
         return MarketSnapshot(
             symbol=normalize_symbol(ticker.get("symbol", symbol)),
             captured_at=captured_at,
@@ -255,23 +272,33 @@ class WeexClient(ExchangeClient):
         )
 
     def get_contracts(self) -> list[ContractInfo]:
-        raw = self._request("GET", "/capi/v3/market/exchangeInfo")
-        symbols = raw.get("symbols", []) if isinstance(raw, dict) else raw
-        if not isinstance(symbols, list):
-            raise ExchangeError("WEEX exchangeInfo response has no symbols array")
-        return [
-            ContractInfo(
-                symbol=normalize_symbol(item["symbol"]),
-                price_precision=int(item.get("pricePrecision", 0)),
-                quantity_precision=int(item.get("quantityPrecision", 0)),
-                contract_value=_decimal(item.get("contractVal")),
-                min_leverage=int(item.get("minLeverage", 1)),
-                max_leverage=int(item.get("maxLeverage", 1)),
-                min_quantity=_decimal(item.get("minOrderSize")),
-                max_quantity=_decimal(item["maxOrderSize"]) if item.get("maxOrderSize") else None,
-            )
-            for item in symbols
-        ]
+        return list(self._contract_index().values())
+
+    def _contract_index(self) -> dict[str, ContractInfo]:
+        """按符号索引的合约规格，缓存一次。
+
+        下单要用它做精度舍入，不能每单都重新拉一遍 exchangeInfo。
+        """
+
+        if self._contracts is None:
+            raw = self._request("GET", "/capi/v3/market/exchangeInfo")
+            symbols = raw.get("symbols", []) if isinstance(raw, dict) else raw
+            if not isinstance(symbols, list):
+                raise ExchangeError("WEEX exchangeInfo response has no symbols array")
+            self._contracts = {
+                normalize_symbol(item["symbol"]): ContractInfo(
+                    symbol=normalize_symbol(item["symbol"]),
+                    price_precision=int(item.get("pricePrecision", 0)),
+                    quantity_precision=int(item.get("quantityPrecision", 0)),
+                    contract_value=_decimal(item.get("contractVal")),
+                    min_leverage=int(item.get("minLeverage", 1)),
+                    max_leverage=int(item.get("maxLeverage", 1)),
+                    min_quantity=_decimal(item.get("minOrderSize")),
+                    max_quantity=_decimal(item["maxOrderSize"]) if item.get("maxOrderSize") else None,
+                )
+                for item in symbols
+            }
+        return self._contracts
 
     def get_balances(self) -> list[ExchangeBalance]:
         raw = self._request("GET", self._private_path("balance"), private=True)
@@ -319,12 +346,19 @@ class WeexClient(ExchangeClient):
         order_type = request.order_type.upper()
         if order_type == "LIMIT" and request.price is None:
             raise ValueError("WEEX limit orders require a price")
+        contract = self._contract_index().get(normalize_symbol(request.symbol))
+        quantity = _round_down(request.quantity, contract.quantity_precision if contract else None)
+        if contract is not None and contract.min_quantity > 0 and quantity < contract.min_quantity:
+            raise ExchangeError(
+                f"WEEX order quantity {quantity} for {request.symbol} is below the minimum "
+                f"{contract.min_quantity}"
+            )
         body: dict[str, Any] = {
             "symbol": _exchange_symbol(request.symbol, self.settings.weex_virtual_only),
             "side": request.side.upper(),
             "positionSide": request.position_side.upper(),
             "type": order_type,
-            "quantity": str(request.quantity),
+            "quantity": str(quantity),
             "newClientOrderId": request.client_order_id,
         }
         # reduceOnly 仅正式合约 API 文档定义；模拟盘 /capi/v3/sim/order 未定义该参数，不发送。
@@ -332,12 +366,13 @@ class WeexClient(ExchangeClient):
             body["reduceOnly"] = request.reduce_only
         if request.time_in_force is not None:
             body["timeInForce"] = request.time_in_force.upper()
+        price_precision = contract.price_precision if contract else None
         if request.price is not None:
-            body["price"] = str(request.price)
+            body["price"] = str(_round_down(request.price, price_precision))
         if request.take_profit is not None:
-            body["tpTriggerPrice"] = str(request.take_profit)
+            body["tpTriggerPrice"] = str(_round_down(request.take_profit, price_precision))
         if request.stop_loss is not None:
-            body["slTriggerPrice"] = str(request.stop_loss)
+            body["slTriggerPrice"] = str(_round_down(request.stop_loss, price_precision))
         raw = self._request("POST", self._private_path("order"), json_body=body, private=True)
         if not isinstance(raw, dict) or not raw.get("success", False):
             message = raw.get("errorMessage", "request rejected") if isinstance(raw, dict) else "invalid response"

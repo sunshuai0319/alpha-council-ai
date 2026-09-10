@@ -126,6 +126,91 @@ def _client_for(handler, virtual_only: bool = True) -> WeexClient:
     )
 
 
+def _precision_client(handler) -> WeexClient:
+    return _client_for(handler)
+
+
+def test_weex_place_order_rounds_quantity_and_prices_to_contract_precision() -> None:
+    """交易所对精度是硬要求：实测未舍入的数量/触发价都被回 500。"""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/capi/v3/market/exchangeInfo":
+            return httpx.Response(200, json=CONTRACT_INFO_RESPONSE)
+        if request.url.path == "/capi/v3/sim/order" and request.method == "POST":
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json=ORDER_ACCEPTED_RESPONSE)
+        if request.url.path == "/capi/v3/sim/order/history":
+            return httpx.Response(200, json=[ORDER_INFO_RESPONSE])
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    with _precision_client(handler) as client:
+        client.place_order(
+            OrderRequest(
+                symbol="BTC-USDT",
+                side="BUY",
+                position_side="LONG",
+                order_type="LIMIT",
+                quantity=Decimal("0.02600207089941456146714562637"),
+                client_order_id="alpha-0001",
+                price=Decimal("76940.123456"),
+                time_in_force="GTC",
+                stop_loss=Decimal("76140.999"),
+            )
+        )
+
+    # CONTRACT_INFO_RESPONSE: quantityPrecision=6, pricePrecision=1
+    assert captured["quantity"] == "0.026002"
+    assert captured["price"] == "76940.1"
+    assert captured["slTriggerPrice"] == "76140.9"
+
+
+def test_weex_place_order_rejects_quantity_below_contract_minimum() -> None:
+    """低于最小下单量要当场说清楚，而不是让交易所回一个 500。"""
+    posted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/capi/v3/market/exchangeInfo":
+            return httpx.Response(200, json=CONTRACT_INFO_RESPONSE)
+        posted.append(request.url.path)
+        return httpx.Response(200, json=ORDER_ACCEPTED_RESPONSE)
+
+    with _precision_client(handler) as client, pytest.raises(ExchangeError, match="below the minimum"):
+        client.place_order(
+            OrderRequest(
+                symbol="BTC-USDT",
+                side="BUY",
+                position_side="LONG",
+                order_type="MARKET",
+                quantity=Decimal("0.00000001"),
+                client_order_id="alpha-0001",
+            )
+        )
+
+    assert posted == []
+
+
+def test_weex_snapshot_is_stamped_with_observation_time() -> None:
+    """24h ticker 没有「本次报价时间」。
+
+    实测 closeTime 是 24h 滚动窗口边界，比当前时间落后约 12 分钟。用它当
+    captured_at 会让 market_data_max_age_seconds(90s) 永远判定过期，全系统
+    一笔都不下。因此 captured_at 必须取本地观测时刻。
+    """
+    stale_close_time = 1_700_000_000_000 - 12 * 60 * 1000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/capi/v3/market/ticker/24hr":
+            return httpx.Response(200, json=[{**TICKER_RESPONSE, "closeTime": stale_close_time}])
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    with _client_for(handler) as client:
+        snapshot = client.get_market_snapshot("BTC-USDT")
+
+    assert snapshot.captured_at == 1_700_000_000_000
+    assert snapshot.last_price == 1.5
+
+
 def test_weex_virtual_get_order_reads_from_order_history() -> None:
     """虚拟盘没有 GET /sim/order（实测 405），只能从 order/history 反查终态订单。"""
     requested: list[tuple[str, str]] = []
@@ -210,6 +295,8 @@ def test_weex_virtual_place_order_reports_exchange_status() -> None:
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/capi/v3/market/exchangeInfo":
+            return httpx.Response(200, json=CONTRACT_INFO_RESPONSE)
         if request.url.path == "/capi/v3/sim/order" and request.method == "POST":
             return httpx.Response(200, json=ORDER_ACCEPTED_RESPONSE)
         if request.url.path == "/capi/v3/sim/order/history":
@@ -228,6 +315,8 @@ def test_weex_virtual_place_order_falls_back_to_open_when_status_unavailable() -
     """订单已受理；回查失败不能让下单本身失败，但要退回 OPEN。"""
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/capi/v3/market/exchangeInfo":
+            return httpx.Response(200, json=CONTRACT_INFO_RESPONSE)
         if request.url.path == "/capi/v3/sim/order" and request.method == "POST":
             return httpx.Response(200, json=ORDER_ACCEPTED_RESPONSE)
         return httpx.Response(500, json={"message": "history unavailable"})
@@ -243,6 +332,8 @@ def test_weex_real_order_path_includes_reduce_only() -> None:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/capi/v3/market/exchangeInfo":
+            return httpx.Response(200, json=CONTRACT_INFO_RESPONSE)
         if request.url.path == "/capi/v3/order" and request.method == "POST":
             captured.update(json.loads(request.content))
             return httpx.Response(200, json=ORDER_ACCEPTED_RESPONSE)
