@@ -1,5 +1,6 @@
-from dataclasses import dataclass
-from decimal import Decimal
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from decimal import Decimal, InvalidOperation
 from time import time
 from typing import Any
 
@@ -28,6 +29,68 @@ class RiskLimits:
             max_consecutive_losses=settings.max_consecutive_losses,
             max_daily_trades=settings.max_daily_trades,
             market_data_max_age_seconds=settings.market_data_max_age_seconds,
+        )
+
+    #: 账户偏好里允许出现的键。杠杆不在其中：虚拟盘固定 20x 改不了，真实盘
+    #: 若允许用户在此调低，只会让风控读到 20x > 上限而拒绝一切开仓。
+    ACCOUNT_KEYS = (
+        "max_position_notional_pct",
+        "max_single_trade_risk_pct",
+        "max_daily_loss_pct",
+        "max_consecutive_losses",
+    )
+
+    def account_view(self) -> dict[str, float | int]:
+        """给 UI 展示的「实际生效值」。"""
+
+        return {
+            "max_leverage": self.max_leverage,
+            "max_position_notional_pct": float(self.max_position_notional_pct),
+            "max_single_trade_risk_pct": float(self.max_single_trade_risk_pct),
+            "max_daily_loss_pct": float(self.max_daily_loss_pct),
+            "max_consecutive_losses": self.max_consecutive_losses,
+        }
+
+    def tightened(self, overrides: Mapping[str, object] | None) -> "RiskLimits":
+        """套用账户偏好，且只允许比平台更严。
+
+        每个值取 ``min(平台值, 账户值)`` —— 用户能把自己的安全绳收短，
+        但收不长。同时这也是一道防御：即便库里存了越界值，读取时也会被夹回。
+        """
+
+        if not overrides:
+            return self
+
+        def decimal_bounded(current: Decimal, key: str) -> Decimal:
+            raw = overrides.get(key)
+            if raw is None:
+                return current
+            try:
+                return min(current, Decimal(str(raw)))
+            except InvalidOperation:
+                return current  # 存了脏值就退回平台值，不放行
+
+        def int_bounded(current: int, key: str) -> int:
+            raw = overrides.get(key)
+            if raw is None:
+                return current
+            try:
+                return min(current, int(str(raw)))
+            except ValueError:
+                return current
+
+        return replace(
+            self,
+            max_position_notional_pct=decimal_bounded(
+                self.max_position_notional_pct, "max_position_notional_pct"
+            ),
+            max_single_trade_risk_pct=decimal_bounded(
+                self.max_single_trade_risk_pct, "max_single_trade_risk_pct"
+            ),
+            max_daily_loss_pct=decimal_bounded(self.max_daily_loss_pct, "max_daily_loss_pct"),
+            max_consecutive_losses=int_bounded(
+                self.max_consecutive_losses, "max_consecutive_losses"
+            ),
         )
 
 
@@ -143,5 +206,7 @@ class RiskEngine:
     def __init__(self, settings: Settings | None = None) -> None:
         self.limits = RiskLimits.from_settings(settings or get_settings())
 
-    def evaluate(self, **kwargs: Any) -> RiskDecision:
-        return evaluate_risk(limits=self.limits, **kwargs)
+    def evaluate(self, *, limits: RiskLimits | None = None, **kwargs: Any) -> RiskDecision:
+        """``limits`` 用于按账户收紧；不传则用平台默认。"""
+
+        return evaluate_risk(limits=limits or self.limits, **kwargs)

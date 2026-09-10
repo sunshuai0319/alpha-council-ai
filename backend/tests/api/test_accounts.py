@@ -6,9 +6,99 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_cycle_service
 from app.auth.dependencies import get_current_user
+from app.config import Settings
 from app.db.models import Base, TradingAccount, User
 from app.main import app
 from app.services.cycle import TradingCycleService
+
+
+def _account_client(tmp_path, name: str = "limits.db"):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / name}")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    db.add(User(id="user-account", clerk_user_id="clerk-account"))
+    db.commit()
+    service = TradingCycleService(db=db, settings=Settings(max_daily_loss_pct=0.05))
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="user-account")
+    app.dependency_overrides[get_cycle_service] = lambda: service
+    return TestClient(app), db
+
+
+def _create(client) -> str:
+    response = client.post(
+        "/api/accounts",
+        json={
+            "api_key_ref": "k",
+            "api_secret_ref": "s",
+            "passphrase_ref": "p",
+            "environment": "virtual",
+        },
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+def test_account_risk_limits_are_stored_and_echoed(tmp_path) -> None:
+    client, _ = _account_client(tmp_path)
+    try:
+        account_id = _create(client)
+
+        response = client.patch(
+            f"/api/accounts/{account_id}",
+            json={
+                "enabled": True,
+                "risk_limits": {
+                    "max_position_notional_pct": 0.05,
+                    "max_daily_loss_pct": 0.02,
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["risk_limits"] == {
+            "max_position_notional_pct": 0.05,
+            "max_daily_loss_pct": 0.02,
+        }
+        # UI 需要平台上限来约束输入范围
+        assert body["platform_limits"]["max_daily_loss_pct"] == 0.05
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_account_risk_limits_reject_loosening_beyond_the_platform(tmp_path) -> None:
+    """调松必须明确报错并说清上限，而不是静默夹回。"""
+    client, _ = _account_client(tmp_path)
+    try:
+        account_id = _create(client)
+
+        response = client.patch(
+            f"/api/accounts/{account_id}",
+            json={"enabled": True, "risk_limits": {"max_daily_loss_pct": 0.5}},
+        )
+
+        assert response.status_code == 422
+        assert "max_daily_loss_pct" in response.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_account_risk_limits_survive_an_enable_toggle(tmp_path) -> None:
+    """切换启用状态不能把已设的风险偏好清掉。"""
+    client, _ = _account_client(tmp_path)
+    try:
+        account_id = _create(client)
+        client.patch(
+            f"/api/accounts/{account_id}",
+            json={"enabled": True, "risk_limits": {"max_position_notional_pct": 0.05}},
+        )
+
+        response = client.patch(f"/api/accounts/{account_id}", json={"enabled": False})
+
+        assert response.status_code == 200
+        assert response.json()["risk_limits"] == {"max_position_notional_pct": 0.05}
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_account_api_stores_ui_credentials_for_virtual_account(tmp_path) -> None:

@@ -300,7 +300,10 @@ class TradingCycleService:
             (position.leverage for position in positions if position.leverage > 0),
             proposal.leverage,
         )
+        account = self._account_for_user(state.user_id)
+        limits = self.risk_engine.limits.tightened(account.risk_limits if account else None)
         return self.risk_engine.evaluate(
+            limits=limits,
             equity=balance.balance,
             current_notional=current_notional,
             proposed_notional=proposed_notional,

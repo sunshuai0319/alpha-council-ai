@@ -58,6 +58,40 @@ def test_daily_trade_limit_still_allows_reducing() -> None:
     assert _risk(daily_trades=20, is_reducing=True, limits=limits).allowed is True
 
 
+def test_account_limits_can_only_tighten_the_platform_limits() -> None:
+    """用户只能把风控调得更严。
+
+    调松等于剪掉自己的安全绳，所以超出平台上限的取值一律取平台值。
+    """
+    platform = RiskLimits(
+        max_position_notional_pct=Decimal("0.20"),
+        max_daily_loss_pct=Decimal("0.05"),
+    )
+
+    tightened = platform.tightened(
+        {"max_position_notional_pct": 0.10, "max_daily_loss_pct": 0.50}
+    )
+
+    assert tightened.max_position_notional_pct == Decimal("0.10")
+    assert tightened.max_daily_loss_pct == Decimal("0.05")
+
+
+def test_account_limits_leave_unspecified_values_alone() -> None:
+    platform = RiskLimits(max_leverage=20)
+
+    tightened = platform.tightened({"max_daily_loss_pct": 0.01})
+
+    assert tightened.max_daily_loss_pct == Decimal("0.01")
+    assert tightened.max_leverage == 20  # 没提到的保持平台值
+    assert tightened.max_consecutive_losses == platform.max_consecutive_losses
+
+
+def test_no_account_limits_means_platform_limits() -> None:
+    platform = RiskLimits()
+    assert platform.tightened(None) is platform
+    assert platform.tightened({}) is platform
+
+
 def test_daily_loss_pct_measures_drawdown_from_day_start() -> None:
     assert daily_loss_pct(day_start_equity=Decimal(10000), current_equity=Decimal(9500)) == Decimal("0.05")
 

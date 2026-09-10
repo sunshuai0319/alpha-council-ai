@@ -254,6 +254,34 @@ def test_daily_trades_counts_only_filled_entries(tmp_path) -> None:
         assert service._daily_trades("u-1") == 2
 
 
+def test_account_risk_limits_tighten_the_gate(tmp_path) -> None:
+    """账户偏好生效：用户把仓位上限调小后，同样的提案会被拒。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'limits.db'}")
+    Base.metadata.create_all(engine)
+
+    settings = Settings(max_position_notional_pct=0.20, max_leverage=20)
+
+    def decision_for(risk_limits):
+        with Session(engine) as db:
+            db.query(TradingAccount).delete()
+            db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True, risk_limits=risk_limits))
+            db.commit()
+            exchange = RecordingExchange(balance=Decimal(10000))
+            service = TradingCycleService(
+                db=db, settings=settings, exchange_factory=lambda: exchange
+            )
+            return service._evaluate_proposal(exchange, _long_state(pct=0.1))
+
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.commit()
+
+    # 平台上限 0.20：10% 的提案通过
+    assert "max_notional" not in decision_for(None).reasons
+    # 用户收紧到 0.05：同样的提案被拒
+    assert "max_notional" in decision_for({"max_position_notional_pct": 0.05}).reasons
+
+
 def test_global_kill_switch_stops_all_trading() -> None:
     """运维需要一键停掉所有账户的开关，而不是逐个暂停。"""
     service = TradingCycleService(

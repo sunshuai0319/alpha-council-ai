@@ -2,12 +2,14 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 
 from app.api.dependencies import get_cycle_service
 from app.auth.dependencies import get_current_user
+from app.config import Settings
 from app.db.models import TradingAccount
+from app.risk.engine import RiskLimits
 from app.services.cycle import TradingCycleService
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
@@ -28,17 +30,61 @@ class AccountCreate(BaseModel):
         return value
 
 
+class AccountRiskLimits(BaseModel):
+    """账户级风控偏好。只能收得更紧，越界由 `_validate` 明确拒绝。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_position_notional_pct: float | None = Field(default=None, gt=0, le=1)
+    max_single_trade_risk_pct: float | None = Field(default=None, gt=0, le=1)
+    max_daily_loss_pct: float | None = Field(default=None, gt=0, le=1)
+    max_consecutive_losses: int | None = Field(default=None, ge=1)
+
+
 class AccountUpdate(BaseModel):
     enabled: bool
+    #: 不收 None 之外的缺省语义：不传就是不动已存的值。
+    risk_limits: AccountRiskLimits | None = None
 
 
-def _response(account: TradingAccount) -> dict[str, object]:
+def _platform_limits(settings: Settings) -> dict[str, float | int]:
+    return {
+        "max_position_notional_pct": settings.max_position_notional_pct,
+        "max_single_trade_risk_pct": settings.max_single_trade_risk_pct,
+        "max_daily_loss_pct": settings.max_daily_loss_pct,
+        "max_consecutive_losses": settings.max_consecutive_losses,
+    }
+
+
+def _validate_risk_limits(
+    limits: AccountRiskLimits, settings: Settings
+) -> dict[str, float | int]:
+    """越界直接报错并说清上限 —— 静默夹回会让用户以为自己设成了。"""
+
+    provided = limits.model_dump(exclude_none=True)
+    platform = _platform_limits(settings)
+    for key, value in provided.items():
+        if value > platform[key]:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{key} cannot exceed the platform limit {platform[key]}",
+            )
+    return provided
+
+
+def _response(account: TradingAccount, settings: Settings | None = None) -> dict[str, object]:
+    effective = account.risk_limits
+    if settings is not None:
+        effective = RiskLimits.from_settings(settings).tightened(account.risk_limits).account_view()
     return {
         "id": account.id,
         "provider": account.provider,
         "environment": account.environment,
         "enabled": account.enabled,
         "configured": bool(account.api_key_ref and account.api_secret_ref and account.passphrase_ref),
+        "risk_limits": account.risk_limits,
+        "effective_risk_limits": effective,
+        "platform_limits": _platform_limits(settings) if settings else None,
     }
 
 
@@ -51,7 +97,7 @@ def list_accounts(
     if db is None:
         return {"items": []}
     accounts = db.scalars(select(TradingAccount).where(TradingAccount.user_id == user.id)).all()
-    return {"items": [_response(account) for account in accounts]}
+    return {"items": [_response(account, service.settings) for account in accounts]}
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -76,7 +122,7 @@ def create_account(
     db.add(account)
     db.commit()
     db.refresh(account)
-    return _response(account)
+    return _response(account, service.settings)
 
 
 @router.patch("/{account_id}")
@@ -97,7 +143,10 @@ def update_account(
     )
     if account is None:
         raise HTTPException(status_code=404, detail="Trading account not found")
+    if payload.risk_limits is not None:
+        # 整体替换：前端每次提交完整的一份偏好，避免残留旧键。
+        account.risk_limits = _validate_risk_limits(payload.risk_limits, service.settings) or None
     account.enabled = payload.enabled
     db.commit()
     db.refresh(account)
-    return _response(account)
+    return _response(account, service.settings)

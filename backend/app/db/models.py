@@ -98,6 +98,9 @@ class TradingAccount(TimestampMixin, Base):
     api_secret_ref: Mapped[str | None] = mapped_column(String(256), nullable=True)
     passphrase_ref: Mapped[str | None] = mapped_column(String(256), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: 账户级风控偏好，只允许比平台上限更严（见 RiskLimits.tightened）。
+    #: NULL 表示完全使用平台默认。
+    risk_limits: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class MarketCandle(Base):
