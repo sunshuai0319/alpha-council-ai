@@ -90,6 +90,20 @@ h1 { font: 500 clamp(37px, 5vw, 64px)/.99 var(--serif); letter-spacing: -.045em;
 .alert-banner svg { flex: 0 0 auto; }
 .alert-banner button, .toast button { margin-left: auto; padding: 6px 9px; border-color: rgba(255,192,181,.35); background: transparent; font-size: 11px; }
 .toast { border-color: rgba(221,255,105,.35); color: var(--lime); background: rgba(221,255,105,.06); }
+.account-hint { margin-top: 14px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.account-list { display: grid; gap: 10px; }
+.account-row-card { display: flex; justify-content: space-between; align-items: center; gap: 16px; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: rgba(21,33,36,.55); }
+.account-meta b, .account-meta span { display: block; }
+.account-meta b { font-size: 13px; }
+.account-meta span { margin-top: 3px; color: var(--muted); font-size: 11px; }
+.account-row-actions { display: flex; align-items: center; gap: 12px; }
+.account-status { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .11em; color: var(--muted); }
+.account-status b { color: var(--lime); font-weight: 600; }
+.account-form { display: grid; gap: 10px; margin-top: 16px; }
+.account-form input { width: 100%; padding: 11px 13px; color: var(--paper); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; font: 13px var(--sans); }
+.account-form input::placeholder { color: #637576; }
+.account-form input:focus { outline: 2px solid var(--lime); outline-offset: 1px; }
+.account-form .button { justify-self: start; margin-top: 2px; }
 .section-block { margin-top: 49px; }
 .section-heading { align-items: flex-end; margin-bottom: 20px; }
 .section-heading h2 { display: flex; align-items: center; gap: 9px; margin-top: 7px; font: 500 27px/1 var(--serif); letter-spacing: -.03em; }

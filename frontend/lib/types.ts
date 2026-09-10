@@ -79,6 +79,14 @@ export type RiskEvent = {
   created_at?: string | null
 }
 
+export type TradingAccount = {
+  id: string
+  provider: string
+  environment: string
+  enabled: boolean
+  configured: boolean
+}
+
 export type ItemsResponse<T> = {
   items: T[]
 }

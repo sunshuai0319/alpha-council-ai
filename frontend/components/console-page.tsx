@@ -6,16 +6,17 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, PortfolioTable, RiskBadge, VirtualBadge } from "@/components/console-primitives"
 import { ApiError, apiRequest } from "@/lib/api"
-import type { DashboardView, Decision, ItemsResponse, MarketSnapshot, Position, RiskEvent } from "@/lib/types"
+import type { DashboardView, Decision, ItemsResponse, MarketSnapshot, Position, RiskEvent, TradingAccount } from "@/lib/types"
 
 type DashboardData = {
   market: MarketSnapshot[]
   decisions: Decision[]
   positions: Position[]
   events: RiskEvent[]
+  accounts: TradingAccount[]
 }
 
-const emptyData: DashboardData = { market: [], decisions: [], positions: [], events: [] }
+const emptyData: DashboardData = { market: [], decisions: [], positions: [], events: [], accounts: [] }
 
 function useDashboardData() {
   const { getToken, isLoaded, isSignedIn } = useAuth()
@@ -26,13 +27,14 @@ function useDashboardData() {
   const refresh = useCallback(async () => {
     if (!isLoaded || !isSignedIn) return
     try {
-      const [market, decisions, portfolio, events] = await Promise.all([
+      const [market, decisions, portfolio, events, accounts] = await Promise.all([
         apiRequest<ItemsResponse<MarketSnapshot>>("/market", getToken),
         apiRequest<ItemsResponse<Decision>>("/decisions", getToken),
         apiRequest<ItemsResponse<Position>>("/portfolio", getToken),
         apiRequest<ItemsResponse<RiskEvent>>("/events", getToken),
+        apiRequest<ItemsResponse<TradingAccount>>("/accounts", getToken),
       ])
-      setData({ market: market.items, decisions: decisions.items, positions: portfolio.items, events: events.items })
+      setData({ market: market.items, decisions: decisions.items, positions: portfolio.items, events: events.items, accounts: accounts.items })
       setError(null)
       setUpdatedAt(new Date())
     } catch (cause) {
@@ -68,6 +70,89 @@ function ControlPanel({ status, onToggle, busy }: { status: string; onToggle: ()
 
 function SyncNote({ error, updatedAt }: { error: string | null; updatedAt: Date | null }) {
   return <div className="sync-note"><span className={error ? "sync-dot sync-dot--error" : "sync-dot"} />{error ? "offline" : `synced ${updatedAt ? formatDate(updatedAt.toISOString()) : "—"}`}</div>
+}
+
+function AccountCard({ accounts, refresh }: { accounts: TradingAccount[]; refresh: () => Promise<void> }) {
+  const { getToken } = useAuth()
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+  const [apiKey, setApiKey] = useState("")
+  const [apiSecret, setApiSecret] = useState("")
+  const [passphrase, setPassphrase] = useState("")
+
+  const createAccount = async () => {
+    setBusy(true)
+    try {
+      await apiRequest("/accounts", getToken, {
+        method: "POST",
+        body: JSON.stringify({
+          api_key_ref: apiKey || "pending",
+          api_secret_ref: apiSecret || "pending",
+          passphrase_ref: passphrase || "pending",
+          environment: "virtual",
+          provider: "weex",
+        }),
+      })
+      setMessage("Trading account created. Enable it and the worker runs virtual cycles on the next tick.")
+      setApiKey("")
+      setApiSecret("")
+      setPassphrase("")
+      await refresh()
+    } catch {
+      setMessage("Could not create the trading account.")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggleEnabled = async (account: TradingAccount) => {
+    setBusy(true)
+    try {
+      await apiRequest(`/accounts/${account.id}`, getToken, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: !account.enabled }),
+      })
+      setMessage(account.enabled ? "Account disabled. Cycles will stop for this user." : "Account enabled. The worker will run virtual cycles on the next tick.")
+      await refresh()
+    } catch {
+      setMessage("Could not update the account.")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return <section className="section-block">
+    <div className="section-heading">
+      <div><span className="eyebrow">trading account</span><h2>WEEX virtual account</h2></div>
+      <span className="section-index">per user</span>
+    </div>
+    {accounts.length ? (
+      <div className="account-list">
+        {accounts.map((account) => (
+          <div className="account-row-card" key={account.id}>
+            <div className="account-meta"><b>{account.provider} · {account.environment}</b><span>{account.configured ? "credentials referenced" : "no credentials referenced"}</span></div>
+            <div className="account-row-actions">
+              <span className="account-status">{account.enabled ? <b>enabled</b> : "disabled"}</span>
+              <button className={account.enabled ? "button button--quiet" : "button button--signal"} disabled={busy} onClick={() => void toggleEnabled(account)}>
+                {account.enabled ? "Disable" : "Enable"}
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    ) : (
+      <p className="account-hint">No trading account yet. The committee only runs automated virtual cycles once a WEEX virtual account is created and enabled for this user.</p>
+    )}
+    {accounts.length ? null : (
+      <div className="account-form">
+        <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="WEEX API key (reference)" autoComplete="off" />
+        <input value={apiSecret} onChange={(event) => setApiSecret(event.target.value)} placeholder="WEEX API secret (reference)" autoComplete="off" />
+        <input value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder="WEEX API passphrase (reference)" autoComplete="off" />
+        <button className="button button--signal" disabled={busy} onClick={() => void createAccount()}>Create virtual account</button>
+      </div>
+    )}
+    {message ? <p className="account-hint" role="status">{message}</p> : null}
+  </section>
 }
 
 export function ConsolePage({ view }: { view: DashboardView }) {
@@ -124,6 +209,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
       <section className="telemetry-panel"><div className="eyebrow">current telemetry</div><div className="telemetry-price">{latestMarket ? `$${formatNumber(latestMarket.last_price, 2)}` : "—"}</div><div className="telemetry-symbol">{latestMarket?.symbol ?? "BTC-USDT"}<span>last price</span></div><div className="telemetry-grid"><span><b>{latestMarket?.funding_rate == null ? "—" : formatPercent(latestMarket.funding_rate)}</b><small>funding</small></span><span><b>{latestMarket?.volume_24h == null ? "—" : formatNumber(latestMarket.volume_24h, 0)}</b><small>24h volume</small></span></div></section>
     </div>
     <ControlPanel status={controlStatus} onToggle={() => void changeControl()} busy={controlBusy} />
+    <AccountCard accounts={data.accounts} refresh={refresh} />
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">at a glance</span><h2>System readout</h2></div><span className="section-index">01 / 04</span></div><div className="metrics-grid"><Metric label="Open virtual positions" value={String(data.positions.length)} detail={data.positions.length ? `${data.positions[0].symbol} active` : "flat book"} /><Metric label="Unrealized PnL" value={formatSignedPnl(pnl)} detail="from synced positions" tone={pnl >= 0 ? "positive" : "negative"} /><Metric label="Last committee action" value={latest ? latest.action : "—"} detail={latest ? formatDate(latest.created_at) : "awaiting first cycle"} tone="signal" /><Metric label="Risk events" value={String(data.events.length)} detail="hard gate history" /></div></section>
     <div className="two-column"><section className="section-block"><div className="section-heading"><div><span className="eyebrow">decision trace</span><h2>What the council decided</h2></div><a href="/committee">View committee <span>↗</span></a></div>{latest ? <DecisionCard decision={latest} /> : <EmptyState title="No decision trace yet" body="Run the worker after the API and WEEX virtual credentials are configured." />}</section><section className="section-block"><div className="section-heading"><div><span className="eyebrow">book state</span><h2>Virtual portfolio</h2></div><a href="/trades">Open ledger <span>↗</span></a></div><PortfolioTable positions={data.positions.slice(0, 3)} /></section></div>
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">market feed</span><h2>Recent snapshots</h2></div><span className="section-index">08 sec refresh</span></div><MarketStrip snapshots={data.market} /></section>
