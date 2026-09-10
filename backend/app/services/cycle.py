@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -37,6 +38,8 @@ from app.rag.milvus import MilvusVectorStore
 from app.rag.retriever import Retriever
 from app.reconciliation.service import ReconciliationService
 from app.risk.engine import RiskEngine
+
+logger = logging.getLogger(__name__)
 
 
 class ControlRegistry:
@@ -119,6 +122,7 @@ class TradingCycleService:
     ) -> CycleResult:
         cycle_id = str(uuid4())
         started_at = int(datetime.now(UTC).timestamp() * 1000)
+        logger.info("cycle start: user=%s symbol=%s", user_id, symbol)
         exchange = self.exchange_factory()
         collector = WeexCollector(exchange)
         candle_result, snapshot_result = collector.collect(
@@ -127,6 +131,14 @@ class TradingCycleService:
             limit=100,
         )
         snapshot = snapshot_result.items[0] if snapshot_result.items else None
+        logger.info(
+            "cycle market: user=%s symbol=%s price=%s candles=%d errors=%d",
+            user_id,
+            symbol,
+            snapshot.last_price if snapshot else None,
+            len(candle_result.items),
+            len(candle_result.errors) + len(snapshot_result.errors),
+        )
         state = TradingCycleState(
             user_id=user_id,
             cycle_id=cycle_id,
@@ -148,6 +160,7 @@ class TradingCycleService:
         state = state.model_copy(update={"data_versions": {"technical_indicators": INDICATOR_VERSION}})
         self._persist_market_data(candle_result.items, snapshot_result.items)
         if self.control_status(user_id) == "PAUSED":
+            logger.info("cycle paused: user=%s symbol=%s (no committee, no order)", user_id, symbol)
             state.errors.append("paused")
             state = state.model_copy(
                 update={"trade_proposal": self._hold_proposal(state, "paused")}
@@ -160,9 +173,37 @@ class TradingCycleService:
                 if llm is not None
                 else self.graph_factory()
             )
+            logger.info("cycle committee: user=%s symbol=%s (running agents + LLM)", user_id, symbol)
             state = graph.invoke(state)
+            proposal = state.trade_proposal
+            logger.info(
+                "cycle proposal: user=%s symbol=%s action=%s confidence=%s evidence=%d agents(market=%s,quant=%s,macro=%s)",
+                user_id,
+                symbol,
+                proposal.action.value if proposal else "NONE",
+                proposal.confidence if proposal else None,
+                len(state.retrieved_evidence),
+                state.market_analysis.status if state.market_analysis else None,
+                state.quant_analysis.status if state.quant_analysis else None,
+                state.macro_analysis.status if state.macro_analysis else None,
+            )
             risk_decision = self._evaluate_proposal(exchange, state)
+            logger.info(
+                "cycle risk: user=%s symbol=%s status=%s reasons=%s",
+                user_id,
+                symbol,
+                risk_decision.status.value,
+                risk_decision.reasons,
+            )
             execution = self._execute(exchange, state, risk_decision)
+            logger.info(
+                "cycle execution: user=%s symbol=%s status=%s order_id=%s message=%s",
+                user_id,
+                symbol,
+                execution.status if execution else "NO_ORDER",
+                execution.exchange_order_id if execution else None,
+                execution.message if execution else None,
+            )
             state = state.model_copy(update={"risk_assessment": risk_decision, "execution_result": execution})
             account = self._account_for_user(user_id)
             if account is not None:
@@ -175,6 +216,14 @@ class TradingCycleService:
                 )
         persisted = self._persist(result_state=state, risk=risk_decision, execution=execution)
         result = CycleResult(state, risk_decision, execution, persisted)
+        logger.info(
+            "cycle done: user=%s symbol=%s action=%s risk=%s persisted=%s",
+            user_id,
+            symbol,
+            result.action.value,
+            risk_decision.status.value,
+            persisted,
+        )
         self._memory_results.setdefault(user_id, []).append(result)
         if snapshot:
             self._memory_market.append(snapshot.model_dump())
