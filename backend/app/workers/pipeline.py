@@ -154,6 +154,12 @@ class DocumentPipeline:
             # autoflush=False 的会话不会在查询时自动写入；先 flush 让父记录落库，
             # 既保证 document_summaries 外键可解析，也让后续去重能查到本批次记录。
             self.db.flush()
+        if not prepared.cleaned_text:
+            # 空内容文档没有可分块可向量化的正文，标记为 SKIPPED 而不是 INDEXED，
+            # 避免出现「已索引但 Milvus 无向量」的假状态，也不再重复调 Ark。
+            record.processing_status = "SKIPPED"
+            record.processing_error = None
+            return None
         record.processing_attempts = (record.processing_attempts or 0) + 1
         try:
             summary: DocumentSummary = self.summary_client.summarize(prepared)
