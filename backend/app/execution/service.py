@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from app.domain.enums import Action
+from app.domain.enums import Action, RiskStatus
 from app.domain.schemas import ExecutionResult, RiskDecision, TradeProposal
 from app.exchange.base import ExchangeClient, ExchangeError, ExchangeOrder, OrderRequest
 
@@ -144,5 +144,5 @@ def execute_idempotently(
         model_version="worker",
         trace_id="worker",
     )
-    actual_risk = risk_decision or RiskDecision(status="ALLOWED")
+    actual_risk = risk_decision or RiskDecision(status=RiskStatus.ALLOWED)
     return ExecutionService().execute(exchange, actual_proposal, actual_risk, quantity=quantity)

@@ -133,14 +133,14 @@ class DocumentRepository:
             self._records[record.document_id] = record
             return record
 
-        existing = self.db.scalar(
+        existing_record = self.db.scalar(
             select(SourceDocument).where(
                 or_(SourceDocument.canonical_url == canonical_url, SourceDocument.content_hash == digest)
             )
         )
-        if existing:
-            return existing
-        record = SourceDocument(
+        if existing_record:
+            return existing_record
+        db_record = SourceDocument(
             id=str(uuid4()),
             source=source,
             canonical_url=canonical_url,
@@ -151,9 +151,9 @@ class DocumentRepository:
             language=detect_language(content),
             published_at=published_at,
         )
-        self.db.add(record)
+        self.db.add(db_record)
         self.db.flush()
-        return record
+        return db_record
 
 
 def prepare_document(document: DocumentInput, document_id: str | None = None) -> ProcessedDocument:

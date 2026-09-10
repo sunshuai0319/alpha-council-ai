@@ -130,7 +130,7 @@ class Retriever:
                     asset=str(entity.get("asset", "")),
                     event_type=str(entity.get("event_type", "")),
                     impact_horizon=str(entity.get("impact_horizon", "")),
-                    vector_score=float(hit.get("distance", hit.get("score", 0))) if isinstance(hit, dict) else 0,
+                    vector_score=float(str(hit.get("distance", hit.get("score", 0)) or 0)) if isinstance(hit, dict) else 0,
                     rerank_score=float(score),
                     published_at=published_at if isinstance(published_at, datetime) else None,
                 )

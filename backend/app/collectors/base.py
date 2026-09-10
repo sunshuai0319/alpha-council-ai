@@ -1,14 +1,11 @@
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TypeVar
-
-ItemT = TypeVar("ItemT")
 
 
 @dataclass
 class CollectorResult[T]:
     source: str
-    items: list[ItemT] = field(default_factory=list)
+    items: list[T] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     collected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 

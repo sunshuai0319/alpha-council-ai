@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 from time import time
+from typing import Any
 
 from app.config import Settings, get_settings
 from app.domain.enums import RiskStatus
@@ -96,7 +97,7 @@ def evaluate_risk(
     return RiskDecision(
         status=status,
         reasons=reasons,
-        adjusted_position_size_pct=(proposed_value / equity_value if equity_value > 0 else None),
+        adjusted_position_size_pct=(float(proposed_value / equity_value) if equity_value > 0 else None),
         checked_at=checked_at or int(time() * 1000),
         metadata={
             "max_leverage": active_limits.max_leverage,
@@ -110,5 +111,5 @@ class RiskEngine:
     def __init__(self, settings: Settings | None = None) -> None:
         self.limits = RiskLimits.from_settings(settings or get_settings())
 
-    def evaluate(self, **kwargs: object) -> RiskDecision:
+    def evaluate(self, **kwargs: Any) -> RiskDecision:
         return evaluate_risk(limits=self.limits, **kwargs)

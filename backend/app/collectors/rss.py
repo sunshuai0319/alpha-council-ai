@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-import feedparser
+import feedparser  # type: ignore[import-untyped]
 import httpx
 
 from app.collectors.base import CollectorResult
@@ -48,7 +48,7 @@ def _published_at(entry: Any) -> datetime | None:
     parsed = entry.get("published_parsed") or entry.get("updated_parsed")
     if parsed is None:
         return None
-    return datetime(*parsed[:6], tzinfo=UTC)
+    return datetime(*parsed[:6]).replace(tzinfo=UTC)
 
 
 def _entry_summary(entry: Any) -> str:

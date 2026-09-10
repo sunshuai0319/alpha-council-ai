@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
-import feedparser
+import feedparser  # type: ignore[import-untyped]
 import httpx
 
 from app.collectors.base import CollectorResult
