@@ -9,9 +9,15 @@ import { VirtualBadge } from "@/components/console-primitives"
 import { LanguageSwitcher } from "@/components/language-switcher"
 import { useI18n } from "@/lib/i18n"
 
-const hasClerkKey = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY)
-
-export function DashboardShell({ children }: { children: React.ReactNode }) {
+// 由服务端 layout 传入，不在这里读 process.env：客户端组件里的 NEXT_PUBLIC_*
+// 会被 Next 在**构建时**内联，导致换密钥必须重新构建镜像。
+export function DashboardShell({
+  children,
+  clerkEnabled,
+}: {
+  children: React.ReactNode
+  clerkEnabled: boolean
+}) {
   const pathname = usePathname()
   const { t } = useI18n()
   const links = [
@@ -44,7 +50,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         <div className="sidebar-bottom">
           <div className="guardrail-note"><CircleAlert size={16} /><span>{t("landing.boundary")}</span></div>
           <VirtualBadge />
-          <div className="account-row"><LanguageSwitcher />{hasClerkKey ? <UserButton afterSignOutUrl="/" /> : <span className="account-placeholder">●</span>}<span>{t("nav.account")}</span></div>
+          <div className="account-row"><LanguageSwitcher />{clerkEnabled ? <UserButton afterSignOutUrl="/" /> : <span className="account-placeholder">●</span>}<span>{t("nav.account")}</span></div>
         </div>
       </aside>
       <main className="main-canvas">{children}</main>

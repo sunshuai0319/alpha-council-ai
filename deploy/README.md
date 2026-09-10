@@ -9,12 +9,26 @@
 
 前端与后端同源，因此**不需要任何 CORS 配置**；前端用相对路径 `NEXT_PUBLIC_API_BASE_URL=/api` 调用。
 
+## 环境文件分工
+
+只有一处 **compose 文件**（仓库根的 `docker-compose.yml`），但有三份 env，各管一段：
+
+| 文件 | 谁读 | 装什么 |
+|---|---|---|
+| `.env`（根） | docker compose | 网关端口、模型目录、前端构建参数 |
+| `backend/.env` | api + worker（本地与容器共用） | 数据库 / Milvus / Ark / Clerk 后端 / 风控 |
+| `frontend/.env` | `npm run dev`；容器只取其中的 `CLERK_SECRET_KEY` | 前端本地开发 |
+
+前端公开变量在 `.env`（根）与 `frontend/.env` 中各有一份，这是**机制决定的**：Next 在构建时
+把它们内联进 bundle 和 `middleware.js`，而 compose 的变量替换只能读项目根的 `.env`。
+部署时以**根 `.env` 为准**（build args 与运行期环境同源，不会漂移）。
+
 ## 前置条件
 
 1. **Postgres 与 Milvus 已在运行**（本方案不启动它们），在 `backend/.env` 里配好 `DATABASE_URL` / `MILVUS_URI`。
 2. **BGE 模型已在部署主机上**（约 12.8G，不会打进镜像）。在根 `.env` 里设 `MODEL_DIR`
    指向同时包含 `bge-m3` 与 `bge-reranker-v2-m3` 的目录。注意这是**部署主机**的路径。
-3. 两份 env：`cp .env.example .env`、确认 `backend/.env` 存在。
+3. `cp .env.example .env` 填好，确认 `backend/.env` 与 `frontend/.env` 存在。
 
 ## 启动
 
