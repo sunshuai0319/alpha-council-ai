@@ -31,7 +31,7 @@ from app.domain.schemas import (
     TradeProposal,
     TradingCycleState,
 )
-from app.exchange.base import ExchangeBalance, ExchangeClient
+from app.exchange.base import ExchangeBalance, ExchangeClient, ExchangePosition
 from app.exchange.weex import WeexClient, WeexCredentials
 from app.execution.service import ExecutionService, stable_client_order_id
 from app.rag.embeddings import BGEEmbedder, BGEReranker
@@ -41,6 +41,20 @@ from app.reconciliation.service import ReconciliationService
 from app.risk.engine import RiskEngine, daily_loss_pct
 
 logger = logging.getLogger(__name__)
+
+
+def round_trip_pnl(position: ExchangePosition, exit_price: Decimal) -> Decimal | None:
+    """平仓回合的价差盈亏，**不含手续费**。
+
+    手续费在下单响应里拿不到（虚拟盘更是完全没有成交流水），所以这里只算价差；
+    口径偏宽松，会低估亏损。仓位数据不完整时返回 None，而不是猜一个 0。
+    """
+
+    if position.quantity == 0 or position.entry_value == 0:
+        return None
+    entry_price = abs(position.entry_value) / position.quantity
+    direction = Decimal(-1) if position.side.upper() == "SHORT" else Decimal(1)
+    return (exit_price - entry_price) * position.quantity * direction
 
 
 class ControlRegistry:
@@ -278,13 +292,41 @@ class TradingCycleService:
             stop_loss=proposal.stop_loss,
             entry=state.market_snapshot.last_price,
             daily_loss_pct=self._daily_loss_pct(state.user_id, current_equity),
-            consecutive_losses=0,
+            consecutive_losses=self._consecutive_losses(state.user_id),
             paused=False,
             data_age_s=data_age,
             side="LONG" if proposal.action is Action.LONG else "SHORT",
             is_reducing=is_reducing,
             checked_at=now_ms,
         )
+
+    def _consecutive_losses(self, user_id: str) -> int:
+        """最近连续亏损的平仓次数（跨品种，按账户计）。
+
+        只扫到熔断阈值那么多条：够判断是否触发即可。没有 realized_pnl 的记录
+        （平仓未成交）既不算亏损、也不打断此前连亏。
+        """
+
+        if self.db is None:
+            return 0
+        rows = self.db.scalars(
+            select(TradingDecision.execution_result)
+            .where(
+                TradingDecision.user_id == user_id,
+                TradingDecision.action == Action.CLOSE.value,
+            )
+            .order_by(TradingDecision.created_at.desc())
+            .limit(self.settings.max_consecutive_losses)
+        ).all()
+        streak = 0
+        for payload in rows:
+            pnl = (payload or {}).get("realized_pnl")
+            if pnl is None:
+                continue
+            if Decimal(str(pnl)) >= 0:
+                break
+            streak += 1
+        return streak
 
     def _daily_loss_pct(self, user_id: str, current_equity: Decimal) -> Decimal:
         """当日权益回撤，基准是当天观测到的第一笔快照。
@@ -326,6 +368,7 @@ class TradingCycleService:
             return None
         if state.market_snapshot is None or state.market_snapshot.last_price <= 0:
             return None
+        position: ExchangePosition | None = None
         if proposal.action is Action.CLOSE:
             positions = exchange.get_positions()
             position = next((item for item in positions if item.symbol == proposal.symbol), None)
@@ -343,7 +386,12 @@ class TradingCycleService:
             # 数量 = 名义价值 / 价格。漏掉余额因子会让下单量小 balance 倍。
             notional = balance.balance * Decimal(str(proposal.position_size_pct))
             quantity = notional / Decimal(str(state.market_snapshot.last_price))
-        return self.execution_service.execute(exchange, proposal, risk_decision, quantity=quantity)
+        execution = self.execution_service.execute(exchange, proposal, risk_decision, quantity=quantity)
+        if position is not None and execution.average_price is not None:
+            pnl = round_trip_pnl(position, execution.average_price)
+            if pnl is not None:
+                execution = execution.model_copy(update={"realized_pnl": pnl})
+        return execution
 
     @staticmethod
     def _balance_for(exchange: ExchangeClient) -> ExchangeBalance | None:

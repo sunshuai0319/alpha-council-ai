@@ -4,7 +4,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from app.db.models import AccountSnapshot, Base, TradingAccount, User
+from app.db.models import AccountSnapshot, Base, TradingAccount, TradingDecision, User
 from app.domain.enums import Action, RiskStatus
 from app.domain.schemas import (
     Candle,
@@ -13,7 +13,7 @@ from app.domain.schemas import (
     TradeProposal,
     TradingCycleState,
 )
-from app.exchange.base import ExchangeBalance, ExchangeOrder, OrderRequest
+from app.exchange.base import ExchangeBalance, ExchangeOrder, ExchangePosition, OrderRequest
 from app.services.cycle import TradingCycleService
 
 
@@ -155,6 +155,145 @@ def test_daily_loss_pct_uses_todays_first_snapshot(tmp_path) -> None:
 
         service = TradingCycleService(db=db)
         assert service._daily_loss_pct("u-1", Decimal(9500)) == Decimal("0.05")
+
+
+class ClosingExchange:
+    """持有一个多仓，平仓成交价由 exit_price 决定。"""
+
+    def __init__(self, *, exit_price: Decimal, side: str = "LONG") -> None:
+        self.requests: list[OrderRequest] = []
+        self._exit_price = exit_price
+        self._side = side
+
+    def get_balances(self) -> list[ExchangeBalance]:
+        return [ExchangeBalance("SUSDT", Decimal(10000), Decimal(10000), Decimal(0), Decimal(0))]
+
+    def get_positions(self) -> list[ExchangePosition]:
+        return [
+            ExchangePosition(
+                position_id="position-1",
+                symbol="BTC-USDT",
+                side=self._side,
+                quantity=Decimal(1),
+                entry_value=Decimal(100),  # 入场价 100
+                margin=Decimal(10),
+                leverage=1,
+                unrealized_pnl=Decimal(0),
+                liquidation_price=None,
+            )
+        ]
+
+    def place_order(self, request: OrderRequest) -> ExchangeOrder:
+        self.requests.append(request)
+        return ExchangeOrder(
+            order_id="order-1",
+            client_order_id=request.client_order_id,
+            symbol=request.symbol,
+            side=request.side,
+            position_side=request.position_side,
+            status="FILLED",
+            order_type=request.order_type,
+            quantity=request.quantity,
+            executed_quantity=request.quantity,
+            price=self._exit_price,
+            average_price=self._exit_price,
+            time_in_force=None,
+            created_at=None,
+            updated_at=None,
+        )
+
+
+def _close_state(*, side: str = "LONG") -> TradingCycleState:
+    state = _long_state()
+    proposal = state.trade_proposal.model_copy(
+        update={"action": Action.CLOSE, "side": "SELL" if side == "LONG" else "BUY"}
+    )
+    return state.model_copy(update={"trade_proposal": proposal})
+
+
+def test_close_records_realized_pnl_from_entry_and_fill_price() -> None:
+    """平仓必须记录这一回合的真实盈亏，连亏熔断才有输入。"""
+    winner = ClosingExchange(exit_price=Decimal(110))
+    service = TradingCycleService(exchange_factory=lambda: winner)
+    execution = service._execute(winner, _close_state(), RiskDecision(status=RiskStatus.ALLOWED))
+    assert execution.realized_pnl == Decimal(10)
+
+    loser = ClosingExchange(exit_price=Decimal(90))
+    service = TradingCycleService(exchange_factory=lambda: loser)
+    execution = service._execute(loser, _close_state(), RiskDecision(status=RiskStatus.ALLOWED))
+    assert execution.realized_pnl == Decimal(-10)
+
+
+def test_close_records_realized_pnl_for_short_positions() -> None:
+    """空头方向相反：出场价低于入场价才是盈利。"""
+    exchange = ClosingExchange(exit_price=Decimal(90), side="SHORT")
+    service = TradingCycleService(exchange_factory=lambda: exchange)
+
+    execution = service._execute(exchange, _close_state(side="SHORT"), RiskDecision(status=RiskStatus.ALLOWED))
+
+    assert execution.realized_pnl == Decimal(10)
+
+
+def test_consecutive_losses_counts_trailing_losing_closes(tmp_path) -> None:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'streak.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.commit()
+        base = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
+        for index, (action, pnl) in enumerate(
+            [("CLOSE", "5"), ("CLOSE", "-1"), ("CLOSE", "-2")]
+        ):
+            db.add(
+                TradingDecision(
+                    id=f"d-{index}",
+                    user_id="u-1",
+                    cycle_id=f"c-{index}",
+                    trace_id="t",
+                    symbol="BTC-USDT",
+                    action=action,
+                    status="REJECTED",
+                    execution_result={"realized_pnl": pnl},
+                    created_at=base.replace(minute=index),
+                )
+            )
+        db.commit()
+
+        service = TradingCycleService(db=db)
+        assert service._consecutive_losses("u-1") == 2
+
+
+def test_consecutive_loss_breaker_actually_reaches_the_risk_engine(tmp_path) -> None:
+    """连亏达到上限必须真的拒单。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'streak-breaker.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.commit()
+        base = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
+        for index in range(3):  # max_consecutive_losses 默认 3
+            db.add(
+                TradingDecision(
+                    id=f"d-{index}",
+                    user_id="u-1",
+                    cycle_id=f"c-{index}",
+                    trace_id="t",
+                    symbol="BTC-USDT",
+                    action="CLOSE",
+                    status="REJECTED",
+                    execution_result={"realized_pnl": "-1"},
+                    created_at=base.replace(minute=index),
+                )
+            )
+        db.commit()
+
+        exchange = RecordingExchange()
+        service = TradingCycleService(db=db, exchange_factory=lambda: exchange)
+
+        decision = service._evaluate_proposal(exchange, _long_state())
+
+        assert decision.allowed is False
+        assert "consecutive_loss_cooldown" in decision.reasons
 
 
 def test_daily_loss_breaker_actually_reaches_the_risk_engine(tmp_path) -> None:

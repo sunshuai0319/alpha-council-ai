@@ -114,6 +114,8 @@ class ExecutionService:
             proposal_id=proposal.proposal_id,
             client_order_id=client_order_id,
             exchange_order_id=order.order_id,
+            # 0 表示交易所没回报成交均价，等同于不可得。
+            average_price=order.average_price if order.average_price > 0 else None,
             message=message,
         )
 

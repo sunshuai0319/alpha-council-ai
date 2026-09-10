@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -80,6 +81,10 @@ class ExecutionResult(BaseModel):
     client_order_id: str
     exchange_order_id: str | None = None
     message: str | None = None
+    #: 成交均价；下单响应本身没有，由回查得到，拿不到时为 None。
+    average_price: Decimal | None = None
+    #: 平仓回合的价差盈亏（**不含手续费**），用于连亏熔断；非平仓时为 None。
+    realized_pnl: Decimal | None = None
 
 
 class TradingCycleState(BaseModel):
