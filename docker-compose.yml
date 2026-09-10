@@ -1,0 +1,93 @@
+# 统一部署：nginx 网关 + 前端 + 后端 + worker。
+#
+# 只管应用。Postgres 与 Milvus 是外部已有服务，通过 backend/.env 里的
+# DATABASE_URL / MILVUS_URI 连接，不在这里起。
+#
+# 两个 env 文件，各管一段：
+#   ./.env          网关端口、前端（NEXT_PUBLIC_*，构建与运行都要）、模型目录
+#   ./backend/.env  后端与 worker
+#
+# 常用命令：
+#   docker compose up -d --build
+#   docker compose logs -f worker
+#   docker compose build web        # 改了 NEXT_PUBLIC_* 之后必须重建前端
+
+name: alpha-council-ai
+
+# 前端公开变量：构建时要（内联进 bundle），运行期也要（中间件读 SIGN_IN_URL）
+x-clerk-public: &clerk-public
+  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+  NEXT_PUBLIC_CLERK_SIGN_IN_URL: ${NEXT_PUBLIC_CLERK_SIGN_IN_URL:-/sign-in}
+  NEXT_PUBLIC_CLERK_SIGN_UP_URL: ${NEXT_PUBLIC_CLERK_SIGN_UP_URL:-/sign-up}
+  NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL: ${NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL:-/dashboard}
+  NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL: ${NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL:-/dashboard}
+
+# BGE 模型共 12.8G，不可能打进镜像，只能从宿主机只读挂载。
+# 容器内路径固定为 /models，因此覆盖 backend/.env 里的宿主机路径。
+x-model-volumes: &model-volumes
+  - ${MODEL_DIR:?MODEL_DIR 必须指向同时包含 bge-m3 与 bge-reranker-v2-m3 的目录}:/models:ro
+
+x-model-env: &model-env
+  EMBEDDING_MODEL_PATH: /models/bge-m3
+  RERANKER_MODEL_PATH: /models/bge-reranker-v2-m3
+
+services:
+  api:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      <<: *model-env
+    volumes: *model-volumes
+    # 迁移是幂等的，起服务前先补齐表结构
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      <<: *model-env
+    volumes: *model-volumes
+    depends_on:
+      api:
+        condition: service_healthy
+    command: python -m workers.scheduler
+    # worker 只连数据库与交易所，不对外暴露端口
+
+  web:
+    build:
+      context: ./frontend
+      # NEXT_PUBLIC_* 在构建时内联，改了要重新构建镜像
+      args:
+        NEXT_PUBLIC_API_BASE_URL: /api
+        <<: *clerk-public
+    restart: unless-stopped
+    # 运行期也需要：中间件读 CLERK_SIGN_IN_URL 决定跳转目标
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: /api
+      <<: *clerk-public
+    depends_on:
+      api:
+        condition: service_healthy
+
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-8888}:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - web
+      - api

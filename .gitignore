@@ -25,3 +25,5 @@ TestResults.xml
 .omx
 .claude
 .codegraph
+# docker compose 的根 .env（含 Clerk 密钥与部署路径），只提交 .env.example
+/.env
