@@ -1,0 +1,114 @@
+from dataclasses import dataclass
+from decimal import Decimal
+from time import time
+
+from app.config import Settings, get_settings
+from app.domain.enums import RiskStatus
+from app.domain.schemas import RiskDecision
+
+
+@dataclass(frozen=True)
+class RiskLimits:
+    max_leverage: int = 3
+    max_position_notional_pct: Decimal = Decimal("0.20")
+    max_single_trade_risk_pct: Decimal = Decimal("0.005")
+    max_daily_loss_pct: Decimal = Decimal("0.05")
+    max_consecutive_losses: int = 3
+    market_data_max_age_seconds: int = 90
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "RiskLimits":
+        return cls(
+            max_leverage=settings.max_leverage,
+            max_position_notional_pct=Decimal(str(settings.max_position_notional_pct)),
+            max_single_trade_risk_pct=Decimal(str(settings.max_single_trade_risk_pct)),
+            max_daily_loss_pct=Decimal(str(settings.max_daily_loss_pct)),
+            max_consecutive_losses=settings.max_consecutive_losses,
+            market_data_max_age_seconds=settings.market_data_max_age_seconds,
+        )
+
+
+def evaluate_risk(
+    *,
+    equity: Decimal | float,
+    current_notional: Decimal | float,
+    proposed_notional: Decimal | float,
+    leverage: int,
+    stop_loss: Decimal | float | None,
+    entry: Decimal | float,
+    daily_loss_pct: Decimal | float,
+    consecutive_losses: int,
+    paused: bool,
+    data_age_s: Decimal | float,
+    side: str | None = None,
+    is_reducing: bool = False,
+    limits: RiskLimits | None = None,
+    checked_at: int | None = None,
+) -> RiskDecision:
+    """Evaluate immutable hard limits; no model output can override this result."""
+
+    active_limits = limits or RiskLimits()
+    equity_value = Decimal(str(equity))
+    current_value = abs(Decimal(str(current_notional)))
+    proposed_value = abs(Decimal(str(proposed_notional)))
+    entry_value = Decimal(str(entry))
+    loss_value = Decimal(str(daily_loss_pct))
+    age_value = Decimal(str(data_age_s))
+    reasons: list[str] = []
+    status = RiskStatus.REJECTED
+
+    if paused:
+        return RiskDecision(
+            status=RiskStatus.PAUSED,
+            reasons=["paused"],
+            checked_at=checked_at or int(time() * 1000),
+        )
+    if equity_value <= 0:
+        reasons.append("equity_non_positive")
+    if age_value > active_limits.market_data_max_age_seconds:
+        reasons.append("market_data_stale")
+    if loss_value >= active_limits.max_daily_loss_pct:
+        reasons.append("daily_loss_limit")
+    if consecutive_losses >= active_limits.max_consecutive_losses:
+        reasons.append("consecutive_loss_cooldown")
+    if leverage < 1 or leverage > active_limits.max_leverage:
+        reasons.append("max_leverage")
+    if equity_value > 0 and current_value + proposed_value > equity_value * active_limits.max_position_notional_pct:
+        reasons.append("max_notional")
+
+    if proposed_value > 0 and not is_reducing:
+        if stop_loss is None:
+            reasons.append("stop_loss_required")
+        elif entry_value <= 0:
+            reasons.append("entry_non_positive")
+        else:
+            stop_value = Decimal(str(stop_loss))
+            if side and side.upper() == "LONG" and stop_value >= entry_value:
+                reasons.append("long_stop_must_be_below_entry")
+            if side and side.upper() == "SHORT" and stop_value <= entry_value:
+                reasons.append("short_stop_must_be_above_entry")
+            risk_amount = proposed_value * abs(entry_value - stop_value) / entry_value
+            if equity_value > 0 and risk_amount > equity_value * active_limits.max_single_trade_risk_pct:
+                reasons.append("single_trade_risk")
+
+    if not reasons:
+        status = RiskStatus.ALLOWED
+    return RiskDecision(
+        status=status,
+        reasons=reasons,
+        adjusted_position_size_pct=(proposed_value / equity_value if equity_value > 0 else None),
+        checked_at=checked_at or int(time() * 1000),
+        metadata={
+            "max_leverage": active_limits.max_leverage,
+            "max_position_notional_pct": str(active_limits.max_position_notional_pct),
+            "max_single_trade_risk_pct": str(active_limits.max_single_trade_risk_pct),
+        },
+    )
+
+
+class RiskEngine:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.limits = RiskLimits.from_settings(settings or get_settings())
+
+    def evaluate(self, **kwargs: object) -> RiskDecision:
+        return evaluate_risk(limits=self.limits, **kwargs)

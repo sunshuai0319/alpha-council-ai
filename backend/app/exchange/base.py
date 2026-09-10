@@ -111,6 +111,8 @@ class ExchangeClient(Protocol):
 
     def get_order(self, order_id: str) -> ExchangeOrder: ...
 
+    def get_order_by_client_id(self, client_order_id: str) -> ExchangeOrder | None: ...
+
     def get_trades(
         self,
         symbol: str | None = None,

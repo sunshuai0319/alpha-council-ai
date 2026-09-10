@@ -376,6 +376,20 @@ class WeexClient(ExchangeClient):
             raise ExchangeError("WEEX order response is not an object")
         return self._parse_order(raw)
 
+    def get_order_by_client_id(self, client_order_id: str) -> ExchangeOrder | None:
+        raw = self._request(
+            "GET",
+            self._private_path("order/history"),
+            params={"limit": 100, "page": 0},
+            private=True,
+        )
+        if not isinstance(raw, list):
+            raise ExchangeError("WEEX order history response is not an array")
+        for item in raw:
+            if isinstance(item, dict) and item.get("clientOrderId") == client_order_id:
+                return self._parse_order(item)
+        return None
+
     def get_trades(
         self,
         symbol: str | None = None,
