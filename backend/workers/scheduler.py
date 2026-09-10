@@ -25,6 +25,26 @@ class TradingScheduler:
         self.pipeline = pipeline
 
     def run_once(self) -> None:
+        try:
+            self._run_cycles()
+        finally:
+            self._end_transaction()
+
+    def _end_transaction(self) -> None:
+        """收掉本轮留下的隐式事务。
+
+        worker 整个进程共用一个 Session，空闲时 `enabled_user_ids()` 那个只读
+        事务会一直挂着：它阻塞一切 DDL（实测 ALTER TABLE 被卡住 4 分钟以上），
+        并钉住事务快照让 autovacuum 回收不了死元组。
+
+        所有写入路径都显式 commit，所以这里 rollback 只是结束空事务，不会丢数据。
+        """
+
+        db = self.service.db
+        if db is not None:
+            db.rollback()
+
+    def _run_cycles(self) -> None:
         if self.pipeline is not None:
             try:
                 self.pipeline.run_once()
