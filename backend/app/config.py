@@ -38,7 +38,10 @@ class Settings(BaseSettings):
     weex_virtual_only: bool = True
 
     clerk_jwks_url: str = ""
+    clerk_issuer: str = ""
+    clerk_audience: str = ""
     clerk_secret_key: str = ""
+    clerk_webhook_signing_secret: str = ""
 
     max_leverage: int = 3
     max_position_notional_pct: float = 0.20

@@ -18,6 +18,7 @@ dependencies = [
   "feedparser>=6.0,<7",
   "cryptography>=44,<47",
   "PyJWT[crypto]>=2.10,<3",
+  "svix>=1.40,<2",
 ]
 
 [dependency-groups]
@@ -36,7 +37,7 @@ testpaths = ["tests"]
 line-length = 100
 
 [tool.ruff.lint]
-ignore = ["DTZ001"]
+ignore = ["B008", "DTZ001"]
 
 [[tool.mypy.overrides]]
 module = ["pymilvus", "pymilvus.*", "sentence_transformers", "sentence_transformers.*"]
