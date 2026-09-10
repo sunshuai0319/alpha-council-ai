@@ -189,6 +189,28 @@ def test_persisting_a_filled_order_round_trips_into_the_loss_streak(tmp_path) ->
         assert service._consecutive_losses("u-1") == 3
 
 
+def test_risk_uses_exchange_reported_leverage_over_the_proposal() -> None:
+    """系统不下发杠杆，实际杠杆由账户决定（虚拟盘实测固定 20x）。
+
+    校验提案里 LLM 自己填的数字没有意义：那个数字从来不参与下单。
+    """
+    exchange = ClosingExchange(exit_price=Decimal(100), leverage=20)  # 实际 20x
+    service = TradingCycleService(exchange_factory=lambda: exchange)
+
+    decision = service._evaluate_proposal(exchange, _long_state())  # 提案声明 leverage=1
+
+    assert "max_leverage" in decision.reasons
+
+
+def test_risk_falls_back_to_the_proposal_when_leverage_is_unobservable() -> None:
+    exchange = RecordingExchange()  # 空仓，没有真实杠杆可读
+    service = TradingCycleService(exchange_factory=lambda: exchange)
+
+    decision = service._evaluate_proposal(exchange, _long_state())
+
+    assert "max_leverage" not in decision.reasons
+
+
 def test_repeated_cycle_failures_pause_the_account(tmp_path) -> None:
     """连续失败必须停下来。
 
@@ -289,10 +311,11 @@ def test_daily_loss_pct_uses_todays_first_snapshot(tmp_path) -> None:
 class ClosingExchange:
     """持有一个多仓，平仓成交价由 exit_price 决定。"""
 
-    def __init__(self, *, exit_price: Decimal, side: str = "LONG") -> None:
+    def __init__(self, *, exit_price: Decimal, side: str = "LONG", leverage: int = 1) -> None:
         self.requests: list[OrderRequest] = []
         self._exit_price = exit_price
         self._side = side
+        self._leverage = leverage
 
     def get_balances(self) -> list[ExchangeBalance]:
         return [ExchangeBalance("SUSDT", Decimal(10000), Decimal(10000), Decimal(0), Decimal(0))]
@@ -306,7 +329,7 @@ class ClosingExchange:
                 quantity=Decimal(1),
                 entry_value=Decimal(100),  # 入场价 100
                 margin=Decimal(10),
-                leverage=1,
+                leverage=self._leverage,
                 unrealized_pnl=Decimal(0),
                 liquidation_price=None,
             )

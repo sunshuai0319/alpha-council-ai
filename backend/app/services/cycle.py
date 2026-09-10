@@ -286,11 +286,17 @@ class TradingCycleService:
         proposed_notional = balance.balance * Decimal(str(proposal.position_size_pct))
         is_reducing = proposal.action is Action.CLOSE
         current_equity = balance.balance + balance.unrealized_pnl
+        # 系统不下发杠杆，实际杠杆由账户决定。有真实持仓时用交易所回报的杠杆，
+        # 否则退回提案声明值 —— 空仓时无从观测，这一点无法回避。
+        leverage = next(
+            (position.leverage for position in positions if position.leverage > 0),
+            proposal.leverage,
+        )
         return self.risk_engine.evaluate(
             equity=balance.balance,
             current_notional=current_notional,
             proposed_notional=proposed_notional,
-            leverage=proposal.leverage,
+            leverage=leverage,
             stop_loss=proposal.stop_loss,
             entry=state.market_snapshot.last_price,
             daily_loss_pct=self._daily_loss_pct(state.user_id, current_equity),
