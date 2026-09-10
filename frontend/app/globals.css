@@ -121,6 +121,7 @@ h1 { font: 500 clamp(37px, 5vw, 64px)/.99 var(--serif); letter-spacing: -.045em;
 .risk-badge--allowed { color: var(--lime); border-color: #526a49; }
 .risk-badge--rejected { color: var(--coral); border-color: #71483f; }
 .risk-badge--paused { color: var(--sky); border-color: #426879; }
+.risk-badge--neutral { color: var(--muted); border-color: var(--line); }
 .action-mark--long { color: var(--lime); }
 .action-mark--short { color: var(--coral); }
 .action-mark--hold { color: var(--muted); }

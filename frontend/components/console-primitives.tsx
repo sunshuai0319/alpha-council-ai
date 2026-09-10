@@ -28,8 +28,8 @@ export function Metric({ label, value, detail, tone = "neutral" }: {
 
 export function RiskBadge({ status }: { status: string }) {
   const normalized = status.toUpperCase()
-  const tone = normalized === "ALLOWED" ? "allowed" : normalized === "PAUSED" ? "paused" : "rejected"
-  const icon = tone === "allowed" ? <Check size={13} /> : tone === "paused" ? <Minus size={13} /> : <CircleAlert size={13} />
+  const tone = normalized === "ALLOWED" ? "allowed" : normalized === "PAUSED" ? "paused" : normalized === "WAITING" || normalized === "VIRTUAL" ? "neutral" : "rejected"
+  const icon = tone === "allowed" ? <Check size={13} /> : tone === "paused" || tone === "neutral" ? <Minus size={13} /> : <CircleAlert size={13} />
   return <span className={`risk-badge risk-badge--${tone}`}>{icon}{normalized}</span>
 }
 
