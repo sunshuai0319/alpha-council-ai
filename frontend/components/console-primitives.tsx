@@ -1,12 +1,14 @@
 import { Check, CircleAlert, Minus, TrendingDown, TrendingUp } from "lucide-react"
 
+import { useI18n } from "@/lib/i18n"
 import type { Decision, MarketSnapshot, Position, RiskEvent } from "@/lib/types"
 
 export function VirtualBadge({ compact = false }: { compact?: boolean }) {
+  const { t } = useI18n()
   return (
     <span className={`virtual-badge${compact ? " virtual-badge--compact" : ""}`}>
       <span className="status-dot" />
-      {compact ? "WEEX virtual" : "WEEX virtual futures · simulation only"}
+      {compact ? "WEEX virtual" : t("nav.simulation")}
     </span>
   )
 }
@@ -27,10 +29,11 @@ export function Metric({ label, value, detail, tone = "neutral" }: {
 }
 
 export function RiskBadge({ status }: { status: string }) {
+  const { t } = useI18n()
   const normalized = status.toUpperCase()
   const tone = normalized === "ALLOWED" ? "allowed" : normalized === "PAUSED" ? "paused" : normalized === "WAITING" || normalized === "VIRTUAL" ? "neutral" : "rejected"
   const icon = tone === "allowed" ? <Check size={13} /> : tone === "paused" || tone === "neutral" ? <Minus size={13} /> : <CircleAlert size={13} />
-  return <span className={`risk-badge risk-badge--${tone}`}>{icon}{normalized}</span>
+  return <span className={`risk-badge risk-badge--${tone}`}>{icon}{normalized === "WAITING" ? t("common.waiting") : normalized}</span>
 }
 
 export function ActionMark({ action }: { action: string }) {
@@ -53,11 +56,12 @@ export function EmptyState({ title, body }: { title: string; body: string }) {
 }
 
 export function MarketStrip({ snapshots }: { snapshots: MarketSnapshot[] }) {
+  const { t } = useI18n()
   if (!snapshots.length) {
-    return <EmptyState title="Waiting for a market snapshot" body="The collector will publish WEEX prices here after the first trading cycle." />
+    return <EmptyState title={t("common.waitingMarket")} body={t("common.waitingMarketBody")} />
   }
   return (
-    <div className="market-strip" aria-label="Recent market snapshots">
+    <div className="market-strip" aria-label={t("overview.recentSnapshots")}>
       {snapshots.slice(0, 6).map((snapshot) => (
         <div className="market-strip-item" key={`${snapshot.symbol}-${snapshot.captured_at}`}>
           <span>{snapshot.symbol}</span>
@@ -70,24 +74,25 @@ export function MarketStrip({ snapshots }: { snapshots: MarketSnapshot[] }) {
 }
 
 export function DecisionCard({ decision }: { decision: Decision }) {
+  const { t } = useI18n()
   const proposal = decision.proposal
   const reasons = decision.risk_decision?.reasons ?? []
   return (
     <article className="decision-card">
       <div className="decision-card-header">
         <div>
-          <span className="eyebrow">latest committee call</span>
+          <span className="eyebrow">{t("common.latestCall")}</span>
           <h3><ActionMark action={decision.action} /> <span>{decision.symbol}</span></h3>
         </div>
         <RiskBadge status={decision.status} />
       </div>
       <p className="decision-reasoning">
-        {proposal?.reasoning_summary ?? "No trade proposal was emitted. The system remained flat."}
+        {proposal?.reasoning_summary ?? t("common.noProposal")}
       </p>
       <div className="decision-meta">
-        <span>confidence <b>{formatPercent(proposal?.confidence)}</b></span>
-        <span>size <b>{formatPercent(proposal?.position_size_pct)}</b></span>
-        <span>leverage <b>{proposal?.leverage ?? 1}×</b></span>
+        <span>{t("common.confidence")} <b>{formatPercent(proposal?.confidence)}</b></span>
+        <span>{t("common.size")} <b>{formatPercent(proposal?.position_size_pct)}</b></span>
+        <span>{t("common.leverage")} <b>{proposal?.leverage ?? 1}×</b></span>
       </div>
       {reasons.length ? <div className="risk-reasons">{reasons.join(" · ")}</div> : null}
       <div className="decision-footer">
@@ -99,11 +104,12 @@ export function DecisionCard({ decision }: { decision: Decision }) {
 }
 
 export function PortfolioTable({ positions }: { positions: Position[] }) {
-  if (!positions.length) return <EmptyState title="No open virtual positions" body="A position appears after the risk gate allows a non-HOLD proposal." />
+  const { t } = useI18n()
+  if (!positions.length) return <EmptyState title={t("common.noPositions")} body={t("common.noPositionsBody")} />
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>Contract</th><th>Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>uPnL</th></tr></thead>
+        <thead><tr><th>{t("common.contract")}</th><th>{t("common.side")}</th><th>{t("common.quantity")}</th><th>{t("common.entry")}</th><th>{t("common.mark")}</th><th>{t("common.upnl")}</th></tr></thead>
         <tbody>{positions.map((position) => <tr key={position.id}>
           <td><strong>{position.symbol}</strong><small>{position.status}</small></td>
           <td><ActionMark action={position.side} /></td>
@@ -118,7 +124,8 @@ export function PortfolioTable({ positions }: { positions: Position[] }) {
 }
 
 export function EventList({ events }: { events: RiskEvent[] }) {
-  if (!events.length) return <EmptyState title="No risk events" body="Risk gate decisions and safety stops will be recorded here." />
+  const { t } = useI18n()
+  if (!events.length) return <EmptyState title={t("common.noRiskEvents")} body={t("common.noRiskEventsBody")} />
   return <div className="event-list">{events.map((event) => <div className="event-row" key={event.id}>
     <div className="event-icon"><CircleAlert size={16} /></div>
     <div><strong>{event.event_type}</strong><p>{event.reason}</p></div>

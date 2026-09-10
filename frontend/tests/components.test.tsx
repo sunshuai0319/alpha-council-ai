@@ -22,7 +22,7 @@ const holdDecision: Decision = {
 describe("console primitives", () => {
   it("keeps the simulation boundary visible", () => {
     render(<VirtualBadge />)
-    expect(screen.getByText("WEEX virtual futures · simulation only")).toBeVisible()
+    expect(screen.getByText("WEEX 虚拟合约 · 仅模拟")).toBeVisible()
   })
 
   it("shows risk status and action on a decision card", () => {

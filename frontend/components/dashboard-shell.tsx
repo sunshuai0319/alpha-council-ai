@@ -6,29 +6,32 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 
 import { VirtualBadge } from "@/components/console-primitives"
+import { LanguageSwitcher } from "@/components/language-switcher"
+import { useI18n } from "@/lib/i18n"
 
 const hasClerkKey = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY)
 
-const links = [
-  { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
-  { href: "/market", label: "Market pulse", icon: Activity },
-  { href: "/committee", label: "AI committee", icon: BrainCircuit },
-  { href: "/trades", label: "Trade ledger", icon: ChartNoAxesCombined },
-  { href: "/events", label: "Risk events", icon: ShieldCheck },
-]
-
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+  const { t } = useI18n()
+  const links = [
+    { href: "/dashboard", label: t("nav.overview"), icon: LayoutDashboard },
+    { href: "/market", label: t("nav.market"), icon: Activity },
+    { href: "/committee", label: t("nav.committee"), icon: BrainCircuit },
+    { href: "/trades", label: t("nav.trades"), icon: ChartNoAxesCombined },
+    { href: "/events", label: t("nav.events"), icon: ShieldCheck },
+  ]
   return (
     <div className="console-frame">
       <aside className="sidebar">
         <Link className="brand" href="/dashboard">
           <span className="brand-mark"><Radio size={17} /></span>
-          <span><b>alpha council</b><small>AI trading lab</small></span>
+          <span><b>alpha council</b><small>{t("brand.tagline")}</small></span>
         </Link>
         <div className="sidebar-rule" />
-        <div className="sidebar-caption">workspace</div>
-        <nav className="primary-nav" aria-label="Primary navigation">
+        <div className="sidebar-caption">{t("nav.workspace")}</div>
+        <span className="sidebar-mobile-badge">{t("nav.simulation")}</span>
+        <nav className="primary-nav" aria-label={t("nav.primary")}>
           {links.map(({ href, label, icon: Icon }) => {
             const active = pathname === href
             return <Link className={active ? "nav-link nav-link--active" : "nav-link"} href={href} key={href}>
@@ -39,9 +42,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
         <div className="sidebar-bottom">
-          <div className="guardrail-note"><CircleAlert size={16} /><span>All orders are simulated.<br />No real funds are at risk.</span></div>
+          <div className="guardrail-note"><CircleAlert size={16} /><span>{t("landing.boundary")}</span></div>
           <VirtualBadge />
-          <div className="account-row">{hasClerkKey ? <UserButton afterSignOutUrl="/" /> : <span className="account-placeholder">●</span>}<span>Account</span></div>
+          <div className="account-row"><LanguageSwitcher />{hasClerkKey ? <UserButton afterSignOutUrl="/" /> : <span className="account-placeholder">●</span>}<span>{t("nav.account")}</span></div>
         </div>
       </aside>
       <main className="main-canvas">{children}</main>
