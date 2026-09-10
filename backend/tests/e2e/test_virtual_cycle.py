@@ -34,6 +34,10 @@ def test_fixture_virtual_cycle_persists_authenticated_decision(tmp_path) -> None
             assert decisions.status_code == 200
             assert len(decisions.json()["items"]) == 1
             assert decisions.json()["items"][0]["symbol"] == "BTC-USDT"
+
+            market = client.get("/api/market")
+            assert market.status_code == 200
+            assert market.json()["items"][0]["symbol"] == "BTC-USDT"
     finally:
         app.dependency_overrides.clear()
         session.close()

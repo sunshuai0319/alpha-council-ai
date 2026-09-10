@@ -12,7 +12,7 @@ from app.agents.graph import TradingCycleGraph, build_trading_cycle_graph
 from app.agents.llm import ArkChatClient
 from app.collectors.weex import WeexCollector
 from app.config import Settings, get_settings
-from app.db.models import MarketSnapshot as MarketSnapshotModel
+from app.db.models import MarketCandle, MarketSnapshot as MarketSnapshotModel
 from app.db.models import Position, RiskEvent, TradingAccount, TradingDecision
 from app.domain.enums import Action, RiskStatus
 from app.domain.schemas import (
@@ -129,6 +129,7 @@ class TradingCycleService:
             },
             errors=[*candle_result.errors, *snapshot_result.errors],
         )
+        self._persist_market_data(candle_result.items, snapshot_result.items)
         if ControlRegistry.status(user_id) == "PAUSED":
             state.errors.append("paused")
             state = state.model_copy(
@@ -271,20 +272,63 @@ class TradingCycleService:
             model_versions=result_state.model_versions,
         )
         self.db.add(decision)
-        if risk.reasons and risk.status is not RiskStatus.ALLOWED:
+        event_reasons = [*result_state.errors, *risk.reasons]
+        if event_reasons:
             self.db.add(
                 RiskEvent(
                     id=str(uuid4()),
                     user_id=result_state.user_id,
                     decision_id=decision.id,
-                    event_type="RISK_GATE",
+                    event_type="CYCLE_SAFETY" if result_state.errors else "RISK_GATE",
                     status=risk.status,
-                    reason=";".join(risk.reasons),
+                    reason=";".join(dict.fromkeys(event_reasons)),
                     metadata_json=risk.metadata,
                 )
             )
         self.db.commit()
         return True
+
+    def _persist_market_data(self, candles: list[Any], snapshots: list[Any]) -> None:
+        if self.db is None:
+            return
+        captured_at = datetime.now(UTC)
+        for candle in candles:
+            existing = self.db.scalar(
+                select(MarketCandle).where(
+                    MarketCandle.symbol == candle.symbol,
+                    MarketCandle.timeframe == candle.timeframe,
+                    MarketCandle.open_time == candle.open_time,
+                )
+            )
+            if existing is None:
+                self.db.add(
+                    MarketCandle(
+                        symbol=candle.symbol,
+                        timeframe=candle.timeframe,
+                        open_time=candle.open_time,
+                        open=candle.open,
+                        high=candle.high,
+                        low=candle.low,
+                        close=candle.close,
+                        volume=candle.volume,
+                        source=candle.source,
+                        captured_at=captured_at,
+                    )
+                )
+        for snapshot in snapshots:
+            self.db.add(
+                MarketSnapshotModel(
+                    symbol=snapshot.symbol,
+                    captured_at=datetime.fromtimestamp(snapshot.captured_at / 1000, tz=UTC),
+                    last_price=snapshot.last_price,
+                    bid=snapshot.bid,
+                    ask=snapshot.ask,
+                    funding_rate=snapshot.funding_rate,
+                    open_interest=snapshot.open_interest,
+                    volume_24h=snapshot.volume_24h,
+                )
+            )
+        self.db.flush()
 
     def pause(self, user_id: str) -> dict[str, str]:
         return {"status": ControlRegistry.pause(user_id)}

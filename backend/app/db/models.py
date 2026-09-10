@@ -76,7 +76,7 @@ class MarketCandle(Base):
         Index("ix_market_candles_lookup", "symbol", "timeframe", "open_time"),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(32))
     timeframe: Mapped[str] = mapped_column(String(8))
     open_time: Mapped[int] = mapped_column(BigInteger)
@@ -93,7 +93,7 @@ class MarketSnapshot(Base):
     __tablename__ = "market_snapshots"
     __table_args__ = (Index("ix_market_snapshots_lookup", "symbol", "captured_at"),)
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(32), index=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     last_price: Mapped[Decimal] = mapped_column(Numeric(30, 12))
@@ -108,7 +108,7 @@ class MarketSnapshot(Base):
 class AccountSnapshot(Base):
     __tablename__ = "account_snapshots"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     trading_account_id: Mapped[str] = mapped_column(ForeignKey("trading_accounts.id"), index=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
@@ -193,7 +193,7 @@ class TradingDecision(TimestampMixin, Base):
 class PnlSnapshot(Base):
     __tablename__ = "pnl_snapshots"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     trading_account_id: Mapped[str] = mapped_column(ForeignKey("trading_accounts.id"), index=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
