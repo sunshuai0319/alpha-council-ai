@@ -1,3 +1,16 @@
+from datetime import UTC, datetime
+from decimal import Decimal
+from time import time
+
+from app.domain.schemas import Candle, MarketSnapshot
+from app.exchange.base import (
+    ExchangeBalance,
+    ExchangeFill,
+    ExchangeOrder,
+    ExchangePosition,
+    OrderRequest,
+)
+
 CONTRACT_INFO_RESPONSE = {
     "assets": [{"asset": "USDT", "marginAvailable": True}],
     "rateLimits": [],
@@ -96,3 +109,112 @@ TRADE_RESPONSE = [
         "time": 1700000001000,
     }
 ]
+
+
+class FixtureExchangeClient:
+    """Deterministic WEEX-like client for local API and browser smoke tests."""
+
+    def __init__(self) -> None:
+        self._orders: dict[str, ExchangeOrder] = {}
+
+    def get_candles(self, symbol: str, timeframe: str, limit: int = 100) -> list[Candle]:
+        del limit
+        now_ms = int(time() * 1000)
+        price = 100_000.0 if symbol.upper().startswith("BTC") else 4_000.0
+        return [
+            Candle(
+                symbol=symbol,
+                timeframe=timeframe,
+                open_time=now_ms - 300_000,
+                open=price - 25,
+                high=price + 45,
+                low=price - 65,
+                close=price,
+                volume=123.4,
+                source="fixture",
+            )
+        ]
+
+    def get_market_snapshot(self, symbol: str) -> MarketSnapshot:
+        price = 100_000.0 if symbol.upper().startswith("BTC") else 4_000.0
+        return MarketSnapshot(
+            symbol=symbol,
+            captured_at=int(time() * 1000),
+            last_price=price,
+            bid=price - 1,
+            ask=price + 1,
+            funding_rate=0.0001,
+            volume_24h=12_345_678,
+            source="fixture",
+        )
+
+    def get_contracts(self):
+        return [
+            self._contract(
+                symbol="BTC-USDT",
+                price_precision=1,
+                quantity_precision=6,
+                contract_value=Decimal("0.000001"),
+                min_leverage=1,
+                max_leverage=20,
+                min_quantity=Decimal("0.0001"),
+            )
+        ]
+
+    def get_balances(self) -> list[ExchangeBalance]:
+        return [
+            ExchangeBalance(
+                asset="SUSDT",
+                balance=Decimal(10000),
+                available_balance=Decimal(10000),
+                frozen=Decimal(0),
+                unrealized_pnl=Decimal(0),
+            )
+        ]
+
+    def get_positions(self) -> list[ExchangePosition]:
+        return []
+
+    def place_order(self, request: OrderRequest) -> ExchangeOrder:
+        now = datetime.now(UTC)
+        price = request.price or Decimal(100000)
+        order = ExchangeOrder(
+            order_id=f"fixture-{len(self._orders) + 1}",
+            client_order_id=request.client_order_id,
+            symbol=request.symbol,
+            side=request.side,
+            position_side=request.position_side,
+            status="FILLED",
+            order_type=request.order_type,
+            quantity=request.quantity,
+            executed_quantity=request.quantity,
+            price=price,
+            average_price=price,
+            time_in_force=request.time_in_force,
+            created_at=now,
+            updated_at=now,
+            reduce_only=request.reduce_only,
+        )
+        self._orders[request.client_order_id] = order
+        return order
+
+    def get_order(self, order_id: str) -> ExchangeOrder:
+        return next(order for order in self._orders.values() if order.order_id == order_id)
+
+    def get_order_by_client_id(self, client_order_id: str) -> ExchangeOrder | None:
+        return self._orders.get(client_order_id)
+
+    def get_trades(
+        self,
+        symbol: str | None = None,
+        order_id: str | None = None,
+        limit: int = 100,
+    ) -> list[ExchangeFill]:
+        del symbol, order_id, limit
+        return []
+
+    @staticmethod
+    def _contract(**kwargs):
+        from app.exchange.base import ContractInfo
+
+        return ContractInfo(**kwargs)
