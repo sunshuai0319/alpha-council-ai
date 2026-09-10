@@ -21,7 +21,7 @@ from app.exchange.fixtures import (
 from app.exchange.weex import WeexClient
 
 
-def _settings() -> Settings:
+def _settings(virtual_only: bool = True) -> Settings:
     return Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
         MILVUS_URI="http://localhost:19530",
@@ -29,7 +29,7 @@ def _settings() -> Settings:
         WEEX_API_KEY="key",
         WEEX_API_SECRET="secret",
         WEEX_API_PASSPHRASE="passphrase",
-        WEEX_VIRTUAL_ONLY=True,
+        WEEX_VIRTUAL_ONLY=virtual_only,
     )
 
 
@@ -61,7 +61,9 @@ def test_weex_virtual_requests_use_demo_paths_and_symbols() -> None:
         if request.url.path == "/capi/v3/sim/position/allPosition":
             return httpx.Response(200, json=DEMO_POSITION_RESPONSE)
         if request.url.path == "/capi/v3/sim/order" and request.method == "POST":
-            assert json.loads(request.content)["symbol"] == "BTCSUSDT"
+            body = json.loads(request.content)
+            assert body["symbol"] == "BTCSUSDT"
+            assert "reduceOnly" not in body  # 模拟盘文档未定义该参数
             return httpx.Response(200, json=ORDER_ACCEPTED_RESPONSE)
         if request.url.path == "/capi/v3/sim/order" and request.method == "GET":
             return httpx.Response(200, json=ORDER_INFO_RESPONSE)
@@ -91,3 +93,33 @@ def test_weex_virtual_requests_use_demo_paths_and_symbols() -> None:
         assert order.status == "OPEN"
         assert client.get_order(order.order_id).status == "FILLED"
         assert client.get_trades("BTC-USDT")[0].realized_pnl == 0
+
+
+def test_weex_real_order_path_includes_reduce_only() -> None:
+    """正式合约 API 文档定义了 reduceOnly，正式路径应发送它。"""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/capi/v3/order" and request.method == "POST":
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json=ORDER_ACCEPTED_RESPONSE)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(base_url="https://api-contract.weex.com", transport=transport) as http_client, WeexClient(
+        _settings(virtual_only=False), client=http_client, clock_ms=lambda: 1700000000000
+    ) as client:
+        client.place_order(
+            OrderRequest(
+                symbol="BTC-USDT",
+                side="BUY",
+                position_side="LONG",
+                order_type="MARKET",
+                quantity=Decimal("0.01"),
+                client_order_id="alpha-0002",
+                reduce_only=True,
+            )
+        )
+
+    assert captured["symbol"] == "BTCUSDT"
+    assert captured["reduceOnly"] is True

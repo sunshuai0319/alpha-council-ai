@@ -312,8 +312,10 @@ class WeexClient(ExchangeClient):
             "type": order_type,
             "quantity": str(request.quantity),
             "newClientOrderId": request.client_order_id,
-            "reduceOnly": request.reduce_only,
         }
+        # reduceOnly 仅正式合约 API 文档定义；模拟盘 /capi/v3/sim/order 未定义该参数，不发送。
+        if not self.settings.weex_virtual_only:
+            body["reduceOnly"] = request.reduce_only
         if request.time_in_force is not None:
             body["timeInForce"] = request.time_in_force.upper()
         if request.price is not None:
