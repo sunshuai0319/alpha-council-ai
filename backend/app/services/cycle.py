@@ -1,0 +1,408 @@
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any, ClassVar
+from uuid import uuid4
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.agents.graph import TradingCycleGraph, build_trading_cycle_graph
+from app.agents.llm import ArkChatClient
+from app.collectors.weex import WeexCollector
+from app.config import Settings, get_settings
+from app.db.models import MarketSnapshot as MarketSnapshotModel
+from app.db.models import Position, RiskEvent, TradingAccount, TradingDecision
+from app.domain.enums import Action, RiskStatus
+from app.domain.schemas import (
+    ExecutionResult,
+    RiskDecision,
+    TradeProposal,
+    TradingCycleState,
+)
+from app.exchange.base import ExchangeClient
+from app.exchange.weex import WeexClient
+from app.execution.service import ExecutionService
+from app.rag.embeddings import BGEEmbedder, BGEReranker
+from app.rag.milvus import MilvusVectorStore
+from app.rag.retriever import Retriever
+from app.risk.engine import RiskEngine
+
+
+class ControlRegistry:
+    _states: ClassVar[dict[str, str]] = {}
+
+    @classmethod
+    def status(cls, user_id: str) -> str:
+        return cls._states.get(user_id, "RUNNING")
+
+    @classmethod
+    def pause(cls, user_id: str) -> str:
+        cls._states[user_id] = "PAUSED"
+        return cls._states[user_id]
+
+    @classmethod
+    def resume(cls, user_id: str) -> str:
+        cls._states[user_id] = "RUNNING"
+        return cls._states[user_id]
+
+
+@dataclass(frozen=True)
+class CycleResult:
+    state: TradingCycleState
+    risk_decision: RiskDecision
+    execution_result: ExecutionResult | None
+    persisted: bool
+
+    @property
+    def action(self) -> Action:
+        return self.state.trade_proposal.action if self.state.trade_proposal else Action.HOLD
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "cycle_id": self.state.cycle_id,
+            "symbol": self.state.symbol,
+            "action": self.action.value,
+            "risk_status": self.risk_decision.status.value,
+            "risk_reasons": self.risk_decision.reasons,
+            "execution": self.execution_result.model_dump() if self.execution_result else None,
+            "persisted": self.persisted,
+        }
+
+
+class TradingCycleService:
+    def __init__(
+        self,
+        *,
+        db: Session | None = None,
+        settings: Settings | None = None,
+        exchange_factory: Callable[[], ExchangeClient] | None = None,
+        graph_factory: Callable[[], TradingCycleGraph] | None = None,
+        risk_engine: RiskEngine | None = None,
+        execution_service: ExecutionService | None = None,
+    ) -> None:
+        self.db = db
+        self.settings = settings or get_settings()
+        self.exchange_factory = exchange_factory or (lambda: WeexClient(self.settings))
+        self.graph_factory = graph_factory or self._default_graph
+        self.risk_engine = risk_engine or RiskEngine(self.settings)
+        self.execution_service = execution_service or ExecutionService()
+        self._memory_results: dict[str, list[CycleResult]] = {}
+        self._memory_market: list[dict[str, Any]] = []
+
+    def _default_graph(self) -> TradingCycleGraph:
+        llm = ArkChatClient(self.settings)
+        vector_store = MilvusVectorStore(self.settings)
+        retriever = Retriever(vector_store, BGEEmbedder(self.settings), BGEReranker(self.settings))
+        return build_trading_cycle_graph(
+            llm=llm,
+            retriever=retriever,
+            settings=self.settings,
+        )
+
+    def run(
+        self,
+        user_id: str,
+        symbol: str = "BTC-USDT",
+        llm: Any | None = None,
+    ) -> CycleResult:
+        cycle_id = str(uuid4())
+        started_at = int(datetime.now(UTC).timestamp() * 1000)
+        exchange = self.exchange_factory()
+        collector = WeexCollector(exchange)
+        candle_result, snapshot_result = collector.collect(
+            symbols=(symbol,),
+            timeframes=("5m", "1h", "4h"),
+            limit=100,
+        )
+        snapshot = snapshot_result.items[0] if snapshot_result.items else None
+        state = TradingCycleState(
+            user_id=user_id,
+            cycle_id=cycle_id,
+            started_at=started_at,
+            symbol=symbol,
+            market_snapshot=snapshot,
+            candles_by_timeframe={
+                timeframe: [candle for candle in candle_result.items if candle.timeframe == timeframe]
+                for timeframe in ("5m", "1h", "4h")
+            },
+            errors=[*candle_result.errors, *snapshot_result.errors],
+        )
+        if ControlRegistry.status(user_id) == "PAUSED":
+            state.errors.append("paused")
+            state = state.model_copy(
+                update={"trade_proposal": self._hold_proposal(state, "paused")}
+            )
+            risk_decision = RiskDecision(status=RiskStatus.PAUSED, reasons=["paused"])
+            execution = None
+        else:
+            graph = (
+                build_trading_cycle_graph(llm=llm, settings=self.settings)
+                if llm is not None
+                else self.graph_factory()
+            )
+            state = graph.invoke(state)
+            risk_decision = self._evaluate_proposal(exchange, state)
+            execution = self._execute(exchange, state, risk_decision)
+            state = state.model_copy(update={"risk_assessment": risk_decision, "execution_result": execution})
+        persisted = self._persist(result_state=state, risk=risk_decision, execution=execution)
+        result = CycleResult(state, risk_decision, execution, persisted)
+        self._memory_results.setdefault(user_id, []).append(result)
+        if snapshot:
+            self._memory_market.append(snapshot.model_dump())
+        return result
+
+    @staticmethod
+    def _hold_proposal(state: TradingCycleState, reason: str) -> TradeProposal:
+        return TradeProposal(
+            proposal_id=f"hold-{state.cycle_id}",
+            action=Action.HOLD,
+            symbol=state.symbol,
+            position_size_pct=0,
+            leverage=1,
+            valid_until=state.started_at,
+            invalidation_conditions=[reason],
+            confidence=0,
+            reasoning_summary=reason,
+            model_version="safe-hold",
+            trace_id=str(uuid4()),
+        )
+
+    def _evaluate_proposal(self, exchange: ExchangeClient, state: TradingCycleState) -> RiskDecision:
+        proposal = state.trade_proposal
+        if proposal is None:
+            return RiskDecision(status=RiskStatus.REJECTED, reasons=["proposal_missing"])
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        data_age = (
+            (now_ms - state.market_snapshot.captured_at) / 1000 if state.market_snapshot else float("inf")
+        )
+        if proposal.action is Action.HOLD:
+            return RiskDecision(status=RiskStatus.ALLOWED, reasons=["hold_no_order"], checked_at=now_ms)
+        try:
+            balances = exchange.get_balances()
+            balance = next((item for item in balances if item.asset in {"SUSDT", "USDT"}), None)
+            positions = exchange.get_positions()
+        except Exception as exc:  # noqa: BLE001 - exchange outage fails closed
+            return RiskDecision(status=RiskStatus.REJECTED, reasons=[f"account_unavailable:{exc}"], checked_at=now_ms)
+        if balance is None or state.market_snapshot is None:
+            return RiskDecision(status=RiskStatus.REJECTED, reasons=["account_or_market_missing"], checked_at=now_ms)
+        current_notional = sum(
+            (abs(position.entry_value) for position in positions if position.symbol == state.symbol),
+            Decimal(0),
+        )
+        proposed_notional = balance.balance * Decimal(str(proposal.position_size_pct))
+        is_reducing = proposal.action is Action.CLOSE
+        return self.risk_engine.evaluate(
+            equity=balance.balance,
+            current_notional=current_notional,
+            proposed_notional=proposed_notional,
+            leverage=proposal.leverage,
+            stop_loss=proposal.stop_loss,
+            entry=state.market_snapshot.last_price,
+            daily_loss_pct=0,
+            consecutive_losses=0,
+            paused=False,
+            data_age_s=data_age,
+            side="LONG" if proposal.action is Action.LONG else "SHORT",
+            is_reducing=is_reducing,
+            checked_at=now_ms,
+        )
+
+    def _execute(
+        self,
+        exchange: ExchangeClient,
+        state: TradingCycleState,
+        risk_decision: RiskDecision,
+    ) -> ExecutionResult | None:
+        proposal = state.trade_proposal
+        if proposal is None or proposal.action is Action.HOLD:
+            return None
+        if state.market_snapshot is None or state.market_snapshot.last_price <= 0:
+            return None
+        if proposal.action is Action.CLOSE:
+            positions = exchange.get_positions()
+            position = next((item for item in positions if item.symbol == proposal.symbol), None)
+            quantity = position.quantity if position else Decimal(0)
+        else:
+            quantity = Decimal(str(proposal.position_size_pct)) / Decimal(str(state.market_snapshot.last_price))
+        return self.execution_service.execute(exchange, proposal, risk_decision, quantity=quantity)
+
+    def enabled_user_ids(self) -> list[str]:
+        if self.db is None:
+            return []
+        return list(
+            self.db.scalars(
+                select(TradingAccount.user_id).where(
+                    TradingAccount.enabled.is_(True),
+                    TradingAccount.provider == "weex",
+                    TradingAccount.environment == "virtual",
+                )
+            ).all()
+        )
+
+    def _persist(
+        self,
+        *,
+        result_state: TradingCycleState,
+        risk: RiskDecision,
+        execution: ExecutionResult | None,
+    ) -> bool:
+        if self.db is None:
+            return True
+        proposal = result_state.trade_proposal
+        decision = TradingDecision(
+            id=str(uuid4()),
+            user_id=result_state.user_id,
+            cycle_id=result_state.cycle_id,
+            trace_id=result_state.trace_ids[-1] if result_state.trace_ids else str(uuid4()),
+            symbol=result_state.symbol,
+            action=proposal.action.value if proposal else Action.HOLD.value,
+            status=risk.status.value,
+            proposal=proposal.model_dump() if proposal else None,
+            analyses={
+                "market": result_state.market_analysis.model_dump() if result_state.market_analysis else None,
+                "quant": result_state.quant_analysis.model_dump() if result_state.quant_analysis else None,
+                "macro": result_state.macro_analysis.model_dump() if result_state.macro_analysis else None,
+            },
+            risk_decision=risk.model_dump(),
+            execution_result=execution.model_dump() if execution else None,
+            data_versions=result_state.data_versions,
+            model_versions=result_state.model_versions,
+        )
+        self.db.add(decision)
+        if risk.reasons and risk.status is not RiskStatus.ALLOWED:
+            self.db.add(
+                RiskEvent(
+                    id=str(uuid4()),
+                    user_id=result_state.user_id,
+                    decision_id=decision.id,
+                    event_type="RISK_GATE",
+                    status=risk.status,
+                    reason=";".join(risk.reasons),
+                    metadata_json=risk.metadata,
+                )
+            )
+        self.db.commit()
+        return True
+
+    def pause(self, user_id: str) -> dict[str, str]:
+        return {"status": ControlRegistry.pause(user_id)}
+
+    def resume(self, user_id: str) -> dict[str, str]:
+        return {"status": ControlRegistry.resume(user_id)}
+
+    def market(self, user_id: str) -> dict[str, Any]:
+        del user_id
+        if self.db is not None:
+            rows = self.db.scalars(
+                select(MarketSnapshotModel).order_by(MarketSnapshotModel.captured_at.desc()).limit(50)
+            ).all()
+            return {"items": [self._market_dict(row) for row in rows]}
+        return {"items": list(reversed(self._memory_market[-50:]))}
+
+    def decisions(self, user_id: str) -> dict[str, Any]:
+        if self.db is not None:
+            rows = self.db.scalars(
+                select(TradingDecision)
+                .where(TradingDecision.user_id == user_id)
+                .order_by(TradingDecision.created_at.desc())
+                .limit(100)
+            ).all()
+            return {"items": [self._decision_dict(row) for row in rows]}
+        return {"items": [result.as_dict() for result in reversed(self._memory_results.get(user_id, []))]}
+
+    def portfolio(self, user_id: str) -> dict[str, Any]:
+        if self.db is not None:
+            rows = self.db.scalars(select(Position).where(Position.user_id == user_id)).all()
+            return {"items": [self._position_dict(row) for row in rows]}
+        return {"items": []}
+
+    def events(self, user_id: str) -> dict[str, Any]:
+        if self.db is not None:
+            rows = self.db.scalars(
+                select(RiskEvent)
+                .where(RiskEvent.user_id == user_id)
+                .order_by(RiskEvent.created_at.desc())
+                .limit(100)
+            ).all()
+            return {
+                "items": [
+                    {
+                        "id": row.id,
+                        "event_type": row.event_type,
+                        "status": row.status.value if hasattr(row.status, "value") else row.status,
+                        "reason": row.reason,
+                        "created_at": row.created_at,
+                    }
+                    for row in rows
+                ]
+            }
+        return {"items": []}
+
+    def close_position(self, user_id: str, symbol: str) -> dict[str, Any]:
+        exchange = self.exchange_factory()
+        positions = [position for position in exchange.get_positions() if position.symbol == symbol]
+        if not positions:
+            return {"status": "NO_POSITION", "symbol": symbol}
+        position = positions[0]
+        proposal = TradeProposal(
+            proposal_id=f"manual-close-{uuid4()}",
+            action=Action.CLOSE,
+            symbol=symbol,
+            side="SELL" if position.side == "LONG" else "BUY",
+            position_size_pct=0,
+            leverage=1,
+            valid_until=int(datetime.now(UTC).timestamp() * 1000),
+            confidence=1,
+            reasoning_summary="manual close",
+            model_version="manual",
+            trace_id=str(uuid4()),
+        )
+        result = self.execution_service.execute(
+            exchange,
+            proposal,
+            RiskDecision(status=RiskStatus.ALLOWED, reasons=["manual_reduce_only"]),
+            quantity=position.quantity,
+        )
+        return result.model_dump()
+
+    @staticmethod
+    def _market_dict(row: MarketSnapshotModel) -> dict[str, Any]:
+        return {
+            "symbol": row.symbol,
+            "captured_at": row.captured_at,
+            "last_price": float(row.last_price),
+            "bid": float(row.bid) if row.bid is not None else None,
+            "ask": float(row.ask) if row.ask is not None else None,
+            "funding_rate": row.funding_rate,
+            "open_interest": row.open_interest,
+            "volume_24h": row.volume_24h,
+        }
+
+    @staticmethod
+    def _decision_dict(row: TradingDecision) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "cycle_id": row.cycle_id,
+            "symbol": row.symbol,
+            "action": row.action,
+            "status": row.status,
+            "proposal": row.proposal,
+            "risk_decision": row.risk_decision,
+            "execution_result": row.execution_result,
+            "created_at": row.created_at,
+        }
+
+    @staticmethod
+    def _position_dict(row: Position) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "symbol": row.symbol,
+            "side": row.side,
+            "quantity": float(row.quantity),
+            "entry_price": float(row.entry_price),
+            "mark_price": float(row.mark_price) if row.mark_price is not None else None,
+            "unrealized_pnl": float(row.unrealized_pnl),
+            "status": row.status,
+        }
