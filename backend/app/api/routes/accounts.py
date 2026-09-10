@@ -2,7 +2,7 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 
 from app.api.dependencies import get_cycle_service
@@ -14,11 +14,18 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 
 class AccountCreate(BaseModel):
-    api_key_ref: str
-    api_secret_ref: str
-    passphrase_ref: str
+    api_key_ref: str = Field(min_length=1)
+    api_secret_ref: str = Field(min_length=1)
+    passphrase_ref: str = Field(min_length=1)
     environment: Literal["virtual"] = "virtual"
     provider: Literal["weex"] = "weex"
+
+    @field_validator("api_key_ref", "api_secret_ref", "passphrase_ref")
+    @classmethod
+    def reject_environment_references(cls, value: str) -> str:
+        if value.startswith("env:"):
+            raise ValueError("environment references are not supported")
+        return value
 
 
 class AccountUpdate(BaseModel):

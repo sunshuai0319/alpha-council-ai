@@ -5,6 +5,7 @@ import json
 import re
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Self
@@ -26,6 +27,13 @@ from app.exchange.base import (
 )
 
 _CLIENT_ORDER_ID = re.compile(r"^[.A-Za-z0-9_:/-]{1,36}$")
+
+
+@dataclass(frozen=True)
+class WeexCredentials:
+    api_key: str
+    api_secret: str
+    passphrase: str
 
 
 def normalize_symbol(symbol: str) -> str:
@@ -81,14 +89,26 @@ class WeexClient(ExchangeClient):
         settings: Settings | None = None,
         client: httpx.Client | None = None,
         clock_ms: Callable[[], int] | None = None,
+        credentials: WeexCredentials | None = None,
     ) -> None:
         self.settings = settings or get_settings()
+        self.credentials = credentials
         self._client = client or httpx.Client(
             base_url=self.settings.weex_base_url.rstrip("/"),
             timeout=self.settings.ark_timeout_seconds,
         )
         self._owns_client = client is None
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+
+    @property
+    def supports_trade_fills(self) -> bool:
+        """Whether ``get_trades`` can be used at all.
+
+        The virtual account exposes only balance / position / order(POST) /
+        order/history, so there is no fill feed to reconcile against.
+        """
+
+        return not self.settings.weex_virtual_only
 
     def close(self) -> None:
         if self._owns_client:
@@ -123,26 +143,20 @@ class WeexClient(ExchangeClient):
         query_string: str = "",
         body: str = "",
     ) -> dict[str, str]:
-        if not all(
-            (
-                self.settings.weex_api_key,
-                self.settings.weex_api_secret,
-                self.settings.weex_api_passphrase,
-            )
-        ):
+        if self.credentials is None:
             raise ExchangeError("WEEX private API credentials are not configured")
         timestamp = str(self._clock_ms())
         return {
-            "ACCESS-KEY": self.settings.weex_api_key,
+            "ACCESS-KEY": self.credentials.api_key,
             "ACCESS-SIGN": self.signature(
-                self.settings.weex_api_secret,
+                self.credentials.api_secret,
                 timestamp,
                 method,
                 path,
                 query_string,
                 body,
             ),
-            "ACCESS-PASSPHRASE": self.settings.weex_api_passphrase,
+            "ACCESS-PASSPHRASE": self.credentials.passphrase,
             "ACCESS-TIMESTAMP": timestamp,
         }
 
@@ -328,7 +342,7 @@ class WeexClient(ExchangeClient):
         if not isinstance(raw, dict) or not raw.get("success", False):
             message = raw.get("errorMessage", "request rejected") if isinstance(raw, dict) else "invalid response"
             raise ExchangeError(f"WEEX order rejected: {message}")
-        return ExchangeOrder(
+        accepted = ExchangeOrder(
             order_id=str(raw["orderId"]),
             client_order_id=str(raw.get("clientOrderId", request.client_order_id)),
             symbol=normalize_symbol(request.symbol),
@@ -346,6 +360,21 @@ class WeexClient(ExchangeClient):
             reduce_only=request.reduce_only,
             raw=raw,
         )
+        return self._refresh_order(accepted)
+
+    def _refresh_order(self, accepted: ExchangeOrder) -> ExchangeOrder:
+        """Fill in the real status the order response omits.
+
+        下单响应只有 orderId/clientOrderId/success，没有 status；市价单实测在响应
+        返回后立刻可查到终态。回查失败说明状态未知，退回 ``OPEN`` —— 订单已受理，
+        不能因为补充查询失败就让调用方以为下单失败。
+        """
+
+        try:
+            current = self.get_order_by_client_id(accepted.client_order_id)
+        except ExchangeError:
+            return accepted
+        return current if current is not None else accepted
 
     def _parse_order(self, raw: dict[str, Any]) -> ExchangeOrder:
         return ExchangeOrder(
@@ -367,7 +396,38 @@ class WeexClient(ExchangeClient):
             raw=raw,
         )
 
+    def _order_history(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        """Query ``/capi/v3[/sim]/order/history``.
+
+        Only closed orders (FILLED or CANCELED) appear here: while a limit
+        order is resting it is absent from this feed.
+        """
+
+        raw = self._request(
+            "GET",
+            self._private_path("order/history"),
+            params={
+                "symbol": _exchange_symbol(symbol, self.settings.weex_virtual_only) if symbol else None,
+                "limit": 100,
+                "page": 0,
+            },
+            private=True,
+        )
+        if not isinstance(raw, list):
+            raise ExchangeError("WEEX order history response is not an array")
+        return [item for item in raw if isinstance(item, dict)]
+
     def get_order(self, order_id: str) -> ExchangeOrder:
+        if self.settings.weex_virtual_only:
+            # 模拟盘没有单笔查单接口（GET /capi/v3/sim/order 返回 405），只能从
+            # order/history 反查；该接口仅含终态订单，挂单中的订单查不到。
+            for item in self._order_history():
+                if str(item.get("orderId")) == str(order_id):
+                    return self._parse_order(item)
+            raise ExchangeError(
+                f"WEEX order {order_id} is not in order history; "
+                "the virtual account only exposes closed orders"
+            )
         raw = self._request(
             "GET",
             self._private_path("order"),
@@ -379,16 +439,8 @@ class WeexClient(ExchangeClient):
         return self._parse_order(raw)
 
     def get_order_by_client_id(self, client_order_id: str) -> ExchangeOrder | None:
-        raw = self._request(
-            "GET",
-            self._private_path("order/history"),
-            params={"limit": 100, "page": 0},
-            private=True,
-        )
-        if not isinstance(raw, list):
-            raise ExchangeError("WEEX order history response is not an array")
-        for item in raw:
-            if isinstance(item, dict) and item.get("clientOrderId") == client_order_id:
+        for item in self._order_history():
+            if item.get("clientOrderId") == client_order_id:
                 return self._parse_order(item)
         return None
 
@@ -400,6 +452,14 @@ class WeexClient(ExchangeClient):
     ) -> list[ExchangeFill]:
         if not 1 <= limit <= 100:
             raise ValueError("WEEX trade limit must be between 1 and 100")
+        if self.settings.weex_virtual_only:
+            # 模拟盘只开放 balance / position / order(POST) / order/history 四个
+            # 端点，没有成交流水。返回 realized_pnl 恒为 0 的假成交会让日亏损与
+            # 连亏熔断永远不触发，因此这里直接失败。
+            raise ExchangeError(
+                "WEEX virtual account does not expose trade fills; "
+                "derive realised PnL from balance snapshots instead"
+            )
         raw = self._request(
             "GET",
             self._private_path("userTrades"),

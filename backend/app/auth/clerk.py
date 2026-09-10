@@ -1,9 +1,11 @@
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 from uuid import uuid4
 
 import jwt
 from fastapi import HTTPException, status
+from jwt.exceptions import PyJWKClientConnectionError
 
 from app.config import Settings, get_settings
 from app.db.models import User
@@ -36,22 +38,33 @@ def principal_from_claims(claims: dict[str, Any]) -> AuthPrincipal:
     )
 
 
+@lru_cache(maxsize=4)
+def jwks_client(jwks_url: str) -> jwt.PyJWKClient:
+    """按 URL 复用客户端，让 PyJWT 实例级的 JWKS 缓存真正生效；否则每个请求都要出网拉一次。"""
+    return jwt.PyJWKClient(jwks_url)
+
+
 def verify_session_token(token: str, settings: Settings | None = None) -> AuthPrincipal:
     settings = settings or get_settings()
     if not settings.clerk_jwks_url:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Clerk JWKS is not configured")
 
+    decode_kwargs: dict[str, Any] = {"algorithms": ["RS256"]}
+    if settings.clerk_issuer:
+        decode_kwargs["issuer"] = settings.clerk_issuer
+    if settings.clerk_audience:
+        decode_kwargs["audience"] = settings.clerk_audience
+    else:
+        decode_kwargs["options"] = {"verify_aud": False}
+
     try:
-        jwks_client = jwt.PyJWKClient(settings.clerk_jwks_url)
-        signing_key = jwks_client.get_signing_key_from_jwt(token).key
-        decode_kwargs: dict[str, Any] = {"algorithms": ["RS256"]}
-        if settings.clerk_issuer:
-            decode_kwargs["issuer"] = settings.clerk_issuer
-        if settings.clerk_audience:
-            decode_kwargs["audience"] = settings.clerk_audience
-        else:
-            decode_kwargs["options"] = {"verify_aud": False}
+        signing_key = jwks_client(settings.clerk_jwks_url).get_signing_key_from_jwt(token).key
         claims = jwt.decode(token, signing_key, **decode_kwargs)
+    except (PyJWKClientConnectionError, OSError) as exc:
+        # Clerk 端偶发断连/超时属于依赖不可用，不能让它冒泡成 500（会丢掉 CORS 头，前端只看到 CORS 报错）
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Clerk JWKS is unavailable"
+        ) from exc
     except (jwt.PyJWTError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Clerk token") from exc
     return principal_from_claims(claims)

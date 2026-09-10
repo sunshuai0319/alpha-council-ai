@@ -7,7 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import AccountSnapshot, Fill, Order, PnlSnapshot, Position
-from app.exchange.base import ExchangeClient, ExchangeFill, ExchangeOrder, ExchangePosition
+from app.exchange.base import (
+    ExchangeBalance,
+    ExchangeClient,
+    ExchangeFill,
+    ExchangeOrder,
+    ExchangePosition,
+)
 
 
 @dataclass
@@ -26,7 +32,10 @@ class ReconciliationResult:
     orders: list[ExchangeOrder]
     fills: list[ExchangeFill]
     positions: list[ExchangePosition]
-    realized_pnl: Decimal
+    #: ``None`` 表示账户没有成交流水，本次无法观测到已实现盈亏 —— 与「等于 0」
+    #: 是两回事：假的 0 会让日亏损与连亏熔断永远不触发。
+    realized_pnl: Decimal | None
+    fills_available: bool = True
 
 
 class ReconciliationService:
@@ -48,12 +57,14 @@ class ReconciliationService:
             order = exchange.get_order(order_id)
             self.store.orders[order.order_id] = order
             synced_orders.append(order)
-        fills = exchange.get_trades(symbol=symbol)
+        fills_available = bool(getattr(exchange, "supports_trade_fills", True))
+        fills = exchange.get_trades(symbol=symbol) if fills_available else []
         for fill in fills:
             self.store.fills[fill.fill_id] = fill
         positions = exchange.get_positions()
-        for position in positions:
-            self.store.positions[f"{position.symbol}:{position.side}"] = position
+        # positions 是当前状态而不是事件流：整体替换，否则已平掉的仓位会永远留在
+        # 结果里（实测平仓后 result.positions 仍报 1，而交易所返回空）。
+        self.store.positions = {f"{position.symbol}:{position.side}": position for position in positions}
         if self.db is not None and user_id and trading_account_id:
             self._persist_db(
                 exchange,
@@ -62,12 +73,14 @@ class ReconciliationService:
                 orders=synced_orders,
                 fills=fills,
                 positions=positions,
+                fills_available=fills_available,
             )
         return ReconciliationResult(
             orders=synced_orders,
             fills=list(self.store.fills.values()),
             positions=list(self.store.positions.values()),
-            realized_pnl=self.store.realized_pnl,
+            realized_pnl=self.store.realized_pnl if fills_available else None,
+            fills_available=fills_available,
         )
 
     def _persist_db(
@@ -79,10 +92,20 @@ class ReconciliationService:
         orders: list[ExchangeOrder],
         fills: list[ExchangeFill],
         positions: list[ExchangePosition],
+        fills_available: bool = True,
     ) -> None:
         if self.db is None:
             return
         db = self.db
+        balance = next(iter(exchange.get_balances()), None)
+        # 必须在写入本次快照之前算，否则「上一笔」就是本次自己，差值恒为 0。
+        realized_pnl = self._realized_pnl(
+            db,
+            user_id=user_id,
+            trading_account_id=trading_account_id,
+            balance=balance,
+            fills_available=fills_available,
+        )
         order_rows: dict[str, Order] = {}
         for item_order in orders:
             row = db.scalar(
@@ -151,9 +174,9 @@ class ReconciliationService:
             position_row.mark_price = item_position.entry_value / item_position.quantity if item_position.quantity else None
             position_row.leverage = item_position.leverage
             position_row.unrealized_pnl = item_position.unrealized_pnl
-        balance = next(iter(exchange.get_balances()), None)
         now = datetime.now(UTC)
         if balance is not None:
+            unrealized = sum((position.unrealized_pnl for position in positions), Decimal(0))
             db.add(
                 AccountSnapshot(
                     user_id=user_id,
@@ -171,9 +194,51 @@ class ReconciliationService:
                     trading_account_id=trading_account_id,
                     captured_at=now,
                     equity=balance.balance + balance.unrealized_pnl,
-                    realized_pnl=sum((fill.realized_pnl for fill in fills), Decimal(0)),
-                    unrealized_pnl=sum((position.unrealized_pnl for position in positions), Decimal(0)),
+                    realized_pnl=realized_pnl,
+                    unrealized_pnl=unrealized,
                     drawdown_pct=0,
                 )
             )
         db.commit()
+
+    def _realized_pnl(
+        self,
+        db: Session,
+        *,
+        user_id: str,
+        trading_account_id: str,
+        balance: ExchangeBalance | None,
+        fills_available: bool,
+    ) -> Decimal:
+        """累计已实现盈亏。
+
+        有成交流水时用 fill 求和；没有时（虚拟盘）改为余额差分：钱包余额只随
+        手续费与已实现盈亏变动，未实现盈亏是单独列示的（实测开仓后余额净减与仓位
+        ``openFee`` 逐位相等），所以两次对账之间的余额变化就是区间已实现盈亏。
+        """
+
+        if fills_available:
+            return sum((fill.realized_pnl for fill in self.store.fills.values()), Decimal(0))
+        if balance is None:
+            return Decimal(0)
+        previous_account = db.scalar(
+            select(AccountSnapshot)
+            .where(
+                AccountSnapshot.user_id == user_id,
+                AccountSnapshot.trading_account_id == trading_account_id,
+            )
+            .order_by(AccountSnapshot.captured_at.desc(), AccountSnapshot.id.desc())
+            .limit(1)
+        )
+        previous_pnl = db.scalar(
+            select(PnlSnapshot)
+            .where(
+                PnlSnapshot.user_id == user_id,
+                PnlSnapshot.trading_account_id == trading_account_id,
+            )
+            .order_by(PnlSnapshot.captured_at.desc(), PnlSnapshot.id.desc())
+            .limit(1)
+        )
+        if previous_account is None or previous_pnl is None:
+            return Decimal(0)  # 首次观测，没有可比较的基准
+        return previous_pnl.realized_pnl + (balance.balance - previous_account.balance)

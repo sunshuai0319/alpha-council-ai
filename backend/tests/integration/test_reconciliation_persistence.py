@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -70,6 +71,109 @@ class ExchangeFixture:
 
     def get_balances(self) -> list[ExchangeBalance]:
         return [ExchangeBalance("SUSDT", Decimal(1003), Decimal(1000), Decimal(3), Decimal(3))]
+
+
+class NoTradeFeedFixture(ExchangeFixture):
+    """虚拟盘：没有成交流水接口，get_trades 一旦被调用就说明还在撒谎。"""
+
+    supports_trade_fills = False
+
+    def __init__(self, balance: str, unrealized: str = "0") -> None:
+        self._balance = Decimal(balance)
+        self._unrealized = Decimal(unrealized)
+
+    def get_trades(self, symbol=None, order_id=None, limit=100):
+        raise AssertionError("virtual account has no trade feed; it must not be queried")
+
+    def get_positions(self) -> list[ExchangePosition]:
+        position = super().get_positions()[0]
+        return [ExchangePosition(**{**position.__dict__, "unrealized_pnl": self._unrealized})]
+
+    def get_balances(self) -> list[ExchangeBalance]:
+        return [ExchangeBalance("SUSDT", self._balance, self._balance, Decimal(0), self._unrealized)]
+
+
+def _scoped_db(tmp_path):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'reconcile.db'}")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    db.add(User(id="user-reconcile", clerk_user_id="clerk-reconcile"))
+    db.add(TradingAccount(id="account-reconcile", user_id="user-reconcile"))
+    db.commit()
+    return db
+
+
+def _reconcile(service: ReconciliationService, exchange: ExchangeFixture):
+    return service.reconcile(
+        exchange,
+        user_id="user-reconcile",
+        trading_account_id="account-reconcile",
+        order_ids=["exchange-1"],
+        symbol="BTC-USDT",
+    )
+
+
+def test_reconciliation_skips_trade_feed_when_exchange_has_none(tmp_path) -> None:
+    db = _scoped_db(tmp_path)
+    service = ReconciliationService(db=db)
+
+    result = _reconcile(service, NoTradeFeedFixture("1000"))
+
+    assert result.fills_available is False
+    # None 表示「不可得」，而不是「等于 0」——0 会让亏损熔断永远不触发。
+    assert result.realized_pnl is None
+    assert db.scalars(select(Fill)).all() == []
+    assert len(db.scalars(select(AccountSnapshot)).all()) == 1
+
+
+def test_reconciliation_matches_live_virtual_account_round_trip(tmp_path) -> None:
+    """用真实虚拟盘一笔开+平（BTCSUSDT 0.0001）的余额复现公式。
+
+    实测：开仓前 19999.95976631；开仓后 19999.95354940（该仓位 ``openFee`` 实测
+    0.00621691，余额净减与之**逐位相等**，未实现盈亏 0.00011 没有进余额 —— 即
+    余额只随手续费与已实现盈亏变动）；平仓后 19999.94732250。
+    """
+
+    db = _scoped_db(tmp_path)
+    service = ReconciliationService(db=db)
+
+    _reconcile(service, NoTradeFeedFixture("19999.95976631", "0"))
+    _reconcile(service, NoTradeFeedFixture("19999.95354940", "0.00011"))
+    _reconcile(service, NoTradeFeedFixture("19999.94732250", "0"))
+
+    snapshots = db.scalars(select(PnlSnapshot).order_by(PnlSnapshot.id)).all()
+    assert snapshots[0].realized_pnl == Decimal(0)  # 首次观测，无基准
+    # 等于该仓位真实的手续费；未实现盈亏 0.00011 不应污染已实现盈亏
+    assert snapshots[1].realized_pnl == pytest.approx(Decimal("-0.00621691"), abs=Decimal("1e-9"))
+    assert snapshots[2].realized_pnl == pytest.approx(Decimal("-0.01244381"), abs=Decimal("1e-9"))
+
+
+class _FlatFixture(NoTradeFeedFixture):
+    def get_positions(self) -> list[ExchangePosition]:
+        return []
+
+
+def test_reconciliation_positions_reflect_current_state_not_history(tmp_path) -> None:
+    """平掉的仓位必须从结果里消失：positions 是当前状态，不是事件流。"""
+    db = _scoped_db(tmp_path)
+    service = ReconciliationService(db=db)
+
+    assert len(_reconcile(service, NoTradeFeedFixture("1000")).positions) == 1
+    assert _reconcile(service, _FlatFixture("1000")).positions == []
+
+
+def test_reconciliation_derives_realized_pnl_from_balance_without_trade_feed(tmp_path) -> None:
+    """无成交流水时，已实现盈亏 = 余额变化的累加；未实现盈亏单独列示、不参与推导。"""
+    db = _scoped_db(tmp_path)
+    service = ReconciliationService(db=db)
+
+    _reconcile(service, NoTradeFeedFixture("1000", "0"))
+    _reconcile(service, NoTradeFeedFixture("1010", "4"))
+
+    snapshots = db.scalars(select(PnlSnapshot).order_by(PnlSnapshot.id)).all()
+    # Δbalance = 10；未实现盈亏 4 只写进 unrealized_pnl，不污染已实现盈亏
+    assert [snapshot.realized_pnl for snapshot in snapshots] == [Decimal(0), Decimal(10)]
+    assert snapshots[1].unrealized_pnl == Decimal(4)
 
 
 def test_reconciliation_persists_exchange_state_and_is_idempotent(tmp_path) -> None:

@@ -32,9 +32,6 @@ class Settings(BaseSettings):
     ark_timeout_seconds: float = 60
 
     weex_base_url: str = "https://api-contract.weex.com"
-    weex_api_key: str = ""
-    weex_api_secret: str = ""
-    weex_api_passphrase: str = ""
     weex_virtual_only: bool = True
 
     clerk_jwks_url: str = ""

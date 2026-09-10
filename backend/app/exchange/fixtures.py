@@ -114,6 +114,8 @@ TRADE_RESPONSE = [
 class FixtureExchangeClient:
     """Deterministic WEEX-like client for local API and browser smoke tests."""
 
+    supports_trade_fills = True
+
     def __init__(self) -> None:
         self._orders: dict[str, ExchangeOrder] = {}
 

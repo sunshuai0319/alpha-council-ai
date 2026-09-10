@@ -31,7 +31,7 @@ from app.domain.schemas import (
     TradingCycleState,
 )
 from app.exchange.base import ExchangeClient
-from app.exchange.weex import WeexClient
+from app.exchange.weex import WeexClient, WeexCredentials
 from app.execution.service import ExecutionService
 from app.rag.embeddings import BGEEmbedder, BGEReranker
 from app.rag.milvus import MilvusVectorStore
@@ -96,7 +96,7 @@ class TradingCycleService:
     ) -> None:
         self.db = db
         self.settings = settings or get_settings()
-        self.exchange_factory = exchange_factory or (lambda: WeexClient(self.settings))
+        self.exchange_factory = exchange_factory
         self.graph_factory = graph_factory or self._default_graph
         self.risk_engine = risk_engine or RiskEngine(self.settings)
         self.execution_service = execution_service or ExecutionService()
@@ -123,7 +123,7 @@ class TradingCycleService:
         cycle_id = str(uuid4())
         started_at = int(datetime.now(UTC).timestamp() * 1000)
         logger.info("cycle start: user=%s symbol=%s", user_id, symbol)
-        exchange = self.exchange_factory()
+        exchange = self._exchange_for_user(user_id)
         collector = WeexCollector(exchange)
         candle_result, snapshot_result = collector.collect(
             symbols=(symbol,),
@@ -329,6 +329,28 @@ class TradingCycleService:
             )
         )
 
+    def _exchange_for_user(self, user_id: str) -> ExchangeClient:
+        if self.exchange_factory is not None:
+            return self.exchange_factory()
+        account = self._account_for_user(user_id)
+        credentials = None
+        if (
+            account
+            and account.api_key_ref
+            and account.api_secret_ref
+            and account.passphrase_ref
+            and not any(
+                value.startswith("env:")
+                for value in (account.api_key_ref, account.api_secret_ref, account.passphrase_ref)
+            )
+        ):
+            credentials = WeexCredentials(
+                api_key=account.api_key_ref,
+                api_secret=account.api_secret_ref,
+                passphrase=account.passphrase_ref,
+            )
+        return WeexClient(self.settings, credentials=credentials)
+
     def _persist(
         self,
         *,
@@ -509,7 +531,7 @@ class TradingCycleService:
         return {"items": []}
 
     def close_position(self, user_id: str, symbol: str) -> dict[str, Any]:
-        exchange = self.exchange_factory()
+        exchange = self._exchange_for_user(user_id)
         positions = [position for position in exchange.get_positions() if position.symbol == symbol]
         if not positions:
             return {"status": "NO_POSITION", "symbol": symbol}

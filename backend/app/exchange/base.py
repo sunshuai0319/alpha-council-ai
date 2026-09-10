@@ -97,6 +97,15 @@ class ExchangeFill:
 
 
 class ExchangeClient(Protocol):
+    @property
+    def supports_trade_fills(self) -> bool:
+        """False 表示该账户没有成交流水接口。
+
+        对账层据此决定能否用 fill 推算已实现盈亏，而不是靠捕获异常做能力探测。
+        """
+
+        ...
+
     def get_candles(self, symbol: str, timeframe: str, limit: int = 100) -> list[Candle]: ...
 
     def get_market_snapshot(self, symbol: str) -> MarketSnapshot: ...

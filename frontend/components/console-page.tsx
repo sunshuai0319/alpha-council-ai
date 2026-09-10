@@ -92,9 +92,9 @@ function AccountCard({ accounts, refresh }: { accounts: TradingAccount[]; refres
       await apiRequest("/accounts", getToken, {
         method: "POST",
         body: JSON.stringify({
-          api_key_ref: apiKey || "pending",
-          api_secret_ref: apiSecret || "pending",
-          passphrase_ref: passphrase || "pending",
+          api_key_ref: apiKey.trim(),
+          api_secret_ref: apiSecret.trim(),
+          passphrase_ref: passphrase.trim(),
           environment: "virtual",
           provider: "weex",
         }),
@@ -151,10 +151,10 @@ function AccountCard({ accounts, refresh }: { accounts: TradingAccount[]; refres
     )}
     {accounts.length ? null : (
       <div className="account-form">
-        <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={t("console.apiKey")} autoComplete="off" />
-        <input value={apiSecret} onChange={(event) => setApiSecret(event.target.value)} placeholder={t("console.apiSecret")} autoComplete="off" />
-        <input value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder={t("console.passphrase")} autoComplete="off" />
-        <button className="button button--signal" disabled={busy} onClick={() => void createAccount()}>{t("console.createAccount")}</button>
+        <input required value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={t("console.apiKey")} autoComplete="off" />
+        <input required value={apiSecret} onChange={(event) => setApiSecret(event.target.value)} placeholder={t("console.apiSecret")} autoComplete="off" />
+        <input required value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder={t("console.passphrase")} autoComplete="off" />
+        <button className="button button--signal" disabled={busy || !apiKey.trim() || !apiSecret.trim() || !passphrase.trim()} onClick={() => void createAccount()}>{t("console.createAccount")}</button>
       </div>
     )}
     {message ? <p className="account-hint" role="status">{message}</p> : null}

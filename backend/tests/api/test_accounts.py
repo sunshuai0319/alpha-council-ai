@@ -11,7 +11,7 @@ from app.main import app
 from app.services.cycle import TradingCycleService
 
 
-def test_account_api_only_accepts_virtual_env_reference(tmp_path) -> None:
+def test_account_api_stores_ui_credentials_for_virtual_account(tmp_path) -> None:
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'accounts.db'}")
     Base.metadata.create_all(engine)
     db = Session(engine)
@@ -25,9 +25,9 @@ def test_account_api_only_accepts_virtual_env_reference(tmp_path) -> None:
         response = client.post(
             "/api/accounts",
             json={
-                "api_key_ref": "env:WEEX_USER_KEY",
-                "api_secret_ref": "env:WEEX_USER_SECRET",
-                "passphrase_ref": "env:WEEX_USER_PASSPHRASE",
+                "api_key_ref": "ui-account-key",
+                "api_secret_ref": "ui-account-secret",
+                "passphrase_ref": "ui-account-passphrase",
                 "environment": "virtual",
             },
         )
@@ -40,13 +40,35 @@ def test_account_api_only_accepts_virtual_env_reference(tmp_path) -> None:
         live = client.post(
             "/api/accounts",
             json={
-                "api_key_ref": "env:WEEX_USER_KEY",
-                "api_secret_ref": "env:WEEX_USER_SECRET",
-                "passphrase_ref": "env:WEEX_USER_PASSPHRASE",
+                "api_key_ref": "ui-account-key",
+                "api_secret_ref": "ui-account-secret",
+                "passphrase_ref": "ui-account-passphrase",
                 "environment": "live",
             },
         )
         assert live.status_code == 422
+
+        empty = client.post(
+            "/api/accounts",
+            json={
+                "api_key_ref": "",
+                "api_secret_ref": "ui-account-secret",
+                "passphrase_ref": "ui-account-passphrase",
+                "environment": "virtual",
+            },
+        )
+        assert empty.status_code == 422
+
+        env_reference = client.post(
+            "/api/accounts",
+            json={
+                "api_key_ref": "env:WEEX_USER_KEY",
+                "api_secret_ref": "ui-account-secret",
+                "passphrase_ref": "ui-account-passphrase",
+                "environment": "virtual",
+            },
+        )
+        assert env_reference.status_code == 422
     finally:
         app.dependency_overrides.clear()
         db.close()
@@ -64,3 +86,33 @@ def test_pause_is_persisted_per_user(tmp_path) -> None:
     assert service.pause("user-control") == {"status": "PAUSED"}
     assert TradingCycleService(db=db).control_status("user-control") == "PAUSED"
     assert TradingCycleService(db=db).control_status("other-user") == "RUNNING"
+
+
+def test_cycle_uses_enabled_ui_account_credentials(tmp_path) -> None:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'cycle-account.db'}")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    db.add(User(id="user-cycle-account", clerk_user_id="clerk-cycle-account"))
+    db.add(
+        TradingAccount(
+            id="account-cycle",
+            user_id="user-cycle-account",
+            provider="weex",
+            environment="virtual",
+            api_key_ref="ui-key",
+            api_secret_ref="ui-secret",
+            passphrase_ref="ui-passphrase",
+            enabled=True,
+        )
+    )
+    db.commit()
+    service = TradingCycleService(db=db)
+
+    exchange = service._exchange_for_user("user-cycle-account")
+
+    assert exchange.credentials.api_key == "ui-key"
+    assert exchange.credentials.api_secret == "ui-secret"
+    assert exchange.credentials.passphrase == "ui-passphrase"
+    exchange.close()
+    db.close()
+    engine.dispose()

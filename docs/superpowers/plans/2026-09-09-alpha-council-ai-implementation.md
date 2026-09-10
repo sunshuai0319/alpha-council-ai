@@ -106,7 +106,7 @@ def test_settings_require_external_service_urls(monkeypatch):
 
 - [ ] **步骤 3：实现配置和启动骨架**
 
-`Settings` 使用 Pydantic Settings，字段包括 `DATABASE_URL`、`MILVUS_URI`、`MILVUS_COLLECTION`、`EMBEDDING_MODEL_PATH`、`RERANKER_MODEL_PATH`、`ARK_API_KEY`、`ARK_BASE_URL`、`ARK_MODEL=deepseek-v4-pro-ga-260813`、`WEEX_BASE_URL`、`WEEX_API_KEY`、`WEEX_API_SECRET`、`WEEX_API_PASSPHRASE`、`CLERK_JWKS_URL`、`CLERK_SECRET_KEY` 和风控默认值。启动时只校验格式和必需配置，不打印密钥。
+`Settings` 使用 Pydantic Settings，字段包括 `DATABASE_URL`、`MILVUS_URI`、`MILVUS_COLLECTION`、`EMBEDDING_MODEL_PATH`、`RERANKER_MODEL_PATH`、`ARK_API_KEY`、`ARK_BASE_URL`、`ARK_MODEL=deepseek-v4-pro-ga-260813`、`WEEX_BASE_URL`、`CLERK_JWKS_URL`、`CLERK_SECRET_KEY` 和风控默认值。WEEX 私有凭证由用户在控制台创建虚拟账户时保存和使用。启动时只校验格式和必需配置，不打印密钥。
 
 后端 Compose 仅定义 `api` 与 `worker`，通过环境变量连接外部 PostgreSQL/Milvus；前端 Compose 仅定义 `web`，通过 `NEXT_PUBLIC_API_BASE_URL` 调用后端。
 
