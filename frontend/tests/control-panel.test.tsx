@@ -29,9 +29,9 @@ const virtualAccount = {
   },
 }
 
-function stubApi(controlStatus: string, accounts: unknown[] = []) {
+function stubApi(controlStatus: string, accounts: unknown[] = [], market: unknown[] = []) {
   const payloads: Record<string, unknown> = {
-    "/market": { items: [] },
+    "/market": { items: market },
     "/decisions": { items: [] },
     "/portfolio": { items: [] },
     "/events": { items: [] },
@@ -73,6 +73,31 @@ describe("console control panel", () => {
     render(<ConsolePage view="overview" />)
 
     expect(await screen.findByText("委员会运行中")).toBeVisible()
+  })
+
+  it("explains why the overview is empty instead of only showing dashes", async () => {
+    stubApi("RUNNING") // 无账户、无行情
+
+    render(<ConsolePage view="overview" />)
+
+    expect(await screen.findByText(/还没有交易账户/)).toBeVisible()
+  })
+
+  it("tells the user to enable the account when it exists but is off", async () => {
+    stubApi("RUNNING", [{ ...virtualAccount, enabled: false }])
+
+    render(<ConsolePage view="overview" />)
+
+    expect(await screen.findByText(/交易账户尚未启用/)).toBeVisible()
+  })
+
+  it("stays silent once market data exists", async () => {
+    stubApi("RUNNING", [virtualAccount], [{ symbol: "BTC-USDT", captured_at: 1, last_price: 100 }])
+
+    render(<ConsolePage view="overview" />)
+
+    await screen.findByText("委员会运行中")
+    expect(screen.queryByText(/还没有交易账户|交易账户尚未启用|账户已启用，但还没有交易周期数据/)).toBeNull()
   })
 
   it("shows leverage read-only: the virtual account cannot change it", async () => {

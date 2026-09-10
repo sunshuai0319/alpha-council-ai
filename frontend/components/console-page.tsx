@@ -1,11 +1,12 @@
 "use client"
 
 import { useAuth } from "@clerk/nextjs"
-import { CirclePause, CirclePlay, RefreshCw, ShieldAlert, Sparkles } from "lucide-react"
+import { CircleAlert, CirclePause, CirclePlay, RefreshCw, ShieldAlert, Sparkles } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, PortfolioTable, RiskBadge, VirtualBadge } from "@/components/console-primitives"
 import { ApiError, apiRequest } from "@/lib/api"
+import { emptyOverviewHint } from "@/lib/console-hints"
 import { useI18n } from "@/lib/i18n"
 import type { DashboardView, Decision, ItemsResponse, MarketSnapshot, Position, RiskEvent, RiskLimits, TradingAccount } from "@/lib/types"
 
@@ -287,6 +288,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
 
   const latest = data.decisions[0]
   const latestMarket = data.market[0]
+  const dataHint = emptyOverviewHint(data.accounts, data.market)
   const latestAnalysis = latest?.analyses
   const pnl = useMemo(() => data.positions.reduce((total, item) => total + item.unrealized_pnl, 0), [data.positions])
 
@@ -331,6 +333,8 @@ export function ConsolePage({ view }: { view: DashboardView }) {
       </section>
       <section className="telemetry-panel"><div className="eyebrow">{t("overview.telemetry")}</div><div className="telemetry-price">{latestMarket ? `$${formatNumber(latestMarket.last_price, 2)}` : "—"}</div><div className="telemetry-symbol">{latestMarket?.symbol ?? "BTC-USDT"}<span>{t("overview.lastPrice")}</span></div><div className="telemetry-grid"><span><b>{latestMarket?.funding_rate == null ? "—" : formatPercent(latestMarket.funding_rate)}</b><small>{t("overview.funding")}</small></span><span><b>{latestMarket?.volume_24h == null ? "—" : formatNumber(latestMarket.volume_24h, 0)}</b><small>{t("overview.volume")}</small></span></div></section>
     </div>
+    {/* 只显示「—」会让用户以为界面坏了：说明为什么没有数据，以及该做什么 */}
+    {dataHint ? <p className="data-hint" role="status"><CircleAlert size={15} /><span>{t(dataHint)}</span></p> : null}
     <ControlPanel status={controlStatus} onToggle={() => void changeControl()} busy={controlBusy} />
     <AccountCard accounts={data.accounts} refresh={refresh} />
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.atAGlance")}</span><h2>{t("overview.systemReadout")}</h2></div><span className="section-index">01 / 04</span></div><div className="metrics-grid"><Metric label={t("overview.openPositions")} value={String(data.positions.length)} detail={data.positions.length ? `${data.positions[0].symbol} active` : t("overview.flatBook")} /><Metric label={t("overview.unrealizedPnl")} value={formatSignedPnl(pnl)} detail={t("overview.syncedPositions")} tone={pnl >= 0 ? "positive" : "negative"} /><Metric label={t("overview.lastAction")} value={latest ? latest.action : "—"} detail={latest ? formatDate(latest.created_at) : t("overview.awaitingCycle")} tone="signal" /><Metric label={t("overview.riskEvents")} value={String(data.events.length)} detail={t("overview.hardGateHistory")} /></div></section>

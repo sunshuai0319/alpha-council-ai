@@ -96,6 +96,8 @@ h1 { font: 500 clamp(37px, 5vw, 64px)/.99 var(--serif); letter-spacing: -.045em;
 .account-hint { margin-top: 14px; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .account-list { display: grid; gap: 10px; }
 .account-row-card { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: rgba(21,33,36,.55); }
+.data-hint { display: flex; align-items: flex-start; gap: 9px; margin: 0 0 16px; padding: 11px 14px; border: 1px solid var(--line); border-left: 3px solid var(--lime); border-radius: 9px; background: rgba(21,33,36,.55); color: var(--muted); font-size: 12px; line-height: 1.6; }
+.data-hint svg { flex-shrink: 0; margin-top: 2px; color: var(--lime); }
 .account-risk { flex-basis: 100%; border-top: 1px solid var(--line); padding-top: 12px; }
 .account-risk-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
 .account-risk-head small { color: var(--muted); font-size: 11px; }
