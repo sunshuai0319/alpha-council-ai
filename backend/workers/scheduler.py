@@ -56,7 +56,15 @@ class TradingScheduler:
         interval = get_settings().decision_interval_seconds
         logger.info("trading scheduler started: interval=%ds symbols=%s", interval, self.symbols)
         while True:
-            self.run_once()
+            try:
+                self.run_once()
+            except Exception:
+                # 单轮失败（数据库短暂不可用、取账户列表出错等）不能让调度器退出：
+                # 进程退出后没有自动重启，交易会永久静默停止。
+                logger.exception("scheduler iteration failed")
+                db = self.service.db
+                if db is not None:
+                    db.rollback()
             sleep(interval)
 
 
