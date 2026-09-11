@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import create_engine, event, select
@@ -9,6 +9,7 @@ from app.db.models import (
     AccountSnapshot,
     Base,
     MarketMicrostructureRecord,
+    PnlSnapshot,
     Position,
     RiskEvent,
     TradingAccount,
@@ -38,6 +39,11 @@ from app.services.cycle import TradingCycleService
 
 
 class FakeExchange:
+    #: 虚拟盘没有成交流水。声明出来，对账才会走「余额差分」而不是去调 get_trades
+    #: —— 少了这一行，每次对账都会抛 AttributeError（实测被 best-effort 吞成 warning，
+    #: 账户同步静默失效）。
+    supports_trade_fills = False
+
     def get_candles(self, symbol: str, timeframe: str, limit: int = 100) -> list[Candle]:
         del limit
         return [
@@ -1265,3 +1271,57 @@ def test_cycle_records_an_account_outage_without_halting(tmp_path) -> None:
     assert service.control_status("u-1") == "RUNNING", "对端故障不该熔断账户"
     event_types = {row.event_type for row in db.scalars(select(RiskEvent)).all()}
     assert event_types, "故障必须留痕，否则排查时无从下手"
+
+
+def test_account_state_syncs_once_per_cycle_not_once_per_symbol(tmp_path) -> None:
+    """对账取的是**账户级**数据（positions / balances），与品种无关。
+
+    十个品种各同步一次就是十份完全相同的快照：实测 account_snapshots 涨到 91 行
+    （约 10 轮 × 10 品种），而权益曲线只需要每轮一个点。更要紧的是失败面被放大了
+    十倍 —— 一个抖动端点会产生十次失败。
+    """
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'sync-once.db'}")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+    db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+    db.commit()
+    service = TradingCycleService(db=db, settings=Settings(), exchange_factory=FakeExchange)
+
+    for symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT"):
+        service.run(user_id="u-1", symbol=symbol, llm=FailingLLM())
+
+    assert len(db.scalars(select(AccountSnapshot)).all()) == 1, "一轮只该同步一次账户状态"
+    assert len(db.scalars(select(PnlSnapshot)).all()) == 1
+    # 但每个品种的决策都必须落库 —— 少同步不等于少决策
+    assert len(db.scalars(select(TradingDecision)).all()) == 3
+
+
+def test_account_sync_is_due_again_once_the_interval_passes(tmp_path) -> None:
+    """跳过只是「本轮已同步」，不是永远不同步。
+
+    窗口取决策间隔：下一轮开始时应当重新同步一次，否则账户状态会永远停在
+    第一次观测上。
+    """
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'sync-window.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.commit()
+        service = TradingCycleService(db=db, settings=Settings(), exchange_factory=FakeExchange)
+
+        assert service._account_sync_due("a-1") is True, "还没同步过 → 该同步"
+
+        db.add(AccountSnapshot(
+            user_id="u-1", trading_account_id="a-1", captured_at=datetime.now(UTC),
+            balance=Decimal(10000), available_margin=Decimal(10000), equity=Decimal(10000),
+        ))
+        db.commit()
+        assert service._account_sync_due("a-1") is False, "刚同步过 → 本轮跳过"
+
+        # 把那条快照挪到很久以前，模拟「上一轮」
+        row = db.scalars(select(AccountSnapshot)).all()[0]
+        row.captured_at = datetime.now(UTC) - timedelta(seconds=service.settings.decision_interval_seconds + 1)
+        db.commit()
+        assert service._account_sync_due("a-1") is True, "过了窗口 → 该重新同步"

@@ -303,12 +303,21 @@ class TradingCycleService:
         # 唯一机制。放在暂停分支之外，暂停期间才不会留下幽灵持仓。
         account = self._account_for_user(user_id)
         if account is not None:
+            # 有成交时**必须**对账：订单要回查、持仓行的元数据要在建行之后登记。
+            # 没有成交时，对账就只剩「同步账户状态」这一件事 —— 而那是账户级数据，
+            # 与品种无关。十个品种各做一次是十倍冗余（实测 account_snapshots 涨到
+            # 91 行），失败面也放大十倍。所以一轮里只要已经同步过就跳过。
+            order_ids = [execution.exchange_order_id] if execution and execution.exchange_order_id else []
+            if not order_ids and not self._account_sync_due(account.id):
+                persisted = self._persist(result_state=state, risk=risk_decision, execution=execution)
+                return self._finish(state, risk_decision, execution, persisted, user_id, symbol)
+
             def _sync() -> None:
                 self.reconciliation.reconcile(
                     exchange,
                     user_id=user_id,
                     trading_account_id=account.id,
-                    order_ids=[execution.exchange_order_id] if execution and execution.exchange_order_id else [],
+                    order_ids=order_ids,
                     symbol=symbol,
                 )
                 # 必须在 reconcile 之后：行是它建的。把管理所需的元数据登记上去，
@@ -320,6 +329,20 @@ class TradingCycleService:
             # 同步仓位糟糕得多 —— 下一轮对账会把落下的补上。
             self._best_effort("reconciliation", user_id, symbol, _sync)
         persisted = self._persist(result_state=state, risk=risk_decision, execution=execution)
+        result = self._finish(state, risk_decision, execution, persisted, user_id, symbol)
+        if snapshot:
+            self._memory_market.append(snapshot.model_dump())
+        return result
+
+    def _finish(
+        self,
+        state: TradingCycleState,
+        risk_decision: RiskDecision,
+        execution: ExecutionResult | None,
+        persisted: bool,
+        user_id: str,
+        symbol: str,
+    ) -> CycleResult:
         result = CycleResult(state, risk_decision, execution, persisted)
         logger.info(
             "cycle done: user=%s symbol=%s action=%s risk=%s persisted=%s",
@@ -330,9 +353,26 @@ class TradingCycleService:
             persisted,
         )
         self._memory_results.setdefault(user_id, []).append(result)
-        if snapshot:
-            self._memory_market.append(snapshot.model_dump())
         return result
+
+    def _account_sync_due(self, trading_account_id: str) -> bool:
+        """这个账户是否该做一次账户级同步。
+
+        窗口取决策间隔：一轮里第一个品种同步、其余跳过；下一轮再同步一次。
+        """
+
+        if self.db is None:
+            return True
+        latest = self.db.scalar(
+            select(func.max(AccountSnapshot.captured_at)).where(
+                AccountSnapshot.trading_account_id == trading_account_id
+            )
+        )
+        if latest is None:
+            return True
+        if latest.tzinfo is None:  # SQLite 取回来是 naive 的
+            latest = latest.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - latest).total_seconds() >= self.settings.decision_interval_seconds
 
     @staticmethod
     def _hold_proposal(state: TradingCycleState, reason: str) -> TradeProposal:
