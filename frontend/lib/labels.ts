@@ -81,6 +81,9 @@ const MODEL_KEYS: Record<string, string> = {
 
 export type Label = { key: string; params?: Record<string, string> } | { text: string };
 
+/** 规则信号器开仓时的摘要：「rule signal SHORT score=-0.55」。 */
+const RULE_SIGNAL = /^rule signal (LONG|SHORT) score=(-?[\d.]+)$/;
+
 function labelFor(code: string, table: Record<string, string>, prefixTable = PREFIX_KEYS): Label {
   if (table[code]) return { key: table[code] };
   for (const [prefix, key] of prefixTable) {
@@ -99,6 +102,15 @@ function labelFor(code: string, table: Record<string, string>, prefixTable = PRE
 
 /** 风控拒绝 / 观望原因。 */
 export function reasonLabel(code: string): Label {
+  // 开仓摘要是自由文本而不是码，用模式匹配 —— 这样新旧记录都能翻译，
+  // 不必回头改历史数据。
+  const entry = RULE_SIGNAL.exec(code);
+  if (entry) {
+    return {
+      key: "reason.ruleSignalEntry",
+      params: { direction: entry[1], score: String(Number(Number(entry[2]).toFixed(2))) },
+    };
+  }
   return labelFor(code, REASON_KEYS);
 }
 
@@ -109,7 +121,7 @@ export function modelLabel(version: string): Label {
 }
 
 /** 把 Label 解析成可直接渲染的字符串。 */
-export function render(
+export function labelText(
   label: Label,
   t: (key: string, params?: Record<string, string>) => string,
 ): string {

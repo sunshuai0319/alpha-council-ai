@@ -5,7 +5,7 @@ import { ChevronRight, CircleAlert, CirclePause, CirclePlay, RefreshCw, ShieldAl
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, Pagination, PortfolioTable, RiskBadge, VirtualBadge } from "@/components/console-primitives"
-import { modelLabel, reasonLabel, render } from "@/lib/labels"
+import { labelText, modelLabel, reasonLabel } from "@/lib/labels"
 import { ApiError, apiRequest } from "@/lib/api"
 import { emptyOverviewHint } from "@/lib/console-hints"
 import { useI18n } from "@/lib/i18n"
@@ -322,7 +322,7 @@ function DecisionRow({ decision }: { decision: Decision }) {
   const analyses = decision.analyses
   // 机器码 → 界面文案。后端存的是稳定的英文码（审计要用的标识），
   // 在这里按当前语言翻译，见 lib/labels.ts。
-  const reasonLabelText = (code: string) => render(reasonLabel(code), t)
+  const reasonLabelText = (code: string) => labelText(reasonLabel(code), t)
   const separator = t("common.listSeparator")
   const isEntry = proposal != null && proposal.action !== "HOLD"
   const reasoningText = proposal?.reasoning_summary ? reasonLabelText(proposal.reasoning_summary) : ""
@@ -347,7 +347,7 @@ function DecisionRow({ decision }: { decision: Decision }) {
         <h4>{t("trades.detailProposal")}</h4>
         <div className="decision-detail-grid">
           <span>{t("common.confidence")} <b>{formatPercent(proposal.confidence)}</b></span>
-          {proposal.model_version ? <span>{t("trades.modelVersion")} <b>{render(modelLabel(proposal.model_version), t)}</b></span> : null}
+          {proposal.model_version ? <span>{t("trades.modelVersion")} <b>{labelText(modelLabel(proposal.model_version), t)}</b></span> : null}
           {/* 观望单没有仓位、杠杆、止损止盈、有效期可言。把它们显示出来只会是
               「仓位 0.0% / 杠杆 20×」这种噪声，反而掩盖了真正的原因。 */}
           {isEntry ? <>
@@ -370,7 +370,7 @@ function DecisionRow({ decision }: { decision: Decision }) {
           {agents.map(([labelKey, analysis]) => <article className="agent-card" key={labelKey}>
             <div className="agent-card-top"><span className="agent-glyph"><Sparkles size={14} /></span><span className="eyebrow">{t(labelKey)}</span><b>{formatPercent(analysis.confidence)}</b></div>
             <p>{analysis.reasoning_summary ?? "—"}</p>
-            <footer>{analysis.model_version ? render(modelLabel(analysis.model_version), t) : t("committee.noModelTrace")}</footer>
+            <footer>{analysis.model_version ? labelText(modelLabel(analysis.model_version), t) : t("committee.noModelTrace")}</footer>
           </article>)}
         </div>
       </section> : null}
@@ -378,7 +378,7 @@ function DecisionRow({ decision }: { decision: Decision }) {
         <h4>{t("trades.detailRisk")}</h4>
         <div className="decision-detail-grid">
           <span>{t("trades.execStatus")} <b><RiskBadge status={risk.status ?? "UNKNOWN"} /></b></span>
-          {risk.reasons?.length ? <span>{t("trades.reasons")} <b>{risk.reasons.map((reason) => render(reasonLabel(reason), t)).join(separator)}</b></span> : null}
+          {risk.reasons?.length ? <span>{t("trades.reasons")} <b>{risk.reasons.map((reason) => labelText(reasonLabel(reason), t)).join(separator)}</b></span> : null}
           {risk.adjusted_position_size_pct != null ? <span>{t("trades.adjustedSize")} <b>{formatPercent(risk.adjusted_position_size_pct)}</b></span> : null}
         </div>
       </section> : null}

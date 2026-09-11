@@ -6,6 +6,15 @@ vi.mock("@clerk/nextjs", () => ({
 }))
 
 import { ConsolePage } from "@/components/console-page"
+import { labelText, reasonLabel } from "@/lib/labels"
+import { messages } from "@/lib/i18n"
+
+// 用中文词条渲染，验证「选中文就该是中文」。
+const zhT = (key: string, params?: Record<string, string>) => {
+  let text = messages["zh-CN"][key] ?? key
+  for (const [name, value] of Object.entries(params ?? {})) text = text.replace(`{${name}}`, value)
+  return text
+}
 
 const virtualAccount = {
   id: "a-1",
@@ -490,5 +499,21 @@ describe("decision filters", () => {
       expect(filtered.length).toBeGreaterThan(0)
       expect(filtered.every((query) => query.includes("page=1"))).toBe(true)
     })
+  })
+})
+
+
+describe("rule signal labels", () => {
+  it("translates the entry summary, which is free text rather than a code", () => {
+    expect(labelText(reasonLabel("rule signal SHORT score=-0.5477"), zhT)).toBe("规则信号 SHORT，分数 -0.55")
+  })
+
+  it("translates the hold score code", () => {
+    expect(labelText(reasonLabel("signal_hold_score_0.26"), zhT)).toBe("信号分 0.26，未达开仓阈值")
+  })
+
+  it("leaves an unknown code alone rather than blanking it", () => {
+    // 显示一个陌生码远好过显示空白 —— 它本身就是排查线索。
+    expect(labelText(reasonLabel("some_future_code_42"), zhT)).toBe("some_future_code_42")
   })
 })
