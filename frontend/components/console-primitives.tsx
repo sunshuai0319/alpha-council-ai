@@ -92,7 +92,8 @@ export function DecisionCard({ decision }: { decision: Decision }) {
       <div className="decision-meta">
         <span>{t("common.confidence")} <b>{formatPercent(proposal?.confidence)}</b></span>
         <span>{t("common.size")} <b>{formatPercent(proposal?.position_size_pct)}</b></span>
-        <span>{t("common.leverage")} <b>{proposal?.leverage ?? 1}×</b></span>
+        {/* 虚拟盘杠杆固定、系统不下发提案杠杆，展示账户实际值而非提案占位值。 */}
+        <span title={t("console.leverageFixed")}>{t("common.leverage")} <b>{decision.leverage ?? proposal?.leverage ?? 1}×</b></span>
       </div>
       {reasons.length ? <div className="risk-reasons">{reasons.join(" · ")}</div> : null}
       <div className="decision-footer">

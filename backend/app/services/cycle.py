@@ -730,8 +730,22 @@ class TradingCycleService:
                 .order_by(TradingDecision.created_at.desc())
                 .limit(100)
             ).all()
-            return {"items": [self._decision_dict(row) for row in rows]}
+            leverage = self._effective_leverage(user_id)
+            return {"items": [self._decision_dict(row, leverage=leverage) for row in rows]}
         return {"items": [result.as_dict() for result in reversed(self._memory_results.get(user_id, []))]}
+
+    def _effective_leverage(self, user_id: str) -> int | None:
+        """账户实际生效的杠杆上限。
+
+        虚拟盘固定杠杆、系统不下发提案杠杆，所以决策展示必须用账户值而不是
+        提案占位值（HOLD 提案恒为 1，会让用户误以为系统用 1x 交易）。
+        """
+
+        if self.db is None:
+            return None
+        account = self._account_for_user(user_id)
+        limits = self.risk_engine.limits.tightened(account.risk_limits if account else None)
+        return limits.max_leverage
 
     def portfolio(self, user_id: str) -> dict[str, Any]:
         if self.db is not None:
@@ -802,7 +816,7 @@ class TradingCycleService:
         }
 
     @staticmethod
-    def _decision_dict(row: TradingDecision) -> dict[str, Any]:
+    def _decision_dict(row: TradingDecision, leverage: int | None = None) -> dict[str, Any]:
         return {
             "id": row.id,
             "cycle_id": row.cycle_id,
@@ -810,8 +824,10 @@ class TradingCycleService:
             "action": row.action,
             "status": row.status,
             "proposal": row.proposal,
+            "analyses": row.analyses,
             "risk_decision": row.risk_decision,
             "execution_result": row.execution_result,
+            "leverage": leverage,
             "created_at": row.created_at,
         }
 

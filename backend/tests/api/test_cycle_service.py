@@ -15,6 +15,7 @@ from app.db.models import (
 )
 from app.domain.enums import Action, RiskStatus
 from app.domain.schemas import (
+    AnalysisResult,
     Candle,
     ExecutionResult,
     MarketSnapshot,
@@ -162,6 +163,39 @@ def test_persisting_a_filled_order_stores_json_safe_values(tmp_path) -> None:
         row = db.scalars(select(TradingDecision)).all()[0]
         assert row.execution_result["realized_pnl"] == "-1.25"
         assert row.execution_result["average_price"] == "100.5"
+
+
+def test_decisions_return_analyses_and_account_leverage(tmp_path) -> None:
+    """决策详情要能展示：agent 分析和账户实际杠杆（而非提案占位的 1x）。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'decisions.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.commit()
+        service = TradingCycleService(db=db)
+        state = _long_state().model_copy(
+            update={
+                "market_analysis": AnalysisResult(
+                    status="neutral", confidence=0.4, reasoning_summary="market reasoning",
+                    evidence_refs=[], model_version="m", trace_id="t1",
+                ),
+                "quant_analysis": AnalysisResult(
+                    status="BEARISH", confidence=0.6, reasoning_summary="quant reasoning",
+                    evidence_refs=[], model_version="q", trace_id="t2",
+                ),
+            }
+        )
+        service._persist(
+            result_state=state,
+            risk=RiskDecision(status=RiskStatus.ALLOWED, reasons=["hold_no_order"]),
+            execution=None,
+        )
+
+        (item,) = service.decisions("u-1")["items"]
+        assert item["analyses"]["market"]["reasoning_summary"] == "market reasoning"
+        assert item["analyses"]["quant"]["status"] == "BEARISH"
+        assert item["leverage"] == 20
 
 
 def test_resume_sets_pending_immediate_and_consume_clears_it(tmp_path) -> None:

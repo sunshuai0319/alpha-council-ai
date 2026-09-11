@@ -28,10 +28,13 @@ export type TradeProposal = {
   leverage?: number
   stop_loss?: number | null
   take_profit?: number | null
+  valid_until?: number | null
+  invalidation_conditions?: string[]
   confidence?: number
   reasoning_summary?: string
+  evidence_refs?: string[]
   model_version?: string
-  valid_until?: number
+  trace_id?: string
 }
 
 export type Decision = {
@@ -57,6 +60,8 @@ export type Decision = {
     exchange_order_id?: string | null
     message?: string | null
   } | null
+  //: 账户实际生效杠杆（虚拟盘固定，系统不下发提案杠杆）；显示用，不是提案值。
+  leverage?: number | null
   created_at?: string | null
 }
 
