@@ -225,12 +225,27 @@ class TradingCycleService:
             risk_decision = RiskDecision(status=RiskStatus.PAUSED, reasons=[halt_reason])
             execution = None
         else:
+            # 信号器按风险预算反推仓位需要权益。把余额塞进 state 交给 signal_node
+            # 读（graph 是无参 factory，不能在构造时传参）。_evaluate_proposal 里
+            # 还会再取一次做风控，两次调用可接受。
+            try:
+                balance = self._balance_for(exchange)
+            except Exception:  # noqa: BLE001 - 余额不可得时信号器按默认权益算，风控仍会把关
+                balance = None
+            equity = balance.balance if balance is not None else None
+            if equity is not None:
+                state = state.model_copy(update={"equity": equity})
             graph = (
                 build_trading_cycle_graph(llm=llm, settings=self.settings)
                 if llm is not None
                 else self.graph_factory()
             )
-            logger.info("cycle committee: user=%s symbol=%s (running agents + LLM)", user_id, symbol)
+            logger.info(
+                "cycle signal: user=%s symbol=%s equity=%s (rule signal + LLM veto)",
+                user_id,
+                symbol,
+                equity,
+            )
             state = graph.invoke(state)
             proposal = state.trade_proposal
             logger.info(
@@ -597,6 +612,8 @@ class TradingCycleService:
             execution_result=execution.model_dump(mode="json") if execution else None,
             data_versions=result_state.data_versions,
             model_versions=result_state.model_versions,
+            signal_score=result_state.signal_score,
+            veto_type=result_state.veto_type,
         )
         self.db.add(decision)
         # SessionLocal 是 autoflush=False：RiskEvent 与 TradingDecision 之间只有

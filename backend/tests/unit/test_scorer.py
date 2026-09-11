@@ -1,6 +1,5 @@
 """打分卡：方向由 1h/4h 趋势一致性、动量、量能决定；波动率是门控。"""
 
-import pytest
 
 from app.signals.scorer import HOLD, LONG, SHORT, score_direction
 

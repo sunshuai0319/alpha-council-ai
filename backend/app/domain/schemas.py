@@ -87,8 +87,10 @@ class AnalysisResult(BaseModel):
     confidence: float = Field(ge=0, le=1)
     reasoning_summary: str
     evidence_refs: list[str] = Field(default_factory=list)
-    model_version: str
-    trace_id: str
+    #: 默认值而不是必填：LLM 漏写这两个字段时，分析不该整条被 schema 拒掉
+    #: （19 条决策里有 4 条 quant 因此落到 deterministic-fallback）。
+    model_version: str = "deterministic-fallback"
+    trace_id: str = ""
 
     @field_validator("evidence_refs", mode="before")
     @classmethod
@@ -213,6 +215,12 @@ class TradingCycleState(BaseModel):
     risk_assessment: RiskDecision | None = None
     trade_proposal: TradeProposal | None = None
     execution_result: ExecutionResult | None = None
+    #: 规则信号器的 composite 分数（spec 4.2 前向验证用）。
+    signal_score: float | None = None
+    #: LLM 否决结局：veto_none / veto_applied / veto_invalid_ignored。
+    veto_type: str | None = None
+    #: 当前权益，cycle 注入给 signal_node 做仓位反推。
+    equity: Decimal | None = None
     errors: list[str] = Field(default_factory=list)
     data_versions: dict[str, str] = Field(default_factory=dict)
     model_versions: dict[str, str] = Field(default_factory=dict)

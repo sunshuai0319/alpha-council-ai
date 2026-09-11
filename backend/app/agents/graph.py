@@ -2,6 +2,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from decimal import Decimal
 from typing import Any, Protocol, TypedDict
 from uuid import uuid4
 
@@ -10,7 +11,11 @@ from langgraph.graph import END, START, StateGraph
 from app.agents.llm import parse_json_response
 from app.config import Settings, get_settings
 from app.domain.enums import Action
-from app.domain.schemas import AnalysisResult, TradeProposal, TradingCycleState
+from app.domain.schemas import AnalysisResult, TradeProposal, TradingCycleState, VetoVerdict
+from app.signals.scorer import HOLD as SIGNAL_HOLD
+from app.signals.scorer import LONG as SIGNAL_LONG
+from app.signals.scorer import score_signal
+from app.signals.sizing import size_position
 
 
 class CompletionClient(Protocol):
@@ -42,6 +47,9 @@ class GraphState(TypedDict, total=False):
     risk_assessment: dict[str, Any] | None
     trade_proposal: dict[str, Any] | None
     execution_result: dict[str, Any] | None
+    signal_score: float | None
+    veto_type: str | None
+    equity: Decimal | None
     errors: list[str]
     data_versions: dict[str, str]
     model_versions: dict[str, str]
@@ -210,6 +218,129 @@ def retrieve_evidence(state: TradingCycleState, *, retriever: EvidenceRetriever 
         return {"retrieved_evidence": [], "errors": [*current.errors, f"retrieval_failed:{exc}"]}
 
 
+def signal_node(
+    state: TradingCycleState,
+    *,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    """确定性规则信号器：方向 + 仓位 + SL/TP 全由规则定，不调 LLM。
+
+    输出 TradeProposal。HOLD 时直接给出 hold 提案，后续走 persist 收尾，整条
+    路径零 LLM 调用 —— 这是「不再全部 HOLD」的关键：方向不再靠散文分析猜。
+    """
+
+    current = _as_state(state)
+    now = now_ms or _now_ms()
+    direction, composite = score_signal(current.technical_indicators or {})
+    if direction == SIGNAL_HOLD:
+        return {
+            "trade_proposal": _hold_proposal(current, f"signal_hold_score_{composite:.2f}", now).model_dump(),
+            "signal_score": composite,
+        }
+    snapshot = current.market_snapshot
+    one_h = (current.technical_indicators or {}).get("1h") or {}
+    atr = one_h.get("atr_14")
+    if snapshot is None or snapshot.last_price <= 0 or atr is None or atr <= 0:
+        # 缺 ATR / 价格：方向有了但没有风控所需的距离，宁可 HOLD。
+        return {
+            "trade_proposal": _hold_proposal(current, "signal_missing_atr_or_price", now).model_dump(),
+            "signal_score": composite,
+        }
+    # 仓位由风险预算反推，不依赖实际 equity —— position_size_pct 是比例，
+    # equity 只用于把比例换算成名义金额，cycle 层再用真实余额算。
+    side = SIGNAL_LONG if direction == SIGNAL_LONG else "SHORT"
+    plan = size_position(
+        equity=current.equity or Decimal(1),
+        entry=Decimal(str(snapshot.last_price)),
+        atr=Decimal(str(atr)),
+        side=side,
+    )
+    proposal = TradeProposal(
+        proposal_id=f"signal-{current.cycle_id}",
+        action=Action.LONG if direction == SIGNAL_LONG else Action.SHORT,
+        symbol=current.symbol,
+        side=side,
+        position_size_pct=float(plan.position_size_pct),
+        leverage=1,
+        stop_loss=float(plan.stop_loss),
+        take_profit=float(plan.take_profit),
+        valid_until=now + 300_000,  # 5 分钟决策窗口，与周期对齐
+        invalidation_conditions=[
+            f"signal_score_{composite:.2f}",
+            f"stop_{plan.stop_loss}",
+        ],
+        confidence=min(abs(composite), 1.0),
+        reasoning_summary=f"rule signal {direction} score={composite:.2f}",
+        evidence_refs=["indicators.1h.trend", "indicators.4h.trend"],
+        model_version="rule-signal-v1",
+        trace_id=str(uuid4()),
+    )
+    return {"trade_proposal": proposal.model_dump(), "signal_score": composite}
+
+
+def veto_node(
+    state: TradingCycleState,
+    *,
+    llm: CompletionClient | Any | None = None,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    """LLM 封闭否决：只可否决，不可改方向 / 仓位 / SL。
+
+    三种结局（spec 2.3）：
+    - veto=False → 放行（veto_none）
+    - veto=True 且有合法证据 → 转 HOLD（veto_applied）
+    - veto=True 但证据为空 / 理由非法 → 放行 + 计数（veto_invalid_ignored），
+      由 VetoVerdict schema 的「veto=True 必须带证据」承担
+    """
+
+    current = _as_state(state)
+    now = now_ms or _now_ms()
+    proposal = current.trade_proposal
+    if proposal is None or proposal.action is Action.HOLD:
+        # HOLD 提案无需否决，直接标 none。
+        return {"veto_type": "veto_none"}
+    if llm is None:
+        # 没配 LLM 就不能否决 —— 规则信号直接放行，不能因为缺 LLM 变 HOLD。
+        return {"veto_type": "veto_none"}
+    prompt = (
+        "You are the Veto Agent. A rule-based signal proposes a trade. You may only VETO it "
+        "for a concrete reason from this closed set: REGIME_CONFLICT, NEWS_SHOCK, "
+        "STRUCTURE_INVALIDATED, LIQUIDITY_ANOMALY, DATA_INTEGRITY. "
+        "You must NOT change direction, size, or stop. "
+        "`Not enough evidence` is NOT a valid reason — the rule signal already holds when "
+        "evidence is thin. If you veto, evidence_refs must cite at least one real item from "
+        "the evidence below. Return JSON with veto (true/false), reasons (list), "
+        "evidence_refs (list), reasoning_summary."
+        + _language_instruction(current.locale)
+        + "\n\n"
+        + json.dumps(
+            {
+                "symbol": current.symbol,
+                "proposed": proposal.model_dump(),
+                "evidence": current.retrieved_evidence,
+                "macro_events": current.macro_events,
+            },
+            default=str,
+        )
+    )
+    try:
+        verdict = VetoVerdict.model_validate(parse_json_response(_complete(llm, prompt)))
+    except Exception as exc:  # noqa: BLE001 - veto 输出非法 = 放行 + 计数，绝不因 LLM 格式错而拦单
+        logger.warning(
+            "veto output rejected (%s), counting as invalid_ignored: %s",
+            type(exc).__name__,
+            str(exc)[:300],
+        )
+        return {"veto_type": "veto_invalid_ignored"}
+    if not verdict.veto:
+        return {"veto_type": "veto_none"}
+    reasons = ",".join(reason.value for reason in verdict.reasons) or "veto"
+    return {
+        "trade_proposal": _hold_proposal(current, f"vetoed:{reasons}", now).model_dump(),
+        "veto_type": "veto_applied",
+    }
+
+
 def run_committee(state: TradingCycleState, llm: CompletionClient | Any) -> TradeProposal:
     current = _as_state(state)
     prompt = (
@@ -276,7 +407,12 @@ def proposal_validator(state: TradingCycleState, *, now_ms: int | None = None) -
             reasons.append("entry_stop_loss_missing")
         if not proposal.evidence_refs or not current.retrieved_evidence:
             reasons.append("entry_evidence_missing")
-    if proposal.valid_until < (now_ms or _now_ms()) and proposal.action is not Action.HOLD:
+    valid_until = proposal.valid_until
+    if (
+        valid_until is not None
+        and valid_until < (now_ms or _now_ms())
+        and proposal.action is not Action.HOLD
+    ):
         reasons.append("proposal_expired")
     return {"errors": [*current.errors, *reasons]}
 
@@ -297,6 +433,11 @@ class TradingCycleGraph:
         return TradingCycleState.model_validate(self._compiled.invoke(raw))
 
 
+def _proposal_is_hold(state: dict[str, Any]) -> bool:
+    proposal = state.get("trade_proposal")
+    return not proposal or str(proposal.get("action", "HOLD")).upper() == "HOLD"
+
+
 def build_trading_cycle_graph(
     *,
     llm: CompletionClient | Any | None = None,
@@ -312,12 +453,9 @@ def build_trading_cycle_graph(
         "validate_freshness",
         lambda state: validate_freshness(state, now_ms=now(), max_age_seconds=configured.market_data_max_age_seconds),
     )
-    builder.add_node("fanout", lambda _: {})
-    builder.add_node("market_node", lambda state: market_node(state, llm=llm, now_ms=now()))
-    builder.add_node("quant_node", lambda state: quant_node(state, llm=llm, now_ms=now()))
-    builder.add_node("macro_node", lambda state: macro_node(state, llm=llm, now_ms=now()))
+    builder.add_node("signal_node", lambda state: signal_node(state, now_ms=now()))
     builder.add_node("retrieve_evidence", lambda state: retrieve_evidence(state, retriever=retriever))
-    builder.add_node("committee_node", lambda state: committee_node(state, llm=llm, now_ms=now()))
+    builder.add_node("veto_node", lambda state: veto_node(state, llm=llm, now_ms=now()))
     builder.add_node("proposal_validator", lambda state: proposal_validator(state, now_ms=now()))
     builder.add_node("safe_hold", lambda state: safe_hold(state, now_ms=now()))
     builder.add_node("persist_decision", lambda state: {"data_versions": {**state.get("data_versions", {}), "cycle": "v1"}})
@@ -325,14 +463,18 @@ def build_trading_cycle_graph(
     builder.add_edge("load_context", "validate_freshness")
     builder.add_conditional_edges(
         "validate_freshness",
-        lambda state: "safe_hold" if state.get("errors") else "fanout",
-        {"safe_hold": "safe_hold", "fanout": "fanout"},
+        lambda state: "safe_hold" if state.get("errors") else "signal_node",
+        {"safe_hold": "safe_hold", "signal_node": "signal_node"},
     )
-    for node in ("market_node", "quant_node", "macro_node"):
-        builder.add_edge("fanout", node)
-        builder.add_edge(node, "retrieve_evidence")
-    builder.add_edge("retrieve_evidence", "committee_node")
-    builder.add_edge("committee_node", "proposal_validator")
+    # HOLD 提案直接收尾：方向已定、无可否决，整条路径零 LLM 调用。
+    # 非 HOLD 才做 RAG 检索 + LLM 否决。
+    builder.add_conditional_edges(
+        "signal_node",
+        lambda state: "persist_decision" if _proposal_is_hold(state) else "retrieve_evidence",
+        {"persist_decision": "persist_decision", "retrieve_evidence": "retrieve_evidence"},
+    )
+    builder.add_edge("retrieve_evidence", "veto_node")
+    builder.add_edge("veto_node", "proposal_validator")
     builder.add_conditional_edges(
         "proposal_validator",
         lambda state: "safe_hold" if state.get("errors") else "persist_decision",
@@ -346,11 +488,9 @@ def build_trading_cycle_graph(
         {
             "load_context",
             "validate_freshness",
-            "market_node",
-            "quant_node",
-            "macro_node",
+            "signal_node",
             "retrieve_evidence",
-            "committee_node",
+            "veto_node",
             "proposal_validator",
             "safe_hold",
             "persist_decision",

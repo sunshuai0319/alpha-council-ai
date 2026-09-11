@@ -7,7 +7,7 @@
 """
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN
+from decimal import ROUND_DOWN, Decimal
 
 #: 单笔风险占权益的比例上限，与 RiskLimits.max_single_trade_risk_pct 对齐。
 DEFAULT_RISK_PCT = Decimal("0.005")

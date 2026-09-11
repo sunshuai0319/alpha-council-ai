@@ -64,11 +64,11 @@ def _volume_score(indicators: dict[str, Any]) -> float:
     return 0.0
 
 
-def score_direction(
+def score_signal(
     indicators: dict[str, Any],
     volatility_percentile: float | None = None,
-) -> str:
-    """给方向打分，composite ∈ [-1, 1]。
+) -> tuple[str, float]:
+    """返回 (方向, composite)。composite ∈ [-1, 1]，落库审计用。
 
     volatility_percentile 为 None 时跳过门控 —— 波动率分位算不出时不过度保守，
     也不把数据缺失当否决理由（spec 2.1：缺项归零，不整体 HOLD）。
@@ -77,13 +77,13 @@ def score_direction(
     if volatility_percentile is not None and not (
         VOLATILITY_P20 <= float(volatility_percentile) <= VOLATILITY_P90
     ):
-        return HOLD
+        return HOLD, 0.0
 
     one_h = indicators.get("1h")
     four_h = indicators.get("4h")
     if not one_h or not four_h:
         # 没有 1h/4h 就无法判断趋势，不能只靠 5m 开仓。
-        return HOLD
+        return HOLD, 0.0
 
     composite = (
         _trend_score(indicators) * TREND_WEIGHT
@@ -91,7 +91,17 @@ def score_direction(
         + _volume_score(indicators) * VOLUME_WEIGHT
     )
     if composite >= ENTRY_THRESHOLD:
-        return LONG
+        return LONG, composite
     if composite <= -ENTRY_THRESHOLD:
-        return SHORT
-    return HOLD
+        return SHORT, composite
+    return HOLD, composite
+
+
+def score_direction(
+    indicators: dict[str, Any],
+    volatility_percentile: float | None = None,
+) -> str:
+    """给方向打分（薄封装，供只关心方向的调用方）。"""
+
+    direction, _ = score_signal(indicators, volatility_percentile)
+    return direction
