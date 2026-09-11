@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 import httpx
 
 from app.config import Settings, get_settings
-from app.domain.schemas import Candle, MarketSnapshot
+from app.domain.schemas import Candle, MarketMicrostructure, MarketSnapshot
 from app.exchange.base import (
     ContractInfo,
     ExchangeBalance,
@@ -277,6 +277,45 @@ class WeexClient(ExchangeClient):
             quote_volume_24h=optional("quoteVolume"),
             mark_price=optional("markPrice"),
             index_price=optional("indexPrice"),
+        )
+
+    def get_microstructure(self, symbol: str) -> MarketMicrostructure:
+        """盘口 / 成交流水 / 资金费率 / 持仓量。
+
+        虚拟盘上这四个端点都可用（见 docs/weex-virtual-api.md）。symbol 必须是不带
+        横杠的合约符号，否则返回 -1142。
+
+        注意：这些数值疑似合成（实测价差低到 0.00013%），只可作辅助确认项。
+        """
+
+        contract_symbol = _exchange_symbol(symbol)
+        depth = self._request("GET", "/capi/v3/market/depth", params={"symbol": contract_symbol})
+        trades = self._request("GET", "/capi/v3/market/trades", params={"symbol": contract_symbol})
+        funding = self._request("GET", "/capi/v3/market/fundingRate", params={"symbol": contract_symbol})
+        interest = self._request("GET", "/capi/v3/market/openInterest", params={"symbol": contract_symbol})
+
+        bids = [(float(price), float(size)) for price, size in (depth.get("bids") or [])[:5]]
+        asks = [(float(price), float(size)) for price, size in (depth.get("asks") or [])[:5]]
+        bid = bids[0][0] if bids else None
+        ask = asks[0][0] if asks else None
+        bid_volume = sum(size for _, size in bids)
+        ask_volume = sum(size for _, size in asks)
+        buy_volume = sum(float(item["qty"]) for item in trades if not item.get("isBuyerMaker"))
+        total_volume = sum(float(item["qty"]) for item in trades)
+        return MarketMicrostructure(
+            symbol=normalize_symbol(symbol),
+            captured_at=self._clock_ms(),
+            bid=bid,
+            ask=ask,
+            spread_bps=((ask - bid) / bid * 10_000) if bid and ask and bid > 0 else None,
+            depth_imbalance=(
+                (bid_volume - ask_volume) / (bid_volume + ask_volume)
+                if (bid_volume + ask_volume) > 0
+                else None
+            ),
+            taker_buy_ratio=(buy_volume / total_volume) if total_volume > 0 else None,
+            funding_rate=float(funding[0]["fundingRate"]) if funding else None,
+            open_interest=float(interest["openInterest"]) if interest else None,
         )
 
     def get_contracts(self) -> list[ContractInfo]:

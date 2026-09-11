@@ -132,3 +132,12 @@ def test_market_snapshot_migration_is_repeatable(tmp_path) -> None:
     _upgrade(url)
 
     assert "high_24h" in _columns(url, "market_snapshots")
+
+
+def test_microstructure_table_is_created_by_the_initial_migration(tmp_path) -> None:
+    """新表不需要写 op.create_table —— 001 的 create_all(checkfirst=True) 会补建。"""
+    url = f"sqlite+pysqlite:///{tmp_path / 'micro.db'}"
+
+    _upgrade(url)
+
+    assert "market_microstructures" in inspect(create_engine(url)).get_table_names()

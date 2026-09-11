@@ -47,6 +47,29 @@ class MarketSnapshot(BaseModel):
     source: str = "weex"
 
 
+class MarketMicrostructure(BaseModel):
+    """一次观测的盘口 / 订单流 / 衍生品快照。
+
+    与 ``MarketSnapshot`` 分开建模，因为失败模式不同 —— ticker 成功而 depth 失败
+    是常态，合在一起就分不清「没采到」与「采到但是空」。
+
+    ⚠️ 虚拟盘的这些数值疑似合成数据（实测价差低到 0.00013%），只可作辅助确认项。
+    """
+
+    symbol: str
+    captured_at: int
+    bid: float | None = None
+    ask: float | None = None
+    spread_bps: float | None = None
+    #: (买量 - 卖量) / (买量 + 卖量)，取前 5 档。
+    depth_imbalance: float | None = None
+    #: 主动买量 / 总成交量。
+    taker_buy_ratio: float | None = None
+    funding_rate: float | None = None
+    open_interest: float | None = None
+    source: str = "weex"
+
+
 def _as_str_list(value: Any) -> Any:
     """LLM 常把列表字段写成单个字符串（中文时尤其容易合并成一段话），收敛成列表。"""
 

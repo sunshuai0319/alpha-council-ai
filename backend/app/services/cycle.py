@@ -18,6 +18,7 @@ from app.db.models import (
     AccountSnapshot,
     ControlState,
     MarketCandle,
+    MarketMicrostructureRecord,
     Position,
     RiskEvent,
     TradingAccount,
@@ -148,6 +149,9 @@ class TradingCycleService:
             limit=100,
         )
         snapshot = snapshot_result.items[0] if snapshot_result.items else None
+        # 微观结构采集失败的模式独立于 ticker，且虚拟盘上这些数值疑似合成 ——
+        # 所以它只影响落库与错误列表，不参与本轮决策。
+        microstructure_result = collector.collect_microstructures(symbols=(symbol,))
         logger.info(
             "cycle market: user=%s symbol=%s price=%s candles=%d errors=%d",
             user_id,
@@ -173,13 +177,21 @@ class TradingCycleService:
                     for timeframe in ("5m", "1h", "4h")
                 }
             ),
-            errors=[*candle_result.errors, *snapshot_result.errors],
+            errors=[
+                *candle_result.errors,
+                *snapshot_result.errors,
+                *microstructure_result.errors,
+            ],
             # 宏观事实只能从库里读（行情与账户事实不写进 RAG）。不传的话宏观 agent
             # 的上下文恒为空数组，只会一直报 insufficient_data。
             macro_events=load_macro_context(self.db, limit=20),
         )
         state = state.model_copy(update={"data_versions": {"technical_indicators": INDICATOR_VERSION}})
-        self._persist_market_data(candle_result.items, snapshot_result.items)
+        self._persist_market_data(
+            candle_result.items,
+            snapshot_result.items,
+            microstructure_result.items,
+        )
         halt_reason = (
             None
             if self.control_status(user_id) != "PAUSED"
@@ -593,7 +605,12 @@ class TradingCycleService:
         self.db.commit()
         return True
 
-    def _persist_market_data(self, candles: list[Any], snapshots: list[Any]) -> None:
+    def _persist_market_data(
+        self,
+        candles: list[Any],
+        snapshots: list[Any],
+        microstructures: list[Any] | None = None,
+    ) -> None:
         if self.db is None:
             return
         captured_at = datetime.now(UTC)
@@ -638,6 +655,20 @@ class TradingCycleService:
                     funding_rate=snapshot.funding_rate,
                     open_interest=snapshot.open_interest,
                     volume_24h=snapshot.volume_24h,
+                )
+            )
+        for micro in microstructures or []:
+            self.db.add(
+                MarketMicrostructureRecord(
+                    symbol=micro.symbol,
+                    captured_at=datetime.fromtimestamp(micro.captured_at / 1000, tz=UTC),
+                    bid=micro.bid,
+                    ask=micro.ask,
+                    spread_bps=micro.spread_bps,
+                    depth_imbalance=micro.depth_imbalance,
+                    taker_buy_ratio=micro.taker_buy_ratio,
+                    funding_rate=micro.funding_rate,
+                    open_interest=micro.open_interest,
                 )
             )
         self.db.flush()

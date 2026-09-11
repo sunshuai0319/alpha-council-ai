@@ -1,5 +1,5 @@
 from app.collectors.base import CollectorResult
-from app.domain.schemas import Candle, MarketSnapshot
+from app.domain.schemas import Candle, MarketMicrostructure, MarketSnapshot
 from app.exchange.base import ExchangeClient
 
 
@@ -32,6 +32,20 @@ class WeexCollector:
         for symbol in symbols:
             try:
                 result.items.append(self.client.get_market_snapshot(symbol))
+            except Exception as exc:  # noqa: BLE001 - isolate failures per market
+                result.errors.append(f"{symbol}: {exc}")
+        return result
+
+    def collect_microstructures(
+        self,
+        symbols: tuple[str, ...] = ("BTC-USDT", "ETH-USDT"),
+    ) -> CollectorResult[MarketMicrostructure]:
+        """盘口 / 订单流 / 衍生品。失败模式独立于 ticker，所以单独一个结果对象。"""
+
+        result: CollectorResult[MarketMicrostructure] = CollectorResult(source="weex-microstructure")
+        for symbol in symbols:
+            try:
+                result.items.append(self.client.get_microstructure(symbol))
             except Exception as exc:  # noqa: BLE001 - isolate failures per market
                 result.errors.append(f"{symbol}: {exc}")
         return result

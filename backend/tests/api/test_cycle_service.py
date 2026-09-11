@@ -8,6 +8,7 @@ from app.config import Settings
 from app.db.models import (
     AccountSnapshot,
     Base,
+    MarketMicrostructureRecord,
     RiskEvent,
     TradingAccount,
     TradingDecision,
@@ -18,6 +19,7 @@ from app.domain.schemas import (
     AnalysisResult,
     Candle,
     ExecutionResult,
+    MarketMicrostructure,
     MarketSnapshot,
     RiskDecision,
     TradeProposal,
@@ -51,6 +53,19 @@ class FakeExchange:
             last_price=100,
         )
 
+    def get_microstructure(self, symbol: str) -> MarketMicrostructure:
+        return MarketMicrostructure(
+            symbol=symbol,
+            captured_at=int(datetime.now(UTC).timestamp() * 1000),
+            bid=99.9,
+            ask=100.1,
+            spread_bps=20.0,
+            depth_imbalance=0.1,
+            taker_buy_ratio=0.55,
+            funding_rate=0.0001,
+            open_interest=1000.0,
+        )
+
     def get_balances(self) -> list[ExchangeBalance]:
         return [ExchangeBalance("SUSDT", Decimal(10000), Decimal(10000), Decimal(0), Decimal(0))]
 
@@ -72,6 +87,22 @@ def test_cycle_failure_persists_hold_decision() -> None:
     result = service.run(user_id="u-1", llm=FailingLLM())
     assert result.action == "HOLD"
     assert result.persisted is True
+
+
+def test_cycle_persists_microstructure_without_affecting_the_decision(tmp_path) -> None:
+    """微观结构只存不用：它的存在不应改变决策结果。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'micro.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        service = TradingCycleService(db=db, exchange_factory=FakeExchange)
+        result = service.run(user_id="u-1", llm=FailingLLM())
+
+        # 断言在 with 内：出去之后会话关闭，访问属性会 DetachedInstanceError
+        rows = db.scalars(select(MarketMicrostructureRecord)).all()
+        assert result.action == "HOLD"
+        assert len(rows) == 1
+        assert rows[0].symbol == "BTC-USDT"
+        assert rows[0].funding_rate == 0.0001
 
 
 class RecordingExchange:
