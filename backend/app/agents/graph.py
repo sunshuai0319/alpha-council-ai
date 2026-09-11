@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 from collections.abc import Callable
 from typing import Any, Protocol, TypedDict
@@ -14,6 +15,9 @@ from app.domain.schemas import AnalysisResult, TradeProposal, TradingCycleState
 
 class CompletionClient(Protocol):
     def complete_json(self, prompt: str) -> str | dict[str, Any]: ...
+
+
+logger = logging.getLogger(__name__)
 
 
 class EvidenceRetriever(Protocol):
@@ -126,7 +130,13 @@ def _analysis(
     try:
         result = AnalysisResult.model_validate(parse_json_response(_complete(llm, prompt)))
         return result
-    except Exception:  # noqa: BLE001 - one analyst failure becomes a neutral analysis
+    except Exception as exc:  # noqa: BLE001 - one analyst failure becomes a neutral analysis
+        logger.warning(
+            "%s output rejected (%s), defaulting to neutral: %s",
+            role,
+            type(exc).__name__,
+            str(exc)[:300],
+        )
         return fallback
 
 
@@ -227,7 +237,13 @@ def run_committee(state: TradingCycleState, llm: CompletionClient | Any) -> Trad
         if proposal.symbol.replace("-", "").upper() != current.symbol.replace("-", "").upper():
             raise ValueError("committee symbol does not match cycle symbol")
         return proposal
-    except Exception:  # noqa: BLE001 - malformed or unsafe committee output is HOLD
+    except Exception as exc:  # noqa: BLE001 - malformed or unsafe committee output is HOLD
+        # 记录具体原因：这条 fallback 过去只留一个笼统标记，排查时只能靠复现。
+        logger.warning(
+            "committee output rejected (%s), falling back to hold: %s",
+            type(exc).__name__,
+            str(exc)[:500],
+        )
         return _hold_proposal(current, "committee_invalid_json_or_schema", _now_ms())
 
 

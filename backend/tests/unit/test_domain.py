@@ -3,7 +3,7 @@ from pydantic import ValidationError
 
 from app.db.models import Base
 from app.domain.enums import Action, RiskStatus
-from app.domain.schemas import Candle, RiskDecision, TradeProposal
+from app.domain.schemas import AnalysisResult, Candle, RiskDecision, TradeProposal
 
 
 def test_candle_identity_is_symbol_timeframe_open_time():
@@ -66,6 +66,43 @@ def test_hold_proposal_accepts_committee_style_zero_leverage_and_null_valid_unti
     assert proposal.action is Action.HOLD
     assert proposal.leverage >= 1
     assert proposal.valid_until is not None
+
+
+def test_proposal_accepts_scalar_invalidation_conditions():
+    """LLM 常把失效条件写成一段字符串而不是数组（中文尤其容易合并成一段话）。"""
+    proposal = TradeProposal.model_validate(
+        {
+            "proposal_id": "p-1",
+            "action": Action.HOLD,
+            "symbol": "BTC-USDT",
+            "position_size_pct": 0,
+            "leverage": 1,
+            "valid_until": 1700000300,
+            "invalidation_conditions": "证据缺失或不足；等待一致方向",
+            "confidence": 0.3,
+            "reasoning_summary": "观望",
+            "evidence_refs": "doc-1",
+            "model_version": "committee-agent-v1",
+            "trace_id": "t",
+        }
+    )
+    assert proposal.invalidation_conditions == ["证据缺失或不足；等待一致方向"]
+    assert proposal.evidence_refs == ["doc-1"]
+
+
+def test_analysis_accepts_scalar_evidence_refs():
+    """evidence_refs 同样可能被写成字符串。"""
+    result = AnalysisResult.model_validate(
+        {
+            "status": "neutral",
+            "confidence": 0.4,
+            "reasoning_summary": "中性",
+            "evidence_refs": "doc-1",
+            "model_version": "m",
+            "trace_id": "t",
+        }
+    )
+    assert result.evidence_refs == ["doc-1"]
 
 
 def test_hold_proposal_accepts_iso_or_garbage_valid_until():

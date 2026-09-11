@@ -38,6 +38,17 @@ class MarketSnapshot(BaseModel):
     source: str = "weex"
 
 
+def _as_str_list(value: Any) -> Any:
+    """LLM 常把列表字段写成单个字符串（中文时尤其容易合并成一段话），收敛成列表。"""
+
+    if value is None or isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    return value
+
+
 class AnalysisResult(BaseModel):
     status: str = "PROPOSED"
     confidence: float = Field(ge=0, le=1)
@@ -45,6 +56,11 @@ class AnalysisResult(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list)
     model_version: str
     trace_id: str
+
+    @field_validator("evidence_refs", mode="before")
+    @classmethod
+    def _coerce_evidence_refs(cls, value: Any) -> Any:
+        return _as_str_list(value)
 
 
 class TradeProposal(AnalysisResult):
@@ -63,6 +79,11 @@ class TradeProposal(AnalysisResult):
     @classmethod
     def normalize_side(cls, value: str | None) -> str | None:
         return value.upper() if value is not None else None
+
+    @field_validator("invalidation_conditions", mode="before")
+    @classmethod
+    def _coerce_invalidation_conditions(cls, value: Any) -> Any:
+        return _as_str_list(value)
 
     @field_validator("valid_until", mode="before")
     @classmethod
