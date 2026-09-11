@@ -125,13 +125,13 @@ export function DecisionCard({ decision }: { decision: Decision }) {
   )
 }
 
-export function PortfolioTable({ positions }: { positions: Position[] }) {
+export function PortfolioTable({ positions, onClose }: { positions: Position[]; onClose?: (symbol: string) => void }) {
   const { t } = useI18n()
   if (!positions.length) return <EmptyState title={t("common.noPositions")} body={t("common.noPositionsBody")} />
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>{t("common.contract")}</th><th>{t("common.side")}</th><th>{t("common.quantity")}</th><th>{t("common.entry")}</th><th>{t("common.mark")}</th><th>{t("common.upnl")}</th></tr></thead>
+        <thead><tr><th>{t("common.contract")}</th><th>{t("common.side")}</th><th>{t("common.quantity")}</th><th>{t("common.entry")}</th><th>{t("common.mark")}</th><th title={t("trades.upnlHint")}>{t("common.upnl")}</th>{onClose ? <th>{t("common.action")}</th> : null}</tr></thead>
         <tbody>{positions.map((position) => <tr key={position.id}>
           <td><strong>{position.symbol}</strong><small>{position.status}</small></td>
           <td><ActionMark action={position.side} /></td>
@@ -139,6 +139,7 @@ export function PortfolioTable({ positions }: { positions: Position[] }) {
           <td className="mono">{formatNumber(position.entry_price, 2)}</td>
           <td className="mono">{position.mark_price == null ? "—" : formatNumber(position.mark_price, 2)}</td>
           <td className={`mono ${position.unrealized_pnl >= 0 ? "positive-text" : "negative-text"}`}>{formatSigned(position.unrealized_pnl, 2)}</td>
+          {onClose ? <td>{position.status === "OPEN" ? <button className="button button--danger button--sm" onClick={() => onClose(position.symbol)}>{t("trades.closePosition")}</button> : null}</td> : null}
         </tr>)}</tbody>
       </table>
     </div>

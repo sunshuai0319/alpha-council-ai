@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@clerk/nextjs", () => ({
@@ -367,7 +367,7 @@ describe("console control panel", () => {
     render(<ConsolePage view="trades" />)
     await screen.findByText("BTC-USDT")
 
-    expect(screen.queryByText(/关闭 BTC-USDT/)).toBeNull()
+    expect(screen.queryByText(zhT("trades.closePosition"))).toBeNull()
   })
 
   it("still offers the close button for an open position", async () => {
@@ -384,7 +384,7 @@ describe("console control panel", () => {
     ])
     render(<ConsolePage view="trades" />)
 
-    expect(await screen.findByText(/关闭 ETH-USDT/)).toBeVisible()
+    expect(await screen.findByText(zhT("trades.closePosition"))).toBeVisible()
   })
 })
 
@@ -404,8 +404,12 @@ describe("positions ledger", () => {
     stubApi("RUNNING", [], [], [], 0, [openPosition, closedPosition])
     render(<ConsolePage view="trades" />)
 
-    expect(await screen.findByText(/关闭 BTC-USDT/)).toBeVisible()
-    expect(screen.queryByText(/关闭 ETH-USDT/)).toBeNull()
+    expect(await screen.findByText(zhT("trades.closePosition"))).toBeVisible()
+    const rows = screen.getAllByRole("row")
+    const btcRow = rows.find((row) => row.textContent?.includes("BTC-USDT"))
+    expect(btcRow && within(btcRow).queryByText(zhT("trades.closePosition"))).not.toBeNull()
+    const ethRow = rows.find((row) => row.textContent?.includes("ETH-USDT"))
+    expect(ethRow && within(ethRow).queryByText(zhT("trades.closePosition"))).toBeNull()
   })
 
   it("counts only open positions in the overview", async () => {
