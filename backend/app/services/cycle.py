@@ -340,6 +340,13 @@ class TradingCycleService:
             return RiskDecision(status=RiskStatus.REJECTED, reasons=[f"account_unavailable:{exc}"], checked_at=now_ms)
         if balance is None or state.market_snapshot is None:
             return RiskDecision(status=RiskStatus.REJECTED, reasons=["account_or_market_missing"], checked_at=now_ms)
+        # 单品种一仓：已有该 symbol 的仓位时不再开新仓，反向信号也要先平再说 ——
+        # 否则 5 分钟一轮会连续加仓，两边的仓位还会同时存在。
+        # 名义上限虽然也能挡住大部分加仓，但那是间接的（小单子会漏过去）。
+        if proposal.action is not Action.CLOSE and any(
+            position.symbol == proposal.symbol for position in positions
+        ):
+            return RiskDecision(status=RiskStatus.REJECTED, reasons=["position_already_open"], checked_at=now_ms)
         # 账户总敞口，跨品种合计：按品种各算一次上限，两个品种就能到两倍。
         current_notional = sum((abs(position.entry_value) for position in positions), Decimal(0))
         proposed_notional = balance.balance * Decimal(str(proposal.position_size_pct))
