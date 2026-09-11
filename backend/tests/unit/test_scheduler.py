@@ -21,6 +21,9 @@ class FlakyService:
             raise RuntimeError("database is down")
         return []
 
+    def consume_pending_immediate(self) -> bool:
+        return False
+
     def run(self, user_id: str, symbol: str) -> None:
         raise AssertionError("no users are enabled")
 

@@ -75,9 +75,15 @@ class TradingScheduler:
     def run_forever(self, sleep: Callable[[float], None] = time.sleep) -> None:
         interval = get_settings().decision_interval_seconds
         logger.info("trading scheduler started: interval=%ds symbols=%s", interval, self.symbols)
+        next_run = time.monotonic()
         while True:
             try:
-                self.run_once()
+                # 每 1 秒轮询一次「恢复周期」信号：用户点了 resume 就立即跑一轮，
+                # 不必等满 interval；否则按固定节拍跑。consume 内部自己收尾事务。
+                immediate = self.service.consume_pending_immediate()
+                if immediate or time.monotonic() >= next_run:
+                    self.run_once()
+                    next_run = time.monotonic() + interval
             except Exception:
                 # 单轮失败（数据库短暂不可用、取账户列表出错等）不能让调度器退出：
                 # 进程退出后没有自动重启，交易会永久静默停止。
@@ -85,7 +91,7 @@ class TradingScheduler:
                 db = self.service.db
                 if db is not None:
                     db.rollback()
-            sleep(interval)
+            sleep(1.0)
 
 
 def main() -> None:

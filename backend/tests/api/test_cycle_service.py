@@ -164,6 +164,37 @@ def test_persisting_a_filled_order_stores_json_safe_values(tmp_path) -> None:
         assert row.execution_result["average_price"] == "100.5"
 
 
+def test_resume_sets_pending_immediate_and_consume_clears_it(tmp_path) -> None:
+    """点「恢复周期」后 scheduler 应尽快跑一轮，而不是等满 5 分钟。
+
+    resume 置 pending_immediate，consume 消费一次并复位；再 consume 为空。
+    """
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'pending.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-pending", clerk_user_id="clerk-pending"))
+        db.commit()
+        service = TradingCycleService(db=db)
+
+        assert service.resume("u-pending")["status"] == "RUNNING"
+        assert service.consume_pending_immediate() is True
+        assert service.consume_pending_immediate() is False
+
+
+def test_pause_clears_pending_immediate(tmp_path) -> None:
+    """暂停后再恢复前不能有残留的立即执行标记。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'pending-pause.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-pending", clerk_user_id="clerk-pending"))
+        db.commit()
+        service = TradingCycleService(db=db)
+
+        service.resume("u-pending")
+        service.pause("u-pending")
+        assert service.consume_pending_immediate() is False
+
+
 def test_persist_inserts_parent_decision_before_child_risk_event(tmp_path) -> None:
     """SessionLocal(autoflush=False) 下父子表同一次 commit 可能外键违例。
 

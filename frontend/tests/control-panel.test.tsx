@@ -133,6 +133,30 @@ describe("console control panel", () => {
     expect(await screen.findByLabelText("仓位上限 (%)")).toHaveValue(20)
   })
 
+  it("shows a resume toast and auto-dismisses it after 5 seconds", async () => {
+    vi.useFakeTimers()
+    vi.spyOn(window, "confirm").mockReturnValue(true)
+    try {
+      stubApi("PAUSED")
+      render(<ConsolePage view="overview" />)
+      // flush 初始数据加载（refresh 并发 6 个 fetch，多层 await 要多次冲刷）
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+
+      fireEvent.click(screen.getByText("恢复周期"))
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(screen.getByText("周期已恢复，正在触发下一次决策。")).toBeVisible()
+
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(screen.queryByText("周期已恢复，正在触发下一次决策。")).toBeNull()
+    } finally {
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+    }
+  })
+
   it("masks stored credentials until the user reveals them", async () => {
     stubApi("RUNNING", [virtualAccount])
 

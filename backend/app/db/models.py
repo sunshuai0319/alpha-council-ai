@@ -70,6 +70,9 @@ class ControlState(Base):
 
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
     status: Mapped[str] = mapped_column(String(16), default="RUNNING")
+    #: 用户刚点「恢复周期」的标记：scheduler 发现 RUNNING + pending 就立即跑一轮，
+    #: 不必等满 5 分钟。resume 置位、pause 清除、scheduler 消费后复位。
+    pending_immediate: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 

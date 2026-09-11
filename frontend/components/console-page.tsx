@@ -302,6 +302,12 @@ export function ConsolePage({ view }: { view: DashboardView }) {
   const [message, setMessage] = useState<string | null>(null)
   // 状态来自服务端：熔断会自动暂停账户，本地默认值会让用户误以为还在交易。
   const controlStatus = data.control
+  // 操作提示 5 秒后自动消失，不用手动关；按钮仍在，错误消息也能快速关掉。
+  useEffect(() => {
+    if (!message) return
+    const timer = setTimeout(() => setMessage(null), 5000)
+    return () => clearTimeout(timer)
+  }, [message])
 
   const latest = data.decisions[0]
   const latestMarket = data.market[0]

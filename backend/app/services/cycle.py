@@ -611,10 +611,12 @@ class TradingCycleService:
         self.db.flush()
 
     def pause(self, user_id: str) -> dict[str, str]:
-        return {"status": self._set_control_status(user_id, "PAUSED")}
+        return {"status": self._set_control_status(user_id, "PAUSED", pending_immediate=False)}
 
     def resume(self, user_id: str) -> dict[str, str]:
-        return {"status": self._set_control_status(user_id, "RUNNING")}
+        # 用户主动恢复：置「立即执行」标记，scheduler 很快会消费它跑一轮，
+        # 不必等满 decision_interval_seconds。
+        return {"status": self._set_control_status(user_id, "RUNNING", pending_immediate=True)}
 
     def control_status(self, user_id: str) -> str:
         if self.db is None:
@@ -622,7 +624,13 @@ class TradingCycleService:
         state = self.db.get(ControlState, user_id)
         return state.status if state else "RUNNING"
 
-    def _set_control_status(self, user_id: str, status: str) -> str:
+    def _set_control_status(
+        self,
+        user_id: str,
+        status: str,
+        *,
+        pending_immediate: bool | None = None,
+    ) -> str:
         if self.db is None:
             return ControlRegistry.pause(user_id) if status == "PAUSED" else ControlRegistry.resume(user_id)
         state = self.db.get(ControlState, user_id)
@@ -632,8 +640,33 @@ class TradingCycleService:
         else:
             state.status = status
             state.updated_at = datetime.now(UTC)
+        if pending_immediate is not None:
+            state.pending_immediate = pending_immediate
         self.db.commit()
         return status
+
+    def consume_pending_immediate(self) -> bool:
+        """消费「恢复周期」信号：有 RUNNING + pending 的账户就立即跑一轮。
+
+        供 scheduler 短轮询调用；每次必须收掉事务，避免挂起只读事务阻塞 DDL
+        （和 scheduler._end_transaction 同一道理）。
+        """
+
+        if self.db is None:
+            return False
+        rows = self.db.scalars(
+            select(ControlState).where(
+                ControlState.status == "RUNNING",
+                ControlState.pending_immediate.is_(True),
+            )
+        ).all()
+        if not rows:
+            self.db.rollback()
+            return False
+        for row in rows:
+            row.pending_immediate = False
+        self.db.commit()
+        return True
 
     def record_failure(self, user_id: str, symbol: str, error: Exception) -> None:
         if self.db is None:
