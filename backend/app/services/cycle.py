@@ -164,11 +164,12 @@ class TradingCycleService:
         logger.info("cycle start: user=%s symbol=%s", user_id, symbol)
         exchange = self._exchange_for_user(user_id)
         collector = WeexCollector(exchange)
+        timeframes = self.settings.timeframe_list
         candle_result, snapshot_result = collector.collect(
             symbols=(symbol,),
-            timeframes=("5m", "1h", "4h"),
+            timeframes=timeframes,
             # WEEX 的 klines 无分页且忽略 startTime/endTime，单请求 1000 根就是历史
-            # 天花板。1000 根 1h ≈ 41 天，是回测能拿到的最深样本。
+            # 天花板。深度随周期而变：1h 只有 41 天，1d 有 999 天。
             limit=1000,
         )
         snapshot = snapshot_result.items[0] if snapshot_result.items else None
@@ -194,12 +195,12 @@ class TradingCycleService:
             microstructure=microstructure,
             candles_by_timeframe={
                 timeframe: [candle for candle in candle_result.items if candle.timeframe == timeframe]
-                for timeframe in ("5m", "1h", "4h")
+                for timeframe in timeframes
             },
             technical_indicators=calculate_indicators(
                 {
                     timeframe: [candle for candle in candle_result.items if candle.timeframe == timeframe]
-                    for timeframe in ("5m", "1h", "4h")
+                    for timeframe in timeframes
                 }
             ),
             errors=[
@@ -415,7 +416,8 @@ class TradingCycleService:
         if account is None:
             return
         price = Decimal(str(state.market_snapshot.last_price))
-        atr_raw = ((state.technical_indicators or {}).get("1h") or {}).get("atr_14")
+        entry_tf = StrategyParams.from_settings(self.settings).entry_timeframe
+        atr_raw = ((state.technical_indicators or {}).get(entry_tf) or {}).get("atr_14")
         now = datetime.now(UTC)
         for position in exchange.get_positions():
             if position.symbol != state.symbol:

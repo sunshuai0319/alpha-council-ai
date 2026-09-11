@@ -195,3 +195,55 @@ def test_short_series_is_skipped_not_crashed() -> None:
     """K 线不足以算指标时返回空结果，不抛异常。"""
     result = run_backtest(_frame([100.0, 101.0, 102.0]))
     assert result.trade_count == 0
+
+
+def _resample(candles_1h: list[Candle], *, group: int, timeframe: str) -> list[Candle]:
+    """把 1h K 线按 group 根合成一根，用来构造 12h / 1d 序列。"""
+
+    out: list[Candle] = []
+    for index in range(0, len(candles_1h) - group + 1, group):
+        chunk = candles_1h[index : index + group]
+        out.append(
+            Candle(
+                symbol="BTC-USDT",
+                timeframe=timeframe,
+                open_time=chunk[0].open_time,
+                open=chunk[0].open,
+                high=max(c.high for c in chunk),
+                low=min(c.low for c in chunk),
+                close=chunk[-1].close,
+                volume=sum(c.volume for c in chunk),
+            )
+        )
+    return out
+
+
+def _daily_frame(closes: list[float]) -> dict[str, list[Candle]]:
+    """构造 12h / 1d 两组 K 线，用来验证换周期能跑通。"""
+
+    one_h = _candles(closes)
+    return {
+        "12h": _resample(one_h, group=12, timeframe="12h"),
+        "1d": _resample(one_h, group=24, timeframe="1d"),
+    }
+
+
+DAILY_PARAMS = StrategyParams(entry_timeframe="12h", trend_timeframe="1d")
+
+
+def test_backtest_runs_on_a_longer_timeframe_pair() -> None:
+    """换到 12h/1d 要能跑，且真的产出了交易。"""
+
+    closes = _uptrend(600, step=0.4) + [x for x in (400.0 + index * 3.0 for index in range(200))]
+    result = run_backtest(_daily_frame(closes), params=DAILY_PARAMS)
+
+    assert result.trade_count >= 1
+
+
+def test_mismatched_timeframes_produce_no_trades() -> None:
+    """配置说 1h/4h、数据里只有 12h/1d 时必须 HOLD，而不是拿别的周期凑合。"""
+
+    closes = _uptrend(600, step=0.4) + [x for x in (400.0 + index * 3.0 for index in range(200))]
+    result = run_backtest(_daily_frame(closes))  # 默认 1h/4h
+
+    assert result.trade_count == 0

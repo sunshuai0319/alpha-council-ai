@@ -23,6 +23,10 @@ class StrategyParams:
     """
 
     # ---- 打分卡 ----
+    #: 打分卡读哪两个周期。默认 1h/4h 是系统一直在用的；拉到 12h/1d 时
+    #: 止损距离占比会大得多，而手续费/R = 2×费率÷止损距离，成本压力随之下降。
+    entry_timeframe: str = "1h"
+    trend_timeframe: str = "4h"
     trend_weight: float = 0.40
     momentum_weight: float = 0.25
     volume_weight: float = 0.15
@@ -58,6 +62,8 @@ class StrategyParams:
         """用 Settings 里的值覆盖默认值（env 可改，改参不用动代码）。"""
 
         return cls(
+            entry_timeframe=settings.strategy_entry_timeframe,
+            trend_timeframe=settings.strategy_trend_timeframe,
             trend_weight=settings.strategy_trend_weight,
             momentum_weight=settings.strategy_momentum_weight,
             volume_weight=settings.strategy_volume_weight,

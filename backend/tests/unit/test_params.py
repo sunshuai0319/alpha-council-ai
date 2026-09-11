@@ -67,3 +67,47 @@ def test_from_settings_leaves_unset_params_at_their_defaults() -> None:
         ARK_API_KEY="test-key",
     )
     assert StrategyParams.from_settings(settings) == StrategyParams()
+
+
+def test_timeframes_are_configurable() -> None:
+    """打分卡原来硬编码读 1h/4h，拉到日线就必须能改。"""
+    assert StrategyParams().entry_timeframe == "1h"
+    assert StrategyParams().trend_timeframe == "4h"
+
+    daily = StrategyParams(entry_timeframe="12h", trend_timeframe="1d")
+    assert daily.entry_timeframe == "12h"
+    assert daily.trend_timeframe == "1d"
+
+
+def test_from_settings_reads_the_configured_timeframes() -> None:
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        MILVUS_URI="http://localhost:19530",
+        ARK_API_KEY="test-key",
+        STRATEGY_ENTRY_TIMEFRAME="12h",
+        STRATEGY_TREND_TIMEFRAME="1d",
+    )
+    params = StrategyParams.from_settings(settings)
+
+    assert params.entry_timeframe == "12h"
+    assert params.trend_timeframe == "1d"
+
+
+def test_settings_parses_the_collected_timeframe_list() -> None:
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        MILVUS_URI="http://localhost:19530",
+        ARK_API_KEY="test-key",
+        MARKET_TIMEFRAMES="12h, 1d",
+    )
+    assert settings.timeframe_list == ("12h", "1d")
+
+
+def test_default_timeframe_list_is_unchanged() -> None:
+    """默认必须还是 5m/1h/4h —— 改这个会动到线上行为。"""
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        MILVUS_URI="http://localhost:19530",
+        ARK_API_KEY="test-key",
+    )
+    assert settings.timeframe_list == ("5m", "1h", "4h")

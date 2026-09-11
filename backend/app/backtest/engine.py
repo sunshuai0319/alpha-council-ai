@@ -30,10 +30,10 @@ from app.signals.params import StrategyParams
 from app.signals.scorer import HOLD, LONG, SHORT, score_signal
 from app.signals.sizing import size_position
 
-#: 算指标至少要这么多根，否则 EMA26 / RSI14 全是 None。
+#: 入场周期至少要这么多根，否则 EMA26 / RSI14 全是 None。
 MIN_BARS = 40
-#: 4h 至少要这么几根，否则 4h 趋势全是 NEUTRAL。
-MIN_4H_BARS = 10
+#: 趋势周期至少要这么几根，否则 trend 字段全是 NEUTRAL。
+MIN_TREND_BARS = 10
 
 EXIT_STOP = "stop"
 EXIT_TARGET = "take_profit"
@@ -123,17 +123,21 @@ class _OpenPosition:
 
 
 def _indicators_at(
-    candles_1h: list[Candle],
-    candles_4h: list[Candle],
+    candles_by_timeframe: dict[str, list[Candle]],
+    entry_timeframe: str,
     index: int,
 ) -> dict[str, Any]:
-    """只用截至 index 的数据 —— 用未来 K 线是回测最常见的前视偏差。"""
+    """只用截至 index 的数据 —— 用未来 K 线是回测最常见的前视偏差。
 
-    cutoff = candles_1h[index].open_time
+    只算打分卡真正会读的两个周期，不做无用的全量计算。
+    """
+
+    entry = candles_by_timeframe[entry_timeframe]
+    cutoff = entry[index].open_time
     return calculate_indicators(
         {
-            "1h": candles_1h[: index + 1],
-            "4h": [candle for candle in candles_4h if candle.open_time <= cutoff],
+            timeframe: [candle for candle in candles if candle.open_time <= cutoff]
+            for timeframe, candles in candles_by_timeframe.items()
         }
     )
 
@@ -193,17 +197,23 @@ def run_backtest(
     """跑一遍历史，返回逐笔交易与汇总指标。"""
 
     active = params or StrategyParams()
-    candles_1h = sorted(candles_by_timeframe.get("1h", []), key=lambda candle: candle.open_time)
-    candles_4h = sorted(candles_by_timeframe.get("4h", []), key=lambda candle: candle.open_time)
-    if len(candles_1h) < MIN_BARS + 2 or len(candles_4h) < MIN_4H_BARS:
+    # 按 open_time 排序：WEEX 的 klines 不保证有序（实测），不排会毁掉一切。
+    frame = {
+        timeframe: sorted(candles, key=lambda candle: candle.open_time)
+        for timeframe, candles in candles_by_timeframe.items()
+    }
+    entry_timeframe = active.entry_timeframe
+    bars = frame.get(entry_timeframe, [])
+    trend_bars = frame.get(active.trend_timeframe, [])
+    if len(bars) < MIN_BARS + 2 or len(trend_bars) < MIN_TREND_BARS:
         return BacktestResult(initial_equity=initial_equity, final_equity=initial_equity)
 
     trades: list[BacktestTrade] = []
     equity = initial_equity
     position: _OpenPosition | None = None
 
-    for index in range(MIN_BARS, len(candles_1h) - 1):
-        bar = candles_1h[index]
+    for index in range(MIN_BARS, len(bars) - 1):
+        bar = bars[index]
 
         if position is not None:
             intrabar = _intrabar_exit(position, bar)
@@ -220,9 +230,9 @@ def run_backtest(
                 equity += trade.pnl
                 position = None
             else:
-                indicators = _indicators_at(candles_1h, candles_4h, index)
+                indicators = _indicators_at(frame, entry_timeframe, index)
                 _, composite = score_signal(indicators, params=active)
-                atr = (indicators.get("1h") or {}).get("atr_14")
+                atr = (indicators.get(entry_timeframe) or {}).get("atr_14")
                 decision = manage_position(
                     side=position.side,
                     entry_price=position.entry_price,
@@ -258,14 +268,14 @@ def run_backtest(
         if position is not None:
             continue
 
-        indicators = _indicators_at(candles_1h, candles_4h, index)
+        indicators = _indicators_at(frame, entry_timeframe, index)
         direction, _ = score_signal(indicators, params=active)
         if direction == HOLD:
             continue
-        atr = (indicators.get("1h") or {}).get("atr_14")
+        atr = (indicators.get(entry_timeframe) or {}).get("atr_14")
         if atr is None or atr <= 0:
             continue
-        next_bar = candles_1h[index + 1]
+        next_bar = bars[index + 1]
         entry_price = Decimal(str(next_bar.open))
         if entry_price <= 0:
             continue
