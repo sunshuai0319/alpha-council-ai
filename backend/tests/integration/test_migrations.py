@@ -100,3 +100,35 @@ def test_migrations_record_the_applied_revision(tmp_path) -> None:
 
     head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
     assert stamped == head
+
+
+def test_market_snapshots_gains_the_range_and_basis_columns(tmp_path) -> None:
+    """新增列必须由增量迁移承载 —— create_all 不会动已存在的表。
+
+    market_snapshots 在 001 里就已经建出来了，所以这几列只能走显式 op.add_column。
+    """
+    url = f"sqlite+pysqlite:///{tmp_path / 'range.db'}"
+
+    _upgrade(url)
+
+    columns = _columns(url, "market_snapshots")
+    for name in (
+        "open_24h",
+        "high_24h",
+        "low_24h",
+        "price_change_pct",
+        "quote_volume_24h",
+        "mark_price",
+        "index_price",
+    ):
+        assert name in columns, f"market_snapshots 缺少 {name}"
+
+
+def test_market_snapshot_migration_is_repeatable(tmp_path) -> None:
+    """迁移要能对已经加过列的库重复执行（照 002 的模式）。"""
+    url = f"sqlite+pysqlite:///{tmp_path / 'rerun.db'}"
+
+    _upgrade(url)
+    _upgrade(url)
+
+    assert "high_24h" in _columns(url, "market_snapshots")
