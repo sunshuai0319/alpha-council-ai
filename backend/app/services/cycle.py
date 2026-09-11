@@ -34,9 +34,17 @@ from app.domain.schemas import (
     TradeProposal,
     TradingCycleState,
 )
-from app.exchange.base import ExchangeBalance, ExchangeClient, ExchangeError, ExchangePosition
+from app.exchange.base import (
+    ExchangeBalance,
+    ExchangeClient,
+    ExchangeError,
+    ExchangePosition,
+    OrderRequest,
+)
 from app.exchange.weex import WeexClient, WeexCredentials
 from app.execution.service import ExecutionService, stable_client_order_id
+from app.positions.manager import CLOSE as POSITION_CLOSE
+from app.positions.manager import manage as manage_position
 from app.rag.embeddings import BGEEmbedder, BGEReranker
 from app.rag.milvus import MilvusVectorStore
 from app.rag.retriever import Retriever
@@ -261,6 +269,8 @@ class TradingCycleService:
                 state.quant_analysis.status if state.quant_analysis else None,
                 state.macro_analysis.status if state.macro_analysis else None,
             )
+            # 先管已有仓位：触及止损/失效的会被平掉，同时释放「单品种一仓」的名额。
+            self._manage_positions(exchange, state)
             risk_decision = self._evaluate_proposal(exchange, state)
             if risk_decision.halt:
                 self._halt(state.user_id, risk_decision)
@@ -290,6 +300,9 @@ class TradingCycleService:
                     order_ids=[execution.exchange_order_id] if execution and execution.exchange_order_id else [],
                     symbol=symbol,
                 )
+                # 必须在 reconcile 之后：行是它建的。把管理所需的元数据登记上去，
+                # 否则下一轮 PositionManager 无从知道成本与止损在哪。
+                self._register_position_metadata(user_id, account.id, symbol, state, execution)
         persisted = self._persist(result_state=state, risk=risk_decision, execution=execution)
         result = CycleResult(state, risk_decision, execution, persisted)
         logger.info(
@@ -378,6 +391,156 @@ class TradingCycleService:
             is_reducing=is_reducing,
             checked_at=now_ms,
         )
+
+    def _manage_positions(self, exchange: ExchangeClient, state: TradingCycleState) -> None:
+        """对**本品种**已有仓位跑持仓管理：触及有效止损/结构失效/时间止损就平，
+        否则推进有效止损。
+
+        只处理 state.symbol —— 拿 BTC 的信号分去管 ETH 的仓位是错的。
+
+        平仓**不经过 RiskEngine**：风控里的 market_data_stale 等理由对减仓同样成立，
+        走一遍就可能把一个止损平仓拦下来，把仓位锁死 —— 这是 spec 明确要避免的。
+        """
+
+        if self.db is None or state.market_snapshot is None:
+            return
+        account = self._account_for_user(state.user_id)
+        if account is None:
+            return
+        price = Decimal(str(state.market_snapshot.last_price))
+        atr_raw = ((state.technical_indicators or {}).get("1h") or {}).get("atr_14")
+        now = datetime.now(UTC)
+        for position in exchange.get_positions():
+            if position.symbol != state.symbol:
+                continue
+            row = self.db.scalar(
+                select(Position).where(
+                    Position.user_id == state.user_id,
+                    Position.trading_account_id == account.id,
+                    Position.symbol == position.symbol,
+                    Position.status == "OPEN",
+                )
+            )
+            if row is None:
+                # 本地没有记录（例如人工开的仓）—— 不接管，免得瞎猜它的成本与止损。
+                continue
+            decision = manage_position(
+                side=row.side,
+                entry_price=row.entry_price,
+                initial_stop=row.stop_loss or row.entry_price,
+                effective_stop=row.effective_stop,
+                peak_price=row.peak_price,
+                price=price,
+                atr=Decimal(str(atr_raw)) if atr_raw else None,
+                opened_at=row.opened_at,
+                now=now,
+                signal_score=state.signal_score,
+            )
+            if decision.action is POSITION_CLOSE:
+                logger.info(
+                    "position management closing: user=%s symbol=%s reason=%s",
+                    state.user_id,
+                    position.symbol,
+                    decision.reason,
+                )
+                self._close_for_management(exchange, state, position, row, decision.reason)
+                continue
+            row.effective_stop = decision.effective_stop
+            row.peak_price = decision.peak_price
+        if self.db is not None:
+            self.db.flush()
+
+    def _close_for_management(
+        self,
+        exchange: ExchangeClient,
+        state: TradingCycleState,
+        position: ExchangePosition,
+        row: Position,
+        reason: str,
+    ) -> None:
+        """软件层止损/失效平仓。失败只记日志 —— 交易所侧还有宽灾难止损兜底。"""
+
+        side = "SELL" if position.side == "LONG" else "BUY"
+        request = OrderRequest(
+            symbol=position.symbol,
+            side=side,
+            position_side=position.side,
+            order_type="MARKET",
+            quantity=position.quantity,
+            # 同一个 cycle + 品种 → 同一个 id：本轮重试不会重复平仓。
+            client_order_id=stable_client_order_id(f"{state.cycle_id}-{position.symbol}-close"),
+            reduce_only=True,
+        )
+        try:
+            order = exchange.place_order(request)
+        except Exception as exc:  # noqa: BLE001 - 平仓失败下一轮重试，灾难止损兜底
+            logger.warning(
+                "position management close failed: user=%s symbol=%s reason=%s error=%s",
+                state.user_id,
+                position.symbol,
+                reason,
+                exc,
+            )
+            self.record_failure(state.user_id, position.symbol, exc)
+            return
+        row.status = "CLOSED"
+        row.quantity = Decimal(0)
+        row.unrealized_pnl = Decimal(0)
+        row.stop_loss = None
+        row.take_profit = None
+        row.effective_stop = None
+        logger.info(
+            "position management closed: user=%s symbol=%s order=%s status=%s",
+            state.user_id,
+            position.symbol,
+            order.order_id,
+            order.status,
+        )
+
+    def _register_position_metadata(
+        self,
+        user_id: str,
+        trading_account_id: str,
+        symbol: str,
+        state: TradingCycleState,
+        execution: ExecutionResult | None,
+    ) -> None:
+        """开仓成交后，把初始止损 / 有效止损 / 开仓时刻登记到本地持仓行。
+
+        持仓管理全靠这几个值：初始止损定义 1R，有效止损是软件层当前执行的那条。
+        只在**开仓成交**时登记 —— 平仓/加仓不动它。
+        """
+
+        proposal = state.trade_proposal
+        if (
+            self.db is None
+            or execution is None
+            or execution.status != "FILLED"
+            or proposal is None
+            or proposal.action not in {Action.LONG, Action.SHORT}
+        ):
+            return
+        row = self.db.scalar(
+            select(Position).where(
+                Position.user_id == user_id,
+                Position.trading_account_id == trading_account_id,
+                Position.symbol == symbol,
+                Position.status == "OPEN",
+            )
+        )
+        if row is None:
+            return
+        initial_stop = (
+            Decimal(str(proposal.stop_loss)) if proposal.stop_loss is not None else row.entry_price
+        )
+        row.stop_loss = initial_stop
+        row.effective_stop = initial_stop
+        row.take_profit = (
+            Decimal(str(proposal.take_profit)) if proposal.take_profit is not None else None
+        )
+        row.opened_at = datetime.now(UTC)
+        row.peak_price = row.entry_price
+        self.db.flush()
 
     def _halt(self, user_id: str, decision: RiskDecision) -> None:
         """账户级熔断：暂停该账户并留痕。

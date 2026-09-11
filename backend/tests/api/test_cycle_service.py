@@ -9,6 +9,7 @@ from app.db.models import (
     AccountSnapshot,
     Base,
     MarketMicrostructureRecord,
+    Position,
     RiskEvent,
     TradingAccount,
     TradingDecision,
@@ -974,3 +975,75 @@ def test_closing_is_never_blocked_by_the_one_position_rule(tmp_path) -> None:
         decision = service._evaluate_proposal(exchange, _close_state())
 
     assert "position_already_open" not in decision.reasons
+
+
+def _open_position_row(**overrides):
+    base = {
+        "id": "pos-1",
+        "user_id": "u-1",
+        "trading_account_id": "a-1",
+        "symbol": "BTC-USDT",
+        "side": "LONG",
+        "quantity": Decimal(1),
+        "entry_price": Decimal(100),
+        "stop_loss": Decimal(97),
+        "effective_stop": Decimal(97),
+        "peak_price": Decimal(100),
+        "opened_at": datetime.now(UTC),
+        "status": "OPEN",
+    }
+    return Position(**{**base, **overrides})
+
+
+def _service_with_position(tmp_path, exchange, row=None):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'manage.db'}")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+    db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+    db.add(row or _open_position_row())
+    db.commit()
+    return db, TradingCycleService(db=db, exchange_factory=lambda: exchange)
+
+
+def test_cycle_closes_a_position_that_hits_its_effective_stop(tmp_path) -> None:
+    """软件层止损触及 → 下 reduceOnly 平仓单。
+
+    交易所侧只有 3× 的宽灾难止损，紧的那条只能由软件层执行。
+    """
+    exchange = OnePositionExchange(side="LONG", notional=Decimal(100))
+    db, service = _service_with_position(tmp_path, exchange)
+
+    service._manage_positions(exchange, _long_state(price=96))  # 现价 96 < 有效止损 97
+    db.commit()
+
+    assert len(exchange.requests) == 1
+    assert exchange.requests[0].side == "SELL"  # 平多仓
+    assert exchange.requests[0].reduce_only is True
+    assert db.get(Position, "pos-1").status == "CLOSED"
+
+
+def test_cycle_moves_the_stop_to_breakeven_and_persists_it(tmp_path) -> None:
+    """浮盈到 1R → 有效止损上移入场价，并落库。"""
+    exchange = OnePositionExchange(side="LONG", notional=Decimal(100))
+    db, service = _service_with_position(tmp_path, exchange)
+
+    service._manage_positions(exchange, _long_state(price=104))
+    db.commit()
+
+    assert exchange.requests == []  # 没平仓
+    assert db.get(Position, "pos-1").effective_stop == Decimal(100)
+
+
+def test_position_management_leaves_other_symbols_alone(tmp_path) -> None:
+    """本轮只跑 state.symbol —— 拿 BTC 的信号分去管 ETH 仓位是错的。"""
+    exchange = OnePositionExchange(side="LONG", notional=Decimal(100))
+    db, service = _service_with_position(
+        tmp_path, exchange, row=_open_position_row(symbol="ETH-USDT")
+    )
+
+    service._manage_positions(exchange, _long_state(price=96))
+    db.commit()
+
+    assert exchange.requests == []
+    assert db.get(Position, "pos-1").status == "OPEN"
