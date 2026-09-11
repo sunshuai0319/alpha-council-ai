@@ -34,10 +34,42 @@ const virtualAccount = {
   },
 }
 
-function stubApi(controlStatus: string, accounts: unknown[] = [], market: unknown[] = []) {
+const decisionRecord = {
+  id: "d-1",
+  cycle_id: "cycle-abcdef123456",
+  symbol: "BTC-USDT",
+  action: "HOLD",
+  status: "ALLOWED",
+  leverage: 20,
+  proposal: {
+    action: "HOLD",
+    symbol: "BTC-USDT",
+    position_size_pct: 0,
+    leverage: 1,
+    confidence: 0.4,
+    reasoning_summary: "Mixed signals; hold.",
+    model_version: "committee-agent-v1",
+    invalidation_conditions: ["macro data insufficient"],
+    evidence_refs: ["doc-1"],
+  },
+  analyses: {
+    market: { status: "neutral", confidence: 0.4, reasoning_summary: "market is flat", model_version: "m1" },
+    quant: { status: "BEARISH", confidence: 0.6, reasoning_summary: "quant is bearish", model_version: "q1" },
+  },
+  risk_decision: { status: "ALLOWED", reasons: ["hold_no_order"] },
+  execution_result: { status: "NO_ORDER" },
+  created_at: "2026-09-11T05:00:00Z",
+}
+
+function stubApi(
+  controlStatus: string,
+  accounts: unknown[] = [],
+  market: unknown[] = [],
+  decisions: unknown[] = [],
+) {
   const payloads: Record<string, unknown> = {
     "/market": { items: market },
-    "/decisions": { items: [] },
+    "/decisions": { items: decisions },
     "/portfolio": { items: [] },
     "/events": { items: [] },
     "/accounts": { items: accounts },
@@ -131,6 +163,23 @@ describe("console control panel", () => {
     render(<ConsolePage view="overview" />)
 
     expect(await screen.findByLabelText("仓位上限 (%)")).toHaveValue(20)
+  })
+
+  it("expands a trade row to reveal the full decision data", async () => {
+    stubApi("RUNNING", [virtualAccount], [], [decisionRecord])
+
+    render(<ConsolePage view="trades" />)
+
+    fireEvent.click(await screen.findByRole("button", { name: /BTC-USDT/ }))
+
+    expect(await screen.findByText("智能体分析")).toBeVisible()
+    expect(screen.getByText("quant is bearish")).toBeVisible()
+    expect(screen.getByText("提案")).toBeVisible()
+    expect(screen.getByText("风控")).toBeVisible()
+    expect(screen.getByText("执行")).toBeVisible()
+    // 杠杆显示账户实际值 20×，不是提案占位的 1×
+    expect(screen.getByText("20×")).toBeVisible()
+    expect(screen.queryByText("1×")).toBeNull()
   })
 
   it("shows a resume toast and auto-dismisses it after 5 seconds", async () => {

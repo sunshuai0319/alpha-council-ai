@@ -1,14 +1,14 @@
 "use client"
 
 import { useAuth } from "@clerk/nextjs"
-import { CircleAlert, CirclePause, CirclePlay, RefreshCw, ShieldAlert, Sparkles } from "lucide-react"
+import { ChevronRight, CircleAlert, CirclePause, CirclePlay, RefreshCw, ShieldAlert, Sparkles } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, PortfolioTable, RiskBadge, VirtualBadge } from "@/components/console-primitives"
 import { ApiError, apiRequest } from "@/lib/api"
 import { emptyOverviewHint } from "@/lib/console-hints"
 import { useI18n } from "@/lib/i18n"
-import type { DashboardView, Decision, ItemsResponse, MarketSnapshot, Position, RiskEvent, RiskLimits, TradingAccount } from "@/lib/types"
+import type { Analysis, DashboardView, Decision, ItemsResponse, MarketSnapshot, Position, RiskEvent, RiskLimits, TradingAccount } from "@/lib/types"
 
 type DashboardData = {
   market: MarketSnapshot[]
@@ -294,6 +294,75 @@ function AccountCard({ accounts, refresh }: { accounts: TradingAccount[]; refres
   </section>
 }
 
+function DecisionRow({ decision }: { decision: Decision }) {
+  const { t, locale } = useI18n()
+  const [open, setOpen] = useState(false)
+  const proposal = decision.proposal
+  const risk = decision.risk_decision
+  const execution = decision.execution_result
+  const analyses = decision.analyses
+  const agents: Array<[string, Analysis]> = []
+  if (analyses?.market) agents.push(["committee.agentMarket", analyses.market])
+  if (analyses?.quant) agents.push(["committee.agentQuant", analyses.quant])
+  if (analyses?.macro) agents.push(["committee.agentMacro", analyses.macro])
+
+  return <div className="decision-row-wrap">
+    <button type="button" className="decision-row" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+      <ActionMark action={decision.action} />
+      <span className="decision-row-symbol">{decision.symbol}</span>
+      <RiskBadge status={decision.status} />
+      <span className="decision-row-reason">{proposal?.reasoning_summary ?? t("common.noProposal")}</span>
+      <time>{formatDate(decision.created_at, locale)}</time>
+      <ChevronRight size={14} className={open ? "decision-row-chevron is-open" : "decision-row-chevron"} />
+    </button>
+    {open ? <div className="decision-detail">
+      {proposal ? <section>
+        <h4>{t("trades.detailProposal")}</h4>
+        <div className="decision-detail-grid">
+          <span>{t("common.confidence")} <b>{formatPercent(proposal.confidence)}</b></span>
+          <span>{t("common.size")} <b>{formatPercent(proposal.position_size_pct)}</b></span>
+          <span title={t("console.leverageFixed")}>{t("common.leverage")} <b>{decision.leverage ?? proposal.leverage ?? 1}×</b></span>
+          {proposal.stop_loss != null ? <span>{t("trades.stopLoss")} <b>{proposal.stop_loss}</b></span> : null}
+          {proposal.take_profit != null ? <span>{t("trades.takeProfit")} <b>{proposal.take_profit}</b></span> : null}
+          {proposal.valid_until ? <span>{t("trades.validUntil")} <b>{formatDate(proposal.valid_until, locale)}</b></span> : null}
+          {proposal.model_version ? <span>{t("trades.modelVersion")} <b>{proposal.model_version}</b></span> : null}
+        </div>
+        {proposal.invalidation_conditions?.length ? <p className="decision-detail-line">{t("trades.invalidation")}: {proposal.invalidation_conditions.join("; ")}</p> : null}
+        {proposal.evidence_refs?.length ? <p className="decision-detail-line">{t("trades.evidence")}: {proposal.evidence_refs.join(", ")}</p> : null}
+        <p className="decision-detail-reasoning">{proposal.reasoning_summary}</p>
+      </section> : null}
+      {agents.length ? <section>
+        <h4>{t("trades.detailAnalyses")}</h4>
+        <div className="agent-grid">
+          {agents.map(([labelKey, analysis]) => <article className="agent-card" key={labelKey}>
+            <div className="agent-card-top"><span className="agent-glyph"><Sparkles size={14} /></span><span className="eyebrow">{t(labelKey)}</span><b>{formatPercent(analysis.confidence)}</b></div>
+            <p>{analysis.reasoning_summary ?? "—"}</p>
+            <footer>{analysis.model_version ?? t("committee.noModelTrace")}</footer>
+          </article>)}
+        </div>
+      </section> : null}
+      {risk ? <section>
+        <h4>{t("trades.detailRisk")}</h4>
+        <div className="decision-detail-grid">
+          <span>{t("trades.execStatus")} <b><RiskBadge status={risk.status ?? "UNKNOWN"} /></b></span>
+          {risk.reasons?.length ? <span>{t("trades.reasons")} <b>{risk.reasons.join("; ")}</b></span> : null}
+          {risk.adjusted_position_size_pct != null ? <span>{t("trades.adjustedSize")} <b>{formatPercent(risk.adjusted_position_size_pct)}</b></span> : null}
+        </div>
+      </section> : null}
+      {execution ? <section>
+        <h4>{t("trades.detailExecution")}</h4>
+        <div className="decision-detail-grid">
+          <span>{t("trades.execStatus")} <b>{execution.status}</b></span>
+          {execution.client_order_id ? <span>{t("trades.clientOrderId")} <b>{execution.client_order_id}</b></span> : null}
+          {execution.exchange_order_id ? <span>{t("trades.orderId")} <b>{execution.exchange_order_id}</b></span> : null}
+          {execution.message ? <span>{t("trades.message")} <b>{execution.message}</b></span> : null}
+        </div>
+      </section> : null}
+      <div className="decision-detail-footer"><code>{decision.cycle_id}</code></div>
+    </div> : null}
+  </div>
+}
+
 export function ConsolePage({ view }: { view: DashboardView }) {
   const { getToken } = useAuth()
   const { t, locale } = useI18n()
@@ -380,7 +449,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
   if (view === "trades") return <>
     <PageHeader title={t("trades.title")} description={t("trades.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.openBook")}</span><h2>{t("trades.positions")}</h2></div><RiskBadge status="VIRTUAL" /></div><PortfolioTable positions={data.positions} />{data.positions.length ? <div className="close-actions">{data.positions.map((position) => <button className="button button--danger" key={position.id} onClick={() => void closePosition(position.symbol)}>{t("trades.close", { symbol: position.symbol })}</button>)}</div> : null}</section>
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.history")}</span><h2>{t("trades.calls")}</h2></div><span className="section-index">{t("trades.records", { count: data.decisions.length })}</span></div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <div className="decision-row" key={decision.id}><ActionMark action={decision.action} /><span className="decision-row-symbol">{decision.symbol}</span><RiskBadge status={decision.status} /><span className="decision-row-reason">{decision.proposal?.reasoning_summary ?? t("common.noProposal")}</span><time>{formatDate(decision.created_at, locale)}</time></div>)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}</section>
+    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.history")}</span><h2>{t("trades.calls")}</h2></div><span className="section-index">{t("trades.records", { count: data.decisions.length })}</span></div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <DecisionRow key={decision.id} decision={decision} />)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}</section>
   </>
 
   return <>
