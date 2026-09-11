@@ -73,10 +73,17 @@ def test_invalid_committee_json_becomes_hold() -> None:
     assert result.position_size_pct == 0
 
 
-def test_graph_contains_rule_signal_and_veto_nodes() -> None:
-    """第 2 层拓扑：确定性信号器定方向，LLM 只可否决，不再跑三个 analyst。"""
+def test_graph_contains_rule_signal_and_specialized_veto_nodes() -> None:
+    """拓扑：确定性信号器定方向，三个专业 veto 并行判断，任一否决即拦。"""
     graph = build_trading_cycle_graph(settings=_settings(), clock_ms=lambda: 1_700_000_000_000)
-    assert {"signal_node", "veto_node", "proposal_validator"}.issubset(graph.node_names)
+    assert {
+        "signal_node",
+        "news_veto_node",
+        "structure_veto_node",
+        "data_integrity_node",
+        "merge_veto",
+        "proposal_validator",
+    }.issubset(graph.node_names)
 
 
 def test_graph_routes_stale_market_data_to_safe_hold() -> None:
@@ -119,15 +126,19 @@ class AllowLLM:
 
 
 class VetoLLM:
-    """否决节点：以 NEWS_SHOCK 否决，引用证据。"""
+    """否决节点：按各自的章程给出**域内**否决理由。
+
+    用同一个理由回给两个 agent 会越界（见 _run_veto_agent 的章程检查），
+    那测的就不是真实行为了。
+    """
 
     def complete_json(self, prompt: str) -> dict[str, Any]:
-        del prompt
+        reason = "STRUCTURE_INVALIDATED" if "structure_liquidity" in prompt else "NEWS_SHOCK"
         return {
             "veto": True,
-            "reasons": ["NEWS_SHOCK"],
+            "reasons": [reason],
             "evidence_refs": ["evidence-1"],
-            "reasoning_summary": "sharp news contradicts the long signal",
+            "reasoning_summary": "contradicts the signal",
         }
 
 

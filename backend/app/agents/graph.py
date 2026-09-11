@@ -3,7 +3,7 @@ import logging
 import time
 from collections.abc import Callable
 from decimal import Decimal
-from typing import Any, Protocol, TypedDict
+from typing import Annotated, Any, Protocol, TypedDict
 from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
@@ -11,11 +11,23 @@ from langgraph.graph import END, START, StateGraph
 from app.agents.llm import parse_json_response
 from app.config import Settings, get_settings
 from app.domain.enums import Action
-from app.domain.schemas import AnalysisResult, TradeProposal, TradingCycleState, VetoVerdict
+from app.domain.schemas import (
+    AnalysisResult,
+    TradeProposal,
+    TradingCycleState,
+    VetoReason,
+    VetoVerdict,
+)
 from app.signals.scorer import HOLD as SIGNAL_HOLD
 from app.signals.scorer import LONG as SIGNAL_LONG
 from app.signals.scorer import score_signal
 from app.signals.sizing import size_position
+
+
+def _merge_verdicts(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """并行 veto agent 各写自己那一格，靠这个 reducer 合并不冲突。"""
+
+    return {**left, **right}
 
 
 class CompletionClient(Protocol):
@@ -36,6 +48,7 @@ class GraphState(TypedDict, total=False):
     started_at: int
     symbol: str
     market_snapshot: dict[str, Any] | None
+    microstructure: dict[str, Any] | None
     candles_by_timeframe: dict[str, list[dict[str, Any]]]
     technical_indicators: dict[str, Any]
     news_items: list[dict[str, Any]]
@@ -49,6 +62,8 @@ class GraphState(TypedDict, total=False):
     execution_result: dict[str, Any] | None
     signal_score: float | None
     veto_type: str | None
+    #: 并行 veto agent 各写自己那一格，靠 _merge_verdicts 合并。
+    veto_verdicts: Annotated[dict[str, Any], _merge_verdicts]
     equity: Decimal | None
     signal_decided_at: int | None
     errors: list[str]
@@ -285,67 +300,195 @@ def signal_node(
     }
 
 
-def veto_node(
+def _run_veto_agent(
+    state: TradingCycleState,
+    *,
+    agent: str,
+    charter: str,
+    allowed_reasons: tuple[VetoReason, ...],
+    context: dict[str, Any],
+    llm: CompletionClient | Any | None,
+) -> dict[str, Any]:
+    """跑一个专业 veto agent，把它那一格写进 veto_verdicts。
+
+    每个 agent 拿到的是**自己域内的数据**，这是「独立判断」的关键 —— 两个 agent
+    读同一批数据、只是 prompt 措辞不同，那不叫独立。
+    """
+
+    if llm is None:
+        # 没配 LLM 就不能否决：规则信号直接放行，不因缺 LLM 变 HOLD。
+        return {"veto_verdicts": {agent: {"veto": False, "status": "skipped_no_llm"}}}
+    reason_list = ", ".join(reason.value for reason in allowed_reasons)
+    prompt = (
+        f"You are the {agent} on a crypto trading desk. A rule-based signal proposes a trade. "
+        f"Your charter, and ONLY this: {charter} "
+        f"You may veto only for these reasons: {reason_list}. "
+        "You must NOT change direction, size, or stop, and you must not comment outside your charter. "
+        "`Not enough evidence` is NOT a valid reason — the rule signal already holds when evidence is thin. "
+        "If you veto, evidence_refs must cite at least one real item from the data below. "
+        "Return JSON with veto (true/false), reasons (list), evidence_refs (list), reasoning_summary."
+        + _language_instruction(state.locale)
+        + "\n\n"
+        + json.dumps({"symbol": state.symbol, "proposed": state.trade_proposal.model_dump() if state.trade_proposal else None, **context}, default=str)
+    )
+    try:
+        verdict = VetoVerdict.model_validate(parse_json_response(_complete(llm, prompt)))
+    except Exception as exc:  # noqa: BLE001 - 输出非法 = 放行 + 计数，绝不因 LLM 格式错而拦单
+        logger.warning(
+            "%s veto output rejected (%s), counting as invalid_ignored: %s",
+            agent,
+            type(exc).__name__,
+            str(exc)[:300],
+        )
+        return {"veto_verdicts": {agent: {"veto": False, "status": "invalid_ignored"}}}
+    out_of_charter = [reason.value for reason in verdict.reasons if reason not in allowed_reasons]
+    if out_of_charter:
+        # 用别的域的否决理由 = 越界。接受它会让「按域独立」失去意义，也会污染
+        # 后续按 agent 统计的否决精度 —— 记成无效放行。
+        logger.warning("%s vetoed outside its charter (%s), ignoring", agent, out_of_charter)
+        return {
+            "veto_verdicts": {
+                agent: {"veto": False, "status": "invalid_ignored", "out_of_charter": out_of_charter}
+            }
+        }
+    return {
+        "veto_verdicts": {
+            agent: {
+                "veto": verdict.veto,
+                "status": "applied" if verdict.veto else "none",
+                "reasons": [reason.value for reason in verdict.reasons],
+                "evidence_refs": verdict.evidence_refs,
+                "reasoning_summary": verdict.reasoning_summary,
+            }
+        }
+    }
+
+
+def news_veto_node(
     state: TradingCycleState,
     *,
     llm: CompletionClient | Any | None = None,
+) -> dict[str, Any]:
+    """新闻/宏观域：有没有新事件与本单方向冲突。"""
+
+    current = _as_state(state)
+    if _proposal_is_hold(current.model_dump()):
+        return {}
+    return _run_veto_agent(
+        current,
+        agent="news_macro",
+        charter=(
+            "Judge whether fresh news or macro events directly contradict this trade's direction, "
+            "or whether the prevailing regime makes it unsafe. Ignore technical structure — another agent covers that."
+        ),
+        allowed_reasons=(VetoReason.NEWS_SHOCK, VetoReason.REGIME_CONFLICT),
+        context={
+            "evidence": current.retrieved_evidence,
+            "macro_events": current.macro_events,
+        },
+        llm=llm,
+    )
+
+
+def structure_veto_node(
+    state: TradingCycleState,
+    *,
+    llm: CompletionClient | Any | None = None,
+) -> dict[str, Any]:
+    """结构/流动性域：信号依赖的技术结构是否已破坏，盘口是否异常。"""
+
+    current = _as_state(state)
+    if _proposal_is_hold(current.model_dump()):
+        return {}
+    micro = current.microstructure
+    return _run_veto_agent(
+        current,
+        agent="structure_liquidity",
+        charter=(
+            "Judge whether the technical structure the signal relied on is already invalidated, "
+            "or whether the order book shows an anomaly that makes execution unsafe "
+            "(crossed or absurdly wide spread, lopsided depth). Ignore news — another agent covers that."
+        ),
+        allowed_reasons=(VetoReason.STRUCTURE_INVALIDATED, VetoReason.LIQUIDITY_ANOMALY),
+        context={
+            "indicators": current.technical_indicators,
+            "microstructure": micro.model_dump() if micro else None,
+        },
+        llm=llm,
+    )
+
+
+#: 价差超过这个值（基点）说明盘口已经异常，不值得在这个价位执行。
+MAX_SPREAD_BPS = 50.0
+
+
+def data_integrity_node(state: TradingCycleState) -> dict[str, Any]:
+    """数据完整性 —— 确定性检查，不调 LLM。
+
+    这是事实判断不是语境判断：价差倒挂、24h 区间倒置都是可以算出来的，让 LLM
+    再看一遍只会增加延迟和不确定性。
+
+    只在**观测到**异常时否决；数据缺失不算异常（spec 2.1：缺项不该整体 HOLD）。
+    """
+
+    current = _as_state(state)
+    if _proposal_is_hold(current.model_dump()):
+        return {}
+    problems: list[str] = []
+    micro = current.microstructure
+    if micro is not None:
+        if micro.spread_bps is not None and micro.spread_bps > MAX_SPREAD_BPS:
+            problems.append(f"spread_bps={micro.spread_bps:.1f}>{MAX_SPREAD_BPS}")
+        if micro.bid is not None and micro.ask is not None and micro.ask < micro.bid:
+            problems.append("crossed_book")
+    snapshot = current.market_snapshot
+    if snapshot is not None and snapshot.high_24h is not None and snapshot.low_24h is not None:
+        if snapshot.high_24h < snapshot.low_24h:
+            problems.append("inverted_24h_range")
+        elif snapshot.last_price > 0 and not (snapshot.low_24h <= snapshot.last_price <= snapshot.high_24h):
+            problems.append("last_price_outside_24h_range")
+    if not problems:
+        return {"veto_verdicts": {"data_integrity": {"veto": False, "status": "none"}}}
+    return {
+        "veto_verdicts": {
+            "data_integrity": {
+                "veto": True,
+                "status": "applied",
+                "reasons": [VetoReason.DATA_INTEGRITY.value],
+                "evidence_refs": problems,
+                "reasoning_summary": "; ".join(problems),
+            }
+        }
+    }
+
+
+def merge_veto_node(
+    state: TradingCycleState,
+    *,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
-    """LLM 封闭否决：只可否决，不可改方向 / 仓位 / SL。
+    """合并各 agent 的结论：**任一 veto 即拦截**。
 
-    三种结局（spec 2.3）：
-    - veto=False → 放行（veto_none）
-    - veto=True 且有合法证据 → 转 HOLD（veto_applied）
-    - veto=True 但证据为空 / 理由非法 → 放行 + 计数（veto_invalid_ignored），
-      由 VetoVerdict schema 的「veto=True 必须带证据」承担
+    多数表决在这里是错的 —— veto 是安全机制，一个域发现真问题就该拦，不该被
+    另外两个「没发现问题」的 agent 投票盖过。
     """
 
     current = _as_state(state)
     now = now_ms or _now_ms()
-    proposal = current.trade_proposal
-    if proposal is None or proposal.action is Action.HOLD:
-        # HOLD 提案无需否决，直接标 none。
-        return {"veto_type": "veto_none"}
-    if llm is None:
-        # 没配 LLM 就不能否决 —— 规则信号直接放行，不能因为缺 LLM 变 HOLD。
-        return {"veto_type": "veto_none"}
-    prompt = (
-        "You are the Veto Agent. A rule-based signal proposes a trade. You may only VETO it "
-        "for a concrete reason from this closed set: REGIME_CONFLICT, NEWS_SHOCK, "
-        "STRUCTURE_INVALIDATED, LIQUIDITY_ANOMALY, DATA_INTEGRITY. "
-        "You must NOT change direction, size, or stop. "
-        "`Not enough evidence` is NOT a valid reason — the rule signal already holds when "
-        "evidence is thin. If you veto, evidence_refs must cite at least one real item from "
-        "the evidence below. Return JSON with veto (true/false), reasons (list), "
-        "evidence_refs (list), reasoning_summary."
-        + _language_instruction(current.locale)
-        + "\n\n"
-        + json.dumps(
-            {
-                "symbol": current.symbol,
-                "proposed": proposal.model_dump(),
-                "evidence": current.retrieved_evidence,
-                "macro_events": current.macro_events,
-            },
-            default=str,
+    verdicts = current.veto_verdicts or {}
+    applied = {name: v for name, v in verdicts.items() if v.get("veto")}
+    invalid = {name: v for name, v in verdicts.items() if v.get("status") == "invalid_ignored"}
+    if applied:
+        reasons = ",".join(
+            f"{name}:{','.join(v.get('reasons') or ['veto'])}" for name, v in applied.items()
         )
-    )
-    try:
-        verdict = VetoVerdict.model_validate(parse_json_response(_complete(llm, prompt)))
-    except Exception as exc:  # noqa: BLE001 - veto 输出非法 = 放行 + 计数，绝不因 LLM 格式错而拦单
-        logger.warning(
-            "veto output rejected (%s), counting as invalid_ignored: %s",
-            type(exc).__name__,
-            str(exc)[:300],
-        )
+        return {
+            "trade_proposal": _hold_proposal(current, f"vetoed:{reasons}", now).model_dump(),
+            "veto_type": "veto_applied",
+        }
+    if invalid:
         return {"veto_type": "veto_invalid_ignored"}
-    if not verdict.veto:
-        return {"veto_type": "veto_none"}
-    reasons = ",".join(reason.value for reason in verdict.reasons) or "veto"
-    return {
-        "trade_proposal": _hold_proposal(current, f"vetoed:{reasons}", now).model_dump(),
-        "veto_type": "veto_applied",
-    }
+    return {"veto_type": "veto_none"}
 
 
 def run_committee(state: TradingCycleState, llm: CompletionClient | Any) -> TradeProposal:
@@ -462,7 +605,11 @@ def build_trading_cycle_graph(
     )
     builder.add_node("signal_node", lambda state: signal_node(state, now_ms=now()))
     builder.add_node("retrieve_evidence", lambda state: retrieve_evidence(state, retriever=retriever))
-    builder.add_node("veto_node", lambda state: veto_node(state, llm=llm, now_ms=now()))
+    builder.add_node("veto_fanout", lambda _: {})
+    builder.add_node("news_veto_node", lambda state: news_veto_node(state, llm=llm))
+    builder.add_node("structure_veto_node", lambda state: structure_veto_node(state, llm=llm))
+    builder.add_node("data_integrity_node", data_integrity_node)
+    builder.add_node("merge_veto", lambda state: merge_veto_node(state, now_ms=now()))
     builder.add_node("proposal_validator", lambda state: proposal_validator(state, now_ms=now()))
     builder.add_node("safe_hold", lambda state: safe_hold(state, now_ms=now()))
     builder.add_node("persist_decision", lambda state: {"data_versions": {**state.get("data_versions", {}), "cycle": "v1"}})
@@ -480,8 +627,12 @@ def build_trading_cycle_graph(
         lambda state: "persist_decision" if _proposal_is_hold(state) else "retrieve_evidence",
         {"persist_decision": "persist_decision", "retrieve_evidence": "retrieve_evidence"},
     )
-    builder.add_edge("retrieve_evidence", "veto_node")
-    builder.add_edge("veto_node", "proposal_validator")
+    # 三个专业 veto 并行跑、扇入到 merge：任一 veto 即拦截（见 merge_veto_node）。
+    builder.add_edge("retrieve_evidence", "veto_fanout")
+    for veto_node_name in ("news_veto_node", "structure_veto_node", "data_integrity_node"):
+        builder.add_edge("veto_fanout", veto_node_name)
+        builder.add_edge(veto_node_name, "merge_veto")
+    builder.add_edge("merge_veto", "proposal_validator")
     builder.add_conditional_edges(
         "proposal_validator",
         lambda state: "safe_hold" if state.get("errors") else "persist_decision",
@@ -497,7 +648,11 @@ def build_trading_cycle_graph(
             "validate_freshness",
             "signal_node",
             "retrieve_evidence",
-            "veto_node",
+            "veto_fanout",
+            "news_veto_node",
+            "structure_veto_node",
+            "data_integrity_node",
+            "merge_veto",
             "proposal_validator",
             "safe_hold",
             "persist_decision",

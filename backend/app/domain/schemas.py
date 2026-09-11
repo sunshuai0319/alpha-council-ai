@@ -204,6 +204,9 @@ class TradingCycleState(BaseModel):
     #: 用户界面语言：LLM 生成的分析文本按它选择语言（见 graph._language_instruction）。
     locale: str = "zh-CN"
     market_snapshot: MarketSnapshot | None = None
+    #: 盘口/订单流/衍生品观测。structure veto agent 靠它判断流动性异常 ——
+    #: 这是它与 news veto agent 数据域不同的关键。
+    microstructure: MarketMicrostructure | None = None
     candles_by_timeframe: dict[str, list[Candle]] = Field(default_factory=dict)
     technical_indicators: dict[str, Any] = Field(default_factory=dict)
     news_items: list[dict[str, Any]] = Field(default_factory=list)
@@ -219,6 +222,9 @@ class TradingCycleState(BaseModel):
     signal_score: float | None = None
     #: LLM 否决结局：veto_none / veto_applied / veto_invalid_ignored。
     veto_type: str | None = None
+    #: 每个专业 veto agent 的独立结论，按 agent 名索引。
+    #: 记录它才能算「每个 agent 的否决精度」—— 拦掉的单子里多少事后看是对的。
+    veto_verdicts: dict[str, Any] = Field(default_factory=dict)
     #: 当前权益，cycle 注入给 signal_node 做仓位反推。
     equity: Decimal | None = None
     #: signal_node 决策的时刻（ms）。风控的 data_age 以它为基准，而不是采集时刻 ——

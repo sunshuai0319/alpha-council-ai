@@ -163,9 +163,10 @@ class TradingCycleService:
             limit=1000,
         )
         snapshot = snapshot_result.items[0] if snapshot_result.items else None
-        # 微观结构采集失败的模式独立于 ticker，且虚拟盘上这些数值疑似合成 ——
-        # 所以它只影响落库与错误列表，不参与本轮决策。
+        # 微观结构采集失败的模式独立于 ticker。它不进打分卡（虚拟盘数值疑似合成），
+        # 但 structure veto agent 与数据完整性检查用它判断流动性与盘口异常。
         microstructure_result = collector.collect_microstructures(symbols=(symbol,))
+        microstructure = microstructure_result.items[0] if microstructure_result.items else None
         logger.info(
             "cycle market: user=%s symbol=%s price=%s candles=%d errors=%d",
             user_id,
@@ -181,6 +182,7 @@ class TradingCycleService:
             symbol=symbol,
             locale=self._user_locale(user_id),
             market_snapshot=snapshot,
+            microstructure=microstructure,
             candles_by_timeframe={
                 timeframe: [candle for candle in candle_result.items if candle.timeframe == timeframe]
                 for timeframe in ("5m", "1h", "4h")
@@ -608,6 +610,9 @@ class TradingCycleService:
                 "quant": result_state.quant_analysis.model_dump() if result_state.quant_analysis else None,
                 "macro": result_state.macro_analysis.model_dump() if result_state.macro_analysis else None,
                 "technical_indicators": result_state.technical_indicators,
+                # 每个专业 veto agent 的独立结论：记录它才能算各 agent 的否决精度
+                # （拦掉的单子里多少事后看是对的）。
+                "veto_verdicts": result_state.veto_verdicts or None,
             },
             risk_decision=risk.model_dump(mode="json"),
             # JSON 列：必须用 mode="json"，否则 Decimal（成交均价/已实现盈亏）存不进去。
