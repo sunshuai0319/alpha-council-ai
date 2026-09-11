@@ -56,6 +56,23 @@ class Settings(BaseSettings):
     max_consecutive_failures: int = 5
     max_daily_trades: int = 20
     market_data_max_age_seconds: int = 90
+    min_reward_risk: float = 1.5
+
+    #: 策略参数（打分卡 + 仓位 + 持仓管理）。放在这里是为了改参不用改代码 ——
+    #: 默认值就是系统一直在用的值，见 app/signals/params.py。
+    #: 风险预算不在这里另开字段：它与 max_single_trade_risk_pct /
+    #: max_position_notional_pct 是同一个概念，共用那一对，避免两个真相来源。
+    strategy_trend_weight: float = 0.40
+    strategy_momentum_weight: float = 0.25
+    strategy_volume_weight: float = 0.15
+    strategy_entry_threshold: float = 0.35
+    strategy_atr_multiplier: float = 1.5
+    strategy_reward_risk: float = 2.0
+    strategy_disaster_multiplier: float = 3.0
+    strategy_breakeven_r: float = 1.0
+    strategy_trail_atr_multiplier: float = 1.0
+    strategy_time_stop_hours: int = 48
+    strategy_time_stop_min_r: float = 0.3
     decision_interval_seconds: int = 300
 
     #: FRED 序列的重抓间隔，按各自更新频率决定。月度数据按分钟级频率重抓没有

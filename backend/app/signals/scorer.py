@@ -6,21 +6,11 @@
 
 from typing import Any
 
+from app.signals.params import StrategyParams
+
 HOLD = "HOLD"
 LONG = "LONG"
 SHORT = "SHORT"
-
-#: 权重，见 spec 2.1。41 天样本撑不起 7 个权重，第一版只上趋势/动量/量能。
-TREND_WEIGHT = 0.40
-MOMENTUM_WEIGHT = 0.25
-VOLUME_WEIGHT = 0.15
-
-#: 波动率门控分位区间：落在之外直接 HOLD。
-VOLATILITY_P20 = 0.20
-VOLATILITY_P90 = 0.90
-
-#: composite 阈值：超过才开仓。显式常数，可回测调参。
-ENTRY_THRESHOLD = 0.35
 
 
 def _trend_score(indicators: dict[str, Any]) -> float:
@@ -67,6 +57,8 @@ def _volume_score(indicators: dict[str, Any]) -> float:
 def score_signal(
     indicators: dict[str, Any],
     volatility_percentile: float | None = None,
+    *,
+    params: StrategyParams | None = None,
 ) -> tuple[str, float]:
     """返回 (方向, composite)。composite ∈ [-1, 1]，落库审计用。
 
@@ -74,8 +66,9 @@ def score_signal(
     也不把数据缺失当否决理由（spec 2.1：缺项归零，不整体 HOLD）。
     """
 
+    active = params or StrategyParams()
     if volatility_percentile is not None and not (
-        VOLATILITY_P20 <= float(volatility_percentile) <= VOLATILITY_P90
+        active.volatility_p20 <= float(volatility_percentile) <= active.volatility_p90
     ):
         return HOLD, 0.0
 
@@ -86,13 +79,13 @@ def score_signal(
         return HOLD, 0.0
 
     composite = (
-        _trend_score(indicators) * TREND_WEIGHT
-        + _momentum_score(indicators) * MOMENTUM_WEIGHT
-        + _volume_score(indicators) * VOLUME_WEIGHT
+        _trend_score(indicators) * active.trend_weight
+        + _momentum_score(indicators) * active.momentum_weight
+        + _volume_score(indicators) * active.volume_weight
     )
-    if composite >= ENTRY_THRESHOLD:
+    if composite >= active.entry_threshold:
         return LONG, composite
-    if composite <= -ENTRY_THRESHOLD:
+    if composite <= -active.entry_threshold:
         return SHORT, composite
     return HOLD, composite
 
@@ -100,8 +93,10 @@ def score_signal(
 def score_direction(
     indicators: dict[str, Any],
     volatility_percentile: float | None = None,
+    *,
+    params: StrategyParams | None = None,
 ) -> str:
     """给方向打分（薄封装，供只关心方向的调用方）。"""
 
-    direction, _ = score_signal(indicators, volatility_percentile)
+    direction, _ = score_signal(indicators, volatility_percentile, params=params)
     return direction

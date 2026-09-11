@@ -12,16 +12,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from app.signals.params import StrategyParams
+
 HOLD = "HOLD"
 CLOSE = "CLOSE"
-
-#: 浮盈达到多少 R 才把止损移到保本。
-BREAKEVEN_R = Decimal("1.0")
-#: 移动止损的跟随距离 = k × ATR(1h)。
-TRAIL_ATR_MULTIPLIER = Decimal("1.0")
-#: 持仓超过这么久且浮盈不足 TIME_STOP_MIN_R，就平掉释放风险预算。
-TIME_STOP_HOURS = 48
-TIME_STOP_MIN_R = Decimal("0.3")
 
 
 @dataclass(frozen=True)
@@ -53,6 +47,7 @@ def _advanced_stop(
     peak_price: Decimal,
     atr: Decimal | None,
     moved: bool,
+    trail_multiplier: Decimal,
 ) -> Decimal:
     """算出新的有效止损，**只往有利方向走**。
 
@@ -64,7 +59,8 @@ def _advanced_stop(
         return effective_stop
     candidates = [entry]
     if atr is not None and atr > 0:
-        trail = peak_price - atr if side.upper() == "LONG" else peak_price + atr
+        distance = atr * trail_multiplier
+        trail = peak_price - distance if side.upper() == "LONG" else peak_price + distance
         candidates.append(trail)
     if side.upper() == "LONG":
         return max(effective_stop, *candidates)
@@ -83,9 +79,11 @@ def manage(
     opened_at: datetime | None,
     now: datetime,
     signal_score: Decimal | float | None = None,
+    params: StrategyParams | None = None,
 ) -> PositionDecision:
     """返回该对这个仓位做什么，以及更新后的有效止损 / 最有利价。"""
 
+    active = params or StrategyParams()
     risk = abs(entry_price - initial_stop)
     stop = effective_stop if effective_stop is not None else initial_stop
     peak = peak_price if peak_price is not None else entry_price
@@ -115,11 +113,11 @@ def manage(
         if opened_at.tzinfo is None:
             opened_at = opened_at.replace(tzinfo=UTC)
         held_hours = (now - opened_at).total_seconds() / 3600
-        if held_hours >= TIME_STOP_HOURS and favorable < TIME_STOP_MIN_R:
+        if held_hours >= active.time_stop_hours and favorable < active.time_stop_min_r:
             return PositionDecision(CLOSE, stop, peak, "time_stop")
 
     # 4. 保本 / 移动止损。
-    moved = favorable >= BREAKEVEN_R
+    moved = favorable >= active.breakeven_r
     return PositionDecision(
         HOLD,
         _advanced_stop(
@@ -129,6 +127,7 @@ def manage(
             peak_price=peak,
             atr=atr,
             moved=moved,
+            trail_multiplier=active.trail_atr_multiplier,
         ),
         peak,
         "trailing_updated" if moved else "holding",

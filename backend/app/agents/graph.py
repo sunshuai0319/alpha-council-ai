@@ -18,6 +18,7 @@ from app.domain.schemas import (
     VetoReason,
     VetoVerdict,
 )
+from app.signals.params import StrategyParams
 from app.signals.scorer import HOLD as SIGNAL_HOLD
 from app.signals.scorer import LONG as SIGNAL_LONG
 from app.signals.scorer import score_signal
@@ -238,6 +239,7 @@ def signal_node(
     state: TradingCycleState,
     *,
     now_ms: int | None = None,
+    params: StrategyParams | None = None,
 ) -> dict[str, Any]:
     """确定性规则信号器：方向 + 仓位 + SL/TP 全由规则定，不调 LLM。
 
@@ -247,7 +249,7 @@ def signal_node(
 
     current = _as_state(state)
     now = now_ms or _now_ms()
-    direction, composite = score_signal(current.technical_indicators or {})
+    direction, composite = score_signal(current.technical_indicators or {}, params=params)
     if direction == SIGNAL_HOLD:
         return {
             "trade_proposal": _hold_proposal(current, f"signal_hold_score_{composite:.2f}", now).model_dump(),
@@ -272,6 +274,7 @@ def signal_node(
         entry=Decimal(str(snapshot.last_price)),
         atr=Decimal(str(atr)),
         side=side,
+        params=params,
     )
     proposal = TradeProposal(
         proposal_id=f"signal-{current.cycle_id}",
@@ -598,6 +601,8 @@ def build_trading_cycle_graph(
     clock_ms: Callable[[], int] | None = None,
 ) -> TradingCycleGraph:
     configured = settings or get_settings()
+    # 策略参数从 Settings 取，env 可覆盖 —— 改参不用改代码（见 app/signals/params.py）。
+    strategy = StrategyParams.from_settings(configured)
     now = clock_ms or _now_ms
     builder = StateGraph(GraphState)
     builder.add_node("load_context", lambda state: load_context(state, settings=configured))
@@ -605,7 +610,7 @@ def build_trading_cycle_graph(
         "validate_freshness",
         lambda state: validate_freshness(state, now_ms=now(), max_age_seconds=configured.market_data_max_age_seconds),
     )
-    builder.add_node("signal_node", lambda state: signal_node(state, now_ms=now()))
+    builder.add_node("signal_node", lambda state: signal_node(state, now_ms=now(), params=strategy))
     builder.add_node("retrieve_evidence", lambda state: retrieve_evidence(state, retriever=retriever))
     builder.add_node("veto_fanout", lambda _: {})
     builder.add_node("news_veto_node", lambda state: news_veto_node(state, llm=llm))

@@ -9,16 +9,7 @@
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 
-#: 单笔风险占权益的比例上限，与 RiskLimits.max_single_trade_risk_pct 对齐。
-DEFAULT_RISK_PCT = Decimal("0.005")
-#: 名义敞口占权益的上限，与 RiskLimits.max_position_notional_pct 对齐。
-DEFAULT_MAX_NOTIONAL_PCT = Decimal("0.20")
-#: 止损 = k × ATR(1h)，k 默认 1.5。
-DEFAULT_ATR_MULTIPLIER = Decimal("1.5")
-#: TP = entry ± rr × stop_distance。
-DEFAULT_RR = Decimal("2.0")
-#: 灾难止损 = disaster_multiplier × stop_distance（唯一挂交易所侧的宽止损）。
-DEFAULT_DISASTER_MULTIPLIER = Decimal("3.0")
+from app.signals.params import StrategyParams
 
 
 @dataclass(frozen=True)
@@ -38,11 +29,7 @@ def size_position(
     entry: Decimal,
     atr: Decimal,
     side: str,
-    risk_pct: Decimal = DEFAULT_RISK_PCT,
-    max_notional_pct: Decimal = DEFAULT_MAX_NOTIONAL_PCT,
-    atr_multiplier: Decimal = DEFAULT_ATR_MULTIPLIER,
-    rr: Decimal = DEFAULT_RR,
-    disaster_multiplier: Decimal = DEFAULT_DISASTER_MULTIPLIER,
+    params: StrategyParams | None = None,
 ) -> PositionPlan:
     """按风险预算反推仓位与止损止盈。
 
@@ -51,6 +38,12 @@ def size_position(
     非正的 equity / entry / atr。
     """
 
+    active = params or StrategyParams()
+    risk_pct = active.risk_pct
+    max_notional_pct = active.max_notional_pct
+    atr_multiplier = active.atr_multiplier
+    rr = active.reward_risk
+    disaster_multiplier = active.disaster_multiplier
     stop_distance = atr * atr_multiplier
     if stop_distance <= 0 or entry <= 0 or equity <= 0:
         raise ValueError("equity, entry and atr must be positive")

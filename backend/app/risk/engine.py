@@ -31,6 +31,7 @@ class RiskLimits:
             max_consecutive_losses=settings.max_consecutive_losses,
             max_daily_trades=settings.max_daily_trades,
             market_data_max_age_seconds=settings.market_data_max_age_seconds,
+            min_reward_risk=Decimal(str(settings.min_reward_risk)),
         )
 
     #: 账户偏好里允许出现的键。杠杆不在其中：虚拟盘固定 20x 改不了，真实盘
