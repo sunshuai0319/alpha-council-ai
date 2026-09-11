@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     #: 默认值就是系统一直在用的值，见 app/signals/params.py。
     #: 风险预算不在这里另开字段：它与 max_single_trade_risk_pct /
     #: max_position_notional_pct 是同一个概念，共用那一对，避免两个真相来源。
+    #: 打分卡读哪两个周期。拉长周期会同时降频并压低手续费占比 ——
+    #: 手续费/R = 2×费率÷止损距离占比，止损距离是百分比，周期越大幅度越大。
+    strategy_entry_timeframe: str = "1h"
+    strategy_trend_timeframe: str = "4h"
+    #: 每轮采集哪些周期（逗号分隔）。换策略周期时要一起改，否则指标里没有
+    #: 打分卡需要的 key。WEEX 合法值：1m/5m/15m/30m/1h/4h/12h/1d/1w（2h/6h 不支持）。
+    market_timeframes: str = "5m,1h,4h"
+
     strategy_trend_weight: float = 0.40
     strategy_momentum_weight: float = 0.25
     strategy_volume_weight: float = 0.15
@@ -79,6 +87,16 @@ class Settings(BaseSettings):
     #: 收益，还会招来 503。
     fred_monthly_interval_seconds: int = 86400
     fred_daily_interval_seconds: int = 3600
+
+    @property
+    def timeframe_list(self) -> tuple[str, ...]:
+        """`market_timeframes` 的解析结果。
+
+        pydantic-settings 读 `list[str]` 默认要 JSON，所以用逗号分隔的字符串，
+        在这里拆开 —— 配置起来更直观，也和 .env 的写法一致。
+        """
+
+        return tuple(part.strip() for part in self.market_timeframes.split(",") if part.strip())
 
 
 @lru_cache

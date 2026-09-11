@@ -257,8 +257,10 @@ def signal_node(
             "signal_decided_at": now,
         }
     snapshot = current.market_snapshot
-    one_h = (current.technical_indicators or {}).get("1h") or {}
-    atr = one_h.get("atr_14")
+    # ATR 取自**入场周期** —— 止损距离必须与信号的尺度一致，换到日线时
+    # 还读 1h 的 ATR 会把止损设成日线级别的噪声。
+    entry_tf = (params or StrategyParams()).entry_timeframe
+    atr = ((current.technical_indicators or {}).get(entry_tf) or {}).get("atr_14")
     if snapshot is None or snapshot.last_price <= 0 or atr is None or atr <= 0:
         # 缺 ATR / 价格：方向有了但没有风控所需的距离，宁可 HOLD。
         return {

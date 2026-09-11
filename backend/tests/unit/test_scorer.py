@@ -72,3 +72,32 @@ def test_volatility_percentile_none_skips_the_gate() -> None:
 def test_missing_timeframes_hold() -> None:
     """1h 或 4h 缺失 → 无法判断趋势，HOLD（不能只靠 5m 开仓）。"""
     assert score_direction({"5m": _tf(trend="BULLISH", rsi=60.0)}) == HOLD
+
+
+def test_scorer_reads_the_configured_timeframes() -> None:
+    """同一个 indicators，换个周期键名就该用另一组数据判断。
+
+    拉到日线时不能还去读 1h/4h —— 那样等于没换周期。
+    """
+    from app.signals.params import StrategyParams
+
+    indicators = {
+        "12h": _tf(trend="BULLISH", rsi=58.0),
+        "1d": _tf(trend="BULLISH", rsi=60.0),
+        # 故意放一组反向的小时级数据：若仍读 1h/4h，结论会反过来
+        "1h": _tf(trend="BEARISH", rsi=40.0),
+        "4h": _tf(trend="BEARISH", rsi=38.0),
+    }
+    daily = StrategyParams(entry_timeframe="12h", trend_timeframe="1d")
+
+    assert score_direction(indicators, params=daily) == LONG
+    assert score_direction(indicators) == SHORT  # 默认仍读 1h/4h
+
+
+def test_scorer_holds_when_the_configured_timeframes_are_absent() -> None:
+    from app.signals.params import StrategyParams
+
+    indicators = {"1h": _tf(trend="BULLISH", rsi=60.0)}
+    daily = StrategyParams(entry_timeframe="12h", trend_timeframe="1d")
+
+    assert score_direction(indicators, params=daily) == HOLD
