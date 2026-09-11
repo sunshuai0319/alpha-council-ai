@@ -19,6 +19,15 @@
 
 Collector 按 symbol/timeframe 隔离错误；本轮状态带有错误，图会生成安全 HOLD。检查 `WEEX_BASE_URL`、网络、限流和合约 symbol（例如 `BTC-USDT` 在 virtual API 中映射为 `BTCSUSDT`）。恢复后 worker 在下一周期重新采集。
 
+**WEEX 会间歇性返回 503**（`order/history` 与 `position/allPosition` 都观测到过），
+属于对端抖动，不是本系统的问题——重试通常即可。**注意不要让它熔断账户**：早期版本把
+外部 5xx 计入 `max_consecutive_failures`，7 次就把账户 PAUSED 了，需要人工恢复。
+外部故障应与策略连亏分开计数。
+
+排查接口行为（哪些端点存在、触发单是否生效、精度怎么校验）先看
+`docs/weex-virtual-api.md`，里面有实测记录和复验方法。用 `curl` 探测时记住
+**404 = 路径不存在，400/401/405 = 路径存在但用法不对**。
+
 ### Ark 超时或返回非法 JSON
 
 Market、Quant、Macro 单个分析失败会退化为 neutral analysis；委员会输出解析失败会生成 `safe-hold`。检查 Ark endpoint、模型名、超时和配额，不要通过放宽 schema 来“修复”交易。

@@ -68,10 +68,17 @@ worker 每 5 分钟（`decision_interval_seconds`）对每个启用的虚拟账�
 
 ### WEEX 虚拟盘语义（实测确认，与正式合约盘不同）
 
-- 只有 4 个端点：`GET balance`、`GET position/allPosition`、`POST order`、`GET order/history`。无单笔查单（`GET /sim/order` 是 405）、无成交流水（`userTrades` 404）。`order/history` 只含终态订单。
+**完整的端点清单、实验记录与复验方法见 `docs/weex-virtual-api.md`** —— 改动交易相关代码前先读它。要点：
+
+- **私有端点只有 4 个**：`GET balance`、`GET position/allPosition`、`POST order`、`GET order/history`。无单笔查单（`GET /sim/order` 是 405）、无成交流水（`userTrades` 404）、**无撤单/改单/挂单列表**（`cancelOrder`、`openOrders` 全 404）。`order/history` 只含终态订单。
+- **公开行情端点远不止 klines + ticker**：`depth`、`trades`、`fundingRate`、`openInterest` 都可用（早期「虚拟盘无衍生品数据」的结论是错的）。但这些数值疑似合成数据，只可当辅助确认项。`symbol` 必须不带横杠（`BTCUSDT`）。
+- **`klines` 单请求上限 1000 根，且 `startTime`/`endTime` 被静默忽略** —— 历史深度就是 1000 根封顶。
+- **`ticker/24hr` 返回 11 个字段，代码只用了 2 个**；`closeTime` 是 24h 滚动窗口边界（落后约 750s），**不能当 `captured_at`**，否则 90s 新鲜度门永远失败、一单不下。
+- **`slTriggerPrice` 真生效**（价格越过即平仓），**且平仓时随仓自动撤销**，不留残渣。所以「交易所侧灾难止损 + 软件层按需平仓」不会互相打架。
+- **taker 费率 0.08%/边**，往返 0.16%。回测必须计入。
 - **balance 不含未实现盈亏**：`equity = balance + unrealized_pnl` 是对的；已实现盈亏 = 相邻快照 Δbalance。
 - **虚拟盘固定 20x 杠杆且调不了**：`max_leverage` 必须与之一致（默认 20），否则一开仓就再也无法加仓。
-- **精度是硬校验，违反直接 500**：quantity 按 `quantityPrecision`（BTC-USDT 为 4）、触发价按 `pricePrecision` 向下舍入；`slTriggerPrice`/`tpTriggerPrice` 也要舍入，别只舍 quantity。实现见 `app/exchange/weex.py` 的 `_round_down`。
+- **精度是硬校验，违反直接 500**：quantity 按 `quantityPrecision`（BTC-USDT 为 4）、触发价按 `pricePrecision` 向下舍入；`slTriggerPrice`/`tpTriggerPrice` 也要舍入，别只舍 quantity。触发价方向错误（LONG 挂高于市价的止损）同样回 500。实现见 `app/exchange/weex.py` 的 `_round_down`。
 - 私有端点 401 错误码可区分根因：`-1044` key 无效、`-1049` passphrase 不匹配、`-1047` secret 不匹配。用户粘 `WEEX_API_SECRET=` 前缀会导致签名永远失败——保存凭证时已剥前缀（`app/api/routes/accounts.py`）。
 
 ### SQLAlchemy 会话（autoflush=False）
