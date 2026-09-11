@@ -27,3 +27,5 @@ TestResults.xml
 .codegraph
 # docker compose 的根 .env（含 Clerk 密钥与部署路径），只提交 .env.example
 /.env
+# 前端依赖缓存（正常在 frontend/ 下；防根目录被 npx 误建）
+node_modules/
