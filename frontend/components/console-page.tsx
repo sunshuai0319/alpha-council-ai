@@ -464,6 +464,12 @@ export function ConsolePage({ view }: { view: DashboardView }) {
     {latest ? <><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("committee.lastProposal")}</span><h2><ActionMark action={latest.action} /> {latest.symbol}</h2></div><span className="mono">{latest.cycle_id}</span></div><DecisionCard decision={latest} /></section><section className="agent-grid">{([ ["committee.agentMarket", latestAnalysis?.market], ["committee.agentQuant", latestAnalysis?.quant], ["committee.agentMacro", latestAnalysis?.macro] ] as const).map(([labelKey, analysis]) => <article className="agent-card" key={labelKey}><div className="agent-card-top"><span className="agent-glyph"><Sparkles size={14} /></span><span className="eyebrow">{t(labelKey)}</span><b>{analysis?.confidence == null ? "—" : formatPercent(analysis.confidence)}</b></div><p>{analysis?.reasoning_summary ?? t("committee.noMeetingBody")}</p><footer>{analysis?.model_version ?? t("committee.noModelTrace")}</footer></article>)}</section></> : <EmptyState title={t("committee.noMeeting")} body={t("committee.noMeetingBody")} />}
   </>
 
+  if (view === "settings") return <>
+    <PageHeader title={t("settings.title")} description={t("settings.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
+    {message ? <div className="toast" role="status">{message}<button onClick={() => setMessage(null)}>{t("console.dismiss")}</button></div> : null}
+    <AccountCard accounts={data.accounts} refresh={refresh} />
+  </>
+
   if (view === "trades") return <>
     <PageHeader title={t("trades.title")} description={t("trades.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.openBook")}</span><h2>{t("trades.positions")}</h2></div><RiskBadge status="VIRTUAL" /></div><PortfolioTable positions={data.positions} />{data.positions.length ? <div className="close-actions">{data.positions.map((position) => <button className="button button--danger" key={position.id} onClick={() => void closePosition(position.symbol)}>{t("trades.close", { symbol: position.symbol })}</button>)}</div> : null}</section>

@@ -180,6 +180,15 @@ describe("console control panel", () => {
     })
   })
 
+  it("renders the account card on the settings view", async () => {
+    stubApi("RUNNING", [virtualAccount])
+
+    render(<ConsolePage view="settings" />)
+
+    expect(await screen.findByText("WEEX 虚拟账户")).toBeVisible()
+    expect(screen.getByText("停用")).toBeVisible()
+  })
+
   it("paginates the risk event list", async () => {
     stubApi("RUNNING")
 

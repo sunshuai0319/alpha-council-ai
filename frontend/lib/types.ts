@@ -1,4 +1,4 @@
-export type DashboardView = "overview" | "market" | "committee" | "trades" | "events"
+export type DashboardView = "overview" | "market" | "committee" | "trades" | "events" | "settings"
 
 export type MarketSnapshot = {
   symbol: string
