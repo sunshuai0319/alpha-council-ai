@@ -72,7 +72,7 @@ function stubApi(
     "/market": { items: market },
     "/decisions": { items: decisions, total: decisionsTotal, page: 1, page_size: 20 },
     "/portfolio": { items: [] },
-    "/events": { items: [] },
+    "/events": { items: [], total: 0, page: 1, page_size: 20 },
     "/accounts": { items: accounts },
     "/control/status": { status: controlStatus },
   }
@@ -177,6 +177,17 @@ describe("console control panel", () => {
         ([url, init]) => String(url).includes("/preferences/locale") && init?.method === "PUT",
       )
       expect(put).toBeTruthy()
+    })
+  })
+
+  it("paginates the risk event list", async () => {
+    stubApi("RUNNING")
+
+    render(<ConsolePage view="events" />)
+
+    await vi.waitFor(() => {
+      const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+      expect(calls.some(([url]) => String(url).includes("/events?page=1"))).toBe(true)
     })
   })
 

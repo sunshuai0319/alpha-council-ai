@@ -14,14 +14,15 @@ type DashboardData = {
   market: MarketSnapshot[]
   decisions: Decision[]
   decisionsTotal: number
-  positions: Position[]
   events: RiskEvent[]
+  eventsTotal: number
+  positions: Position[]
   accounts: TradingAccount[]
   control: string
 }
 
-//: 与后端 /decisions 默认每页条数一致；分页控件按它算总页数。
-const DECISIONS_PAGE_SIZE = 20
+//: 与后端列表接口默认每页条数一致；分页控件按它算总页数。
+const PAGE_SIZE = 20
 
 // 凭证默认脱敏：只露首尾，中间打点。短值（如 passphrase）整串打点。
 function maskCredential(value: string) {
@@ -29,9 +30,9 @@ function maskCredential(value: string) {
   return `${value.slice(0, 6)}${"•".repeat(8)}${value.slice(-4)}`
 }
 
-const emptyData: DashboardData = { market: [], decisions: [], decisionsTotal: 0, positions: [], events: [], accounts: [], control: "RUNNING" }
+const emptyData: DashboardData = { market: [], decisions: [], decisionsTotal: 0, events: [], eventsTotal: 0, positions: [], accounts: [], control: "RUNNING" }
 
-function useDashboardData(decisionsPage = 1) {
+function useDashboardData({ decisionsPage = 1, eventsPage = 1 }: { decisionsPage?: number; eventsPage?: number } = {}) {
   const { getToken, isLoaded, isSignedIn } = useAuth()
   const { t } = useI18n()
   const [data, setData] = useState<DashboardData>(emptyData)
@@ -43,19 +44,19 @@ function useDashboardData(decisionsPage = 1) {
     try {
       const [market, decisions, portfolio, events, accounts, control] = await Promise.all([
         apiRequest<ItemsResponse<MarketSnapshot>>("/market", getToken),
-        apiRequest<PaginatedResponse<Decision>>(`/decisions?page=${decisionsPage}&page_size=${DECISIONS_PAGE_SIZE}`, getToken),
+        apiRequest<PaginatedResponse<Decision>>(`/decisions?page=${decisionsPage}&page_size=${PAGE_SIZE}`, getToken),
         apiRequest<ItemsResponse<Position>>("/portfolio", getToken),
-        apiRequest<ItemsResponse<RiskEvent>>("/events", getToken),
+        apiRequest<PaginatedResponse<RiskEvent>>(`/events?page=${eventsPage}&page_size=${PAGE_SIZE}`, getToken),
         apiRequest<ItemsResponse<TradingAccount>>("/accounts", getToken),
         apiRequest<{ status: string }>("/control/status", getToken),
       ])
-      setData({ market: market.items, decisions: decisions.items, decisionsTotal: decisions.total, positions: portfolio.items, events: events.items, accounts: accounts.items, control: control.status })
+      setData({ market: market.items, decisions: decisions.items, decisionsTotal: decisions.total, events: events.items, eventsTotal: events.total, positions: portfolio.items, accounts: accounts.items, control: control.status })
       setError(null)
       setUpdatedAt(new Date())
     } catch (cause) {
       setError(cause instanceof ApiError ? t("console.apiError", { status: cause.status, message: cause.message }) : t("console.apiUnavailable"))
     }
-  }, [getToken, isLoaded, isSignedIn, t, decisionsPage])
+  }, [getToken, isLoaded, isSignedIn, t, decisionsPage, eventsPage])
 
   useEffect(() => {
     void refresh()
@@ -370,9 +371,13 @@ function DecisionRow({ decision }: { decision: Decision }) {
 export function ConsolePage({ view }: { view: DashboardView }) {
   const { getToken } = useAuth()
   const { t, locale } = useI18n()
-  // 账本分页只在 trades 视图生效；其他视图固定第 1 页（要「最近决策」）。
+  // 各列表分页只在对应视图生效；其他视图固定第 1 页（要「最近」数据）。
   const [decisionsPage, setDecisionsPage] = useState(1)
-  const { data, error, updatedAt, refresh } = useDashboardData(view === "trades" ? decisionsPage : 1)
+  const [eventsPage, setEventsPage] = useState(1)
+  const { data, error, updatedAt, refresh } = useDashboardData({
+    decisionsPage: view === "trades" ? decisionsPage : 1,
+    eventsPage: view === "events" ? eventsPage : 1,
+  })
   const [controlBusy, setControlBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   // 状态来自服务端：熔断会自动暂停账户，本地默认值会让用户误以为还在交易。
@@ -462,13 +467,13 @@ export function ConsolePage({ view }: { view: DashboardView }) {
   if (view === "trades") return <>
     <PageHeader title={t("trades.title")} description={t("trades.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.openBook")}</span><h2>{t("trades.positions")}</h2></div><RiskBadge status="VIRTUAL" /></div><PortfolioTable positions={data.positions} />{data.positions.length ? <div className="close-actions">{data.positions.map((position) => <button className="button button--danger" key={position.id} onClick={() => void closePosition(position.symbol)}>{t("trades.close", { symbol: position.symbol })}</button>)}</div> : null}</section>
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.history")}</span><h2>{t("trades.calls")}</h2></div><span className="section-index">{t("trades.records", { count: data.decisionsTotal })}</span></div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <DecisionRow key={decision.id} decision={decision} />)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}<Pagination page={decisionsPage} total={data.decisionsTotal} pageSize={DECISIONS_PAGE_SIZE} onChange={setDecisionsPage} /></section>
+    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.history")}</span><h2>{t("trades.calls")}</h2></div><span className="section-index">{t("trades.records", { count: data.decisionsTotal })}</span></div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <DecisionRow key={decision.id} decision={decision} />)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}<Pagination page={decisionsPage} total={data.decisionsTotal} pageSize={PAGE_SIZE} onChange={setDecisionsPage} /></section>
   </>
 
   return <>
     <PageHeader title={t("events.title")} description={t("events.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
     <ControlPanel status={controlStatus} onToggle={() => void changeControl()} busy={controlBusy} />
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("events.history")}</span><h2>{t("events.stopped")}</h2></div><span className="section-index">{t("events.failClosed")}</span></div><EventList events={data.events} /></section>
+    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("events.history")}</span><h2>{t("events.stopped")}</h2></div><span className="section-index">{t("events.failClosed")}</span></div><EventList events={data.events} /><Pagination page={eventsPage} total={data.eventsTotal} pageSize={PAGE_SIZE} onChange={setEventsPage} /></section>
   </>
 }
 
