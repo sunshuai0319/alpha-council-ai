@@ -1,6 +1,6 @@
 import csv
 import io
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -58,7 +58,7 @@ FRED_DATE_COLUMNS = ("observation_date", "DATE")
 FRED_VALUE_COLUMNS = ("value", "VALUE")
 
 
-def _fred_value_column(fieldnames: list[str] | None, series_id: str) -> str | None:
+def _fred_value_column(fieldnames: Sequence[str] | None, series_id: str) -> str | None:
     """挑出承载数值的那一列，优先序列 id，其次兼容旧式 value/VALUE 表头。"""
 
     named = [name for name in (fieldnames or []) if name not in FRED_DATE_COLUMNS]

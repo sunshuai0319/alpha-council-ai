@@ -44,6 +44,9 @@ def _series_context(db: Session) -> list[dict[str, Any]]:
     context: list[dict[str, Any]] = []
     for series_id, bucket in sorted(buckets.items()):
         current = bucket[0]
+        # WHERE 已经把 NULL 过滤掉了，这里再判一次是为了让类型收敛（也更稳）。
+        if current.value is None:
+            continue
         entry: dict[str, Any] = {
             "kind": "macro_series",
             "series_id": series_id,
@@ -70,15 +73,20 @@ def _fed_press_context(db: Session, *, now: datetime) -> list[dict[str, Any]]:
         .order_by(SourceDocument.published_at.desc())
         .limit(FED_PRESS_LIMIT)
     ).all()
-    return [
-        {
-            "kind": "fed_press",
-            "title": row.title,
-            "published_at": row.published_at.isoformat(),
-            "source_url": row.canonical_url,
-        }
-        for row in rows
-    ]
+    context: list[dict[str, Any]] = []
+    for row in rows:
+        # WHERE 已过滤 NULL，这里再判一次让类型收敛。
+        if row.published_at is None:
+            continue
+        context.append(
+            {
+                "kind": "fed_press",
+                "title": row.title,
+                "published_at": row.published_at.isoformat(),
+                "source_url": row.canonical_url,
+            }
+        )
+    return context
 
 
 def load_macro_context(
