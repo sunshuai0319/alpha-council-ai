@@ -33,6 +33,7 @@
 | `app/collectors/weex.py`（改） | 新增微观结构采集入口；candle 默认 limit |
 | `app/db/models.py`（改） | `MarketSnapshot` 加列；新增 `MarketMicrostructureRecord` |
 | `alembic/versions/006_market_snapshot_range_fields.py`（新） | 给已有表加列 |
+| `alembic/versions/007_sync_missing_tables.py`（新） | 补建新表（`market_microstructures`） |
 
 ---
 
@@ -1233,12 +1234,54 @@ class MarketMicrostructureRecord(Base):
     open_interest: Mapped[float | None] = mapped_column(Float, nullable=True)
 ```
 
-在 `tests/integration/test_migrations.py` 里加一个断言（复用该文件的 `_upgrade` 辅助）：
+**新表要改两处**（这是本项目最容易踩的坑之一，`003` 的注释里专门警告过）：
+`app/db/models.py` 定义 + 一条 `create_all(checkfirst=True)` 的同步迁移。
+
+新建 `alembic/versions/007_sync_missing_tables.py`：
 
 ```python
-def test_microstructure_table_is_created_by_the_initial_migration(tmp_path) -> None:
-    """新表不需要写 op.create_table —— 001 的 create_all(checkfirst=True) 会补建。"""
-    url = f"sqlite+pysqlite:///{tmp_path / 'micro.db'}"
+"""sync tables added to the models since 003 (market_microstructures)
+
+`001` 的 create_all 只在库处于 001 时执行过一次；已迁移的库不会再跑它，所以此后
+新增的表不会自动出现。只改 app/db/models.py 是不够的 —— 新库因为 001 用的是当前
+模型才碰巧建出来，这个假象很容易骗过测试。
+"""
+
+from alembic import op
+from app.db.models import Base
+
+revision = "007_sync_missing_tables"
+down_revision = "006_market_snapshot_range_fields"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    Base.metadata.create_all(bind=op.get_bind(), checkfirst=True)
+
+
+def downgrade() -> None:
+    # 只补建，不删表：无法判断哪些表是本迁移建的，删错会丢数据。
+    pass
+```
+
+测试必须覆盖**已迁移库**这条真实路径，否则新库会掩盖问题：
+
+```python
+def test_microstructure_table_reaches_databases_that_already_migrated(tmp_path) -> None:
+    """已迁移的库不会重跑 001，新增的表必须靠后续迁移补上。
+
+    实测踩到：只加模型、不加 007 时，``alembic upgrade head`` 跑完
+    market_microstructures 依然不存在 —— 新库因为 001 用的是当前模型才碰巧建出来，
+    已迁移的库则要等 worker 撞上 "relation does not exist"。
+    """
+    url = f"sqlite+pysqlite:///{tmp_path / 'micro_table.db'}"
+    _upgrade(url, "006_market_snapshot_range_fields")
+
+    engine = create_engine(url)
+    with engine.begin() as connection:
+        connection.exec_driver_sql("DROP TABLE market_microstructures")  # 模拟该表尚未存在
+    engine.dispose()
 
     _upgrade(url)
 

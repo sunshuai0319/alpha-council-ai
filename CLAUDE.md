@@ -87,7 +87,8 @@ worker 每 5 分钟（`decision_interval_seconds`）对每个启用的虚拟账�
 
 ### Alembic 迁移约定
 
-- `001_initial_schema.py` 用 `Base.metadata.create_all(checkfirst=True)` 自动补建缺失的表。**新增表只需改 `app/db/models.py`**，不要写 `op.create_table`（会 `DuplicateTable` 事故）。
+- **新增表要改两处**：`app/db/models.py`（定义）+ 一条 `create_all(checkfirst=True)` 的同步迁移（照 `003`/`007`，两行即可）。不要写 `op.create_table`（会 `DuplicateTable` 事故）。
+  ⚠️ 只改模型**不够**：`001` 的 `create_all` 只在库处于 `001` 时跑过一次，已迁移的库不会再执行它。实测只改模型后 `alembic upgrade head` 完，新表依然不存在——**新库因为 `001` 用当前模型才碰巧建出来，这个假象很容易骗过测试**。
 - **给已存在的表加列/索引**，`create_all` 不会动已有表，必须写显式增量迁移（照 `002` 模板：`inspect(bind)` 判存在再 `op.add_column`，保证新旧库都可重复执行）。
 - 绝不要 `checkfirst=False`。迁移被 DDL 锁卡住时，先查 `pg_stat_activity` 里 `state='idle in transaction'` 的会话（worker 已修掉，但停掉 worker 再跑迁移最稳）。测试见 `backend/tests/integration/test_migrations.py`。
 
