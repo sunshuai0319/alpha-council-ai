@@ -282,6 +282,8 @@ def signal_node(
         leverage=1,
         stop_loss=float(plan.stop_loss),
         take_profit=float(plan.take_profit),
+        # 交易所侧只挂这条宽的；紧的那条（stop_loss）由软件层管。
+        disaster_stop=float(plan.disaster_stop),
         valid_until=now + 300_000,  # 5 分钟决策窗口，与周期对齐
         invalidation_conditions=[
             f"signal_score_{composite:.2f}",

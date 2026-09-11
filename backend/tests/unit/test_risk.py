@@ -167,3 +167,51 @@ def test_risk_pause_and_circuit_breaker_have_priority() -> None:
     )
     assert decision.status is RiskStatus.PAUSED
     assert decision.reasons == ["paused"]
+
+
+def _plan(**overrides):
+    """一个合法的 LONG 方案：entry 100 / stop 97 / tp 106 → R:R = 2.0。"""
+    base = {
+        "equity": 10000,
+        "current_notional": 0,
+        "proposed_notional": 1000,
+        "leverage": 2,
+        "entry": 100,
+        "stop_loss": 97,
+        "take_profit": 106,
+        "side": "LONG",
+        "daily_loss_pct": 0,
+        "consecutive_losses": 0,
+        "paused": False,
+        "data_age_s": 5,
+    }
+    return evaluate_risk(**{**base, **overrides})
+
+
+def test_take_profit_on_the_wrong_side_is_rejected() -> None:
+    """LONG 的止盈必须在入场价上方，SHORT 在下方 —— 原来完全不校验。"""
+    assert "long_take_profit_must_be_above_entry" in _plan(take_profit=95).reasons
+    assert "short_take_profit_must_be_below_entry" in _plan(
+        side="SHORT", stop_loss=103, take_profit=110
+    ).reasons
+    assert _plan().reasons == []
+
+
+def test_reward_risk_below_the_minimum_is_rejected() -> None:
+    """R:R = (tp-entry)/(entry-sl)；低于 1.5 是「赚小亏大」。"""
+    # tp 101.9 → R:R = 1.9/3 ≈ 0.63
+    assert "reward_risk_too_low" in _plan(take_profit=101.9).reasons
+    # tp 104.5 → R:R = 1.5，正好达标
+    assert "reward_risk_too_low" not in _plan(take_profit=104.5).reasons
+
+
+def test_take_profit_checks_are_skipped_for_reducing_orders() -> None:
+    """平仓单不该被止盈/盈亏比拦住，否则仓位会被锁死。"""
+    decision = _plan(take_profit=95, is_reducing=True)
+    assert "long_take_profit_must_be_above_entry" not in decision.reasons
+    assert "reward_risk_too_low" not in decision.reasons
+
+
+def test_missing_take_profit_skips_the_checks() -> None:
+    """没给止盈时跳过 —— 趋势策略可能靠移动止损离场，不强制设 TP。"""
+    assert _plan(take_profit=None).reasons == []

@@ -107,6 +107,10 @@ class TradeProposal(AnalysisResult):
     leverage: int = Field(default=1, ge=0)
     stop_loss: float | None = None
     take_profit: float | None = None
+    #: 挂到交易所侧的宽灾难止损（3×stop_distance）。交易所的触发单改不了也撤不掉，
+    #: 所以那边只放这条兜底，紧的那条由软件层管（见 spec 3.3）。为 None 时退回
+    #: stop_loss —— 兼容不产生灾难止损的调用方。
+    disaster_stop: float | None = None
     valid_until: int | None = None
     invalidation_conditions: list[str] = Field(default_factory=list)
 

@@ -18,6 +18,8 @@ class RiskLimits:
     max_consecutive_losses: int = 3
     max_daily_trades: int = 20
     market_data_max_age_seconds: int = 90
+    #: 最低盈亏比。低于它就是「赚小亏大」，长期必亏。
+    min_reward_risk: Decimal = Decimal("1.5")
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RiskLimits":
@@ -120,6 +122,7 @@ def evaluate_risk(
     leverage: int,
     stop_loss: Decimal | float | None,
     entry: Decimal | float,
+    take_profit: Decimal | float | None = None,
     daily_loss_pct: Decimal | float,
     consecutive_losses: int,
     daily_trades: int = 0,
@@ -185,6 +188,18 @@ def evaluate_risk(
             risk_amount = proposed_value * abs(entry_value - stop_value) / entry_value
             if equity_value > 0 and risk_amount > equity_value * active_limits.max_single_trade_risk_pct:
                 reasons.append("single_trade_risk")
+            # 止盈方向与盈亏比：原来完全不校验，填反了照样挂上去。
+            if take_profit is not None:
+                target_value = Decimal(str(take_profit))
+                if side and side.upper() == "LONG" and target_value <= entry_value:
+                    reasons.append("long_take_profit_must_be_above_entry")
+                if side and side.upper() == "SHORT" and target_value >= entry_value:
+                    reasons.append("short_take_profit_must_be_below_entry")
+                stop_distance = abs(entry_value - stop_value)
+                if stop_distance > 0:
+                    reward_risk = abs(target_value - entry_value) / stop_distance
+                    if reward_risk < active_limits.min_reward_risk:
+                        reasons.append("reward_risk_too_low")
 
     if not reasons:
         status = RiskStatus.ALLOWED

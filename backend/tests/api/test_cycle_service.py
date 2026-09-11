@@ -9,6 +9,7 @@ from app.db.models import (
     AccountSnapshot,
     Base,
     MarketMicrostructureRecord,
+    Position,
     RiskEvent,
     TradingAccount,
     TradingDecision,
@@ -477,16 +478,20 @@ class MultiPositionExchange(RecordingExchange):
                 liquidation_price=None,
             )
             for symbol, notional in self._notionals.items()
+            # 零名义 = 没有仓位。不这样过滤的话，「单品种一仓」会把一个空仓
+            # 也算成已开仓，测敞口时就永远到不了 max_notional。
+            if notional > 0
         ]
 
 
 def test_notional_cap_counts_exposure_across_symbols() -> None:
     """敞口上限必须算账户总敞口。
 
-    按品种各算 20%，两个品种就能到 40%。BTC 500 + ETH 2000 = 2500 已经超过
-    equity 10000 的 20%，此时再开 BTC 必须被拒。
+    按品种各算 20%，两个品种就能到 40%。ETH 已有 2000，再开 BTC 1000 →
+    3000 超过 equity 10000 的 20%，必须被拒。持仓放在 ETH 上是为了不触发
+    「单品种一仓」，让这条走到 max_notional 分支。
     """
-    exchange = MultiPositionExchange(btc_notional=Decimal(500), eth_notional=Decimal(2000))
+    exchange = MultiPositionExchange(btc_notional=Decimal(0), eth_notional=Decimal(2000))
     service = TradingCycleService(exchange_factory=lambda: exchange)
 
     decision = service._evaluate_proposal(exchange, _long_state())
@@ -566,10 +571,12 @@ def test_risk_uses_exchange_reported_leverage_over_the_proposal() -> None:
 
     校验提案里 LLM 自己填的数字没有意义：那个数字从来不参与下单。
     """
-    exchange = ClosingExchange(exit_price=Decimal(100), leverage=20)  # 实际 20x
+    # 持仓换成 ETH：杠杆是从任意持仓读的，与被提案的品种无关；放在 BTC 上会被
+    # 「单品种一仓」提前拦下，就测不到这条了。
+    exchange = ClosingExchange(exit_price=Decimal(100), leverage=20, symbol="ETH-USDT")
     # 显式钉住上限，避免测试结果随开发机 .env 变化
     service = TradingCycleService(
-        settings=Settings(max_leverage=10), exchange_factory=lambda: exchange
+        settings=Settings(max_leverage=10), exchange_factory=lambda exchange=exchange: exchange
     )
 
     decision = service._evaluate_proposal(exchange, _long_state())  # 提案声明 leverage=1
@@ -703,11 +710,21 @@ def test_daily_loss_pct_uses_todays_first_snapshot(tmp_path) -> None:
 class ClosingExchange:
     """持有一个多仓，平仓成交价由 exit_price 决定。"""
 
-    def __init__(self, *, exit_price: Decimal, side: str = "LONG", leverage: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        exit_price: Decimal,
+        side: str = "LONG",
+        leverage: int = 1,
+        symbol: str = "BTC-USDT",
+    ) -> None:
         self.requests: list[OrderRequest] = []
         self._exit_price = exit_price
         self._side = side
         self._leverage = leverage
+        # 允许换成别的品种：测杠杆/敞口等风控算法时需要「持仓品种 ≠ 提案品种」，
+        # 否则会被「单品种一仓」提前拦下，测不到想测的分支。
+        self._symbol = symbol
 
     def get_balances(self) -> list[ExchangeBalance]:
         return [ExchangeBalance("SUSDT", Decimal(10000), Decimal(10000), Decimal(0), Decimal(0))]
@@ -716,7 +733,7 @@ class ClosingExchange:
         return [
             ExchangePosition(
                 position_id="position-1",
-                symbol="BTC-USDT",
+                symbol=self._symbol,
                 side=self._side,
                 quantity=Decimal(1),
                 entry_value=Decimal(100),  # 入场价 100
@@ -885,3 +902,148 @@ def test_entry_quantity_is_notional_over_price() -> None:
 
     # 10000 × 0.1 = 1000 名义价值；1000 / 100 = 10
     assert exchange.requests[0].quantity == Decimal(10)
+
+
+class OnePositionExchange(RecordingExchange):
+    """只持有一个 BTC 仓位，用来测「单品种一仓」。"""
+
+    def __init__(self, side: str = "LONG", notional: Decimal = Decimal(100)) -> None:
+        super().__init__(balance=Decimal(10000))
+        self._side = side
+        self._notional = notional
+
+    def get_positions(self) -> list[ExchangePosition]:
+        return [
+            ExchangePosition(
+                position_id="p-1",
+                symbol="BTC-USDT",
+                side=self._side,
+                quantity=Decimal(1),
+                entry_value=self._notional,
+                margin=Decimal(1),
+                leverage=1,
+                unrealized_pnl=Decimal(0),
+                liquidation_price=None,
+            )
+        ]
+
+
+def _evaluate(tmp_path, exchange) -> RiskDecision:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'one.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.commit()
+        service = TradingCycleService(db=db, exchange_factory=lambda: exchange)
+        return service._evaluate_proposal(exchange, _long_state(pct=0.01))
+
+
+def test_new_entry_is_rejected_while_a_position_is_open(tmp_path) -> None:
+    """单品种一仓：已有该 symbol 的仓位时不再加仓。
+
+    名义上限能间接挡住加仓，但那是间接的 —— 5 分钟一轮的连续小加仓会绕过它。
+    """
+    decision = _evaluate(tmp_path, OnePositionExchange(side="LONG", notional=Decimal(100)))
+
+    assert "position_already_open" in decision.reasons
+
+
+def test_opposite_direction_entry_is_also_blocked_while_position_is_open(tmp_path) -> None:
+    """反向信号也不能直接反手开仓，必须先平 —— 否则会有两个方向的仓位。"""
+    decision = _evaluate(tmp_path, OnePositionExchange(side="SHORT", notional=Decimal(100)))
+
+    assert "position_already_open" in decision.reasons
+
+
+def test_entry_passes_when_no_position_is_open(tmp_path) -> None:
+    decision = _evaluate(tmp_path, RecordingExchange(balance=Decimal(10000)))
+
+    assert "position_already_open" not in decision.reasons
+
+
+def test_closing_is_never_blocked_by_the_one_position_rule(tmp_path) -> None:
+    """平仓必须永远放行，否则仓位会被锁死。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'close.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.commit()
+        exchange = OnePositionExchange(side="LONG", notional=Decimal(100))
+        service = TradingCycleService(db=db, exchange_factory=lambda: exchange)
+        decision = service._evaluate_proposal(exchange, _close_state())
+
+    assert "position_already_open" not in decision.reasons
+
+
+def _open_position_row(**overrides):
+    base = {
+        "id": "pos-1",
+        "user_id": "u-1",
+        "trading_account_id": "a-1",
+        "symbol": "BTC-USDT",
+        "side": "LONG",
+        "quantity": Decimal(1),
+        "entry_price": Decimal(100),
+        "stop_loss": Decimal(97),
+        "effective_stop": Decimal(97),
+        "peak_price": Decimal(100),
+        "opened_at": datetime.now(UTC),
+        "status": "OPEN",
+    }
+    return Position(**{**base, **overrides})
+
+
+def _service_with_position(tmp_path, exchange, row=None):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'manage.db'}")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+    db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+    db.add(row or _open_position_row())
+    db.commit()
+    return db, TradingCycleService(db=db, exchange_factory=lambda: exchange)
+
+
+def test_cycle_closes_a_position_that_hits_its_effective_stop(tmp_path) -> None:
+    """软件层止损触及 → 下 reduceOnly 平仓单。
+
+    交易所侧只有 3× 的宽灾难止损，紧的那条只能由软件层执行。
+    """
+    exchange = OnePositionExchange(side="LONG", notional=Decimal(100))
+    db, service = _service_with_position(tmp_path, exchange)
+
+    service._manage_positions(exchange, _long_state(price=96))  # 现价 96 < 有效止损 97
+    db.commit()
+
+    assert len(exchange.requests) == 1
+    assert exchange.requests[0].side == "SELL"  # 平多仓
+    assert exchange.requests[0].reduce_only is True
+    assert db.get(Position, "pos-1").status == "CLOSED"
+
+
+def test_cycle_moves_the_stop_to_breakeven_and_persists_it(tmp_path) -> None:
+    """浮盈到 1R → 有效止损上移入场价，并落库。"""
+    exchange = OnePositionExchange(side="LONG", notional=Decimal(100))
+    db, service = _service_with_position(tmp_path, exchange)
+
+    service._manage_positions(exchange, _long_state(price=104))
+    db.commit()
+
+    assert exchange.requests == []  # 没平仓
+    assert db.get(Position, "pos-1").effective_stop == Decimal(100)
+
+
+def test_position_management_leaves_other_symbols_alone(tmp_path) -> None:
+    """本轮只跑 state.symbol —— 拿 BTC 的信号分去管 ETH 仓位是错的。"""
+    exchange = OnePositionExchange(side="LONG", notional=Decimal(100))
+    db, service = _service_with_position(
+        tmp_path, exchange, row=_open_position_row(symbol="ETH-USDT")
+    )
+
+    service._manage_positions(exchange, _long_state(price=96))
+    db.commit()
+
+    assert exchange.requests == []
+    assert db.get(Position, "pos-1").status == "OPEN"

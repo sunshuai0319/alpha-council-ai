@@ -201,8 +201,17 @@ class Position(TimestampMixin, Base):
     mark_price: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
     leverage: Mapped[int] = mapped_column(Integer, default=1)
     unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    #: 开仓时的初始止损。它定义 1R 的距离（R = |entry_price - stop_loss|），
+    #: 保本与移动止损都以它为基准。
     stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
     take_profit: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    #: 软件层当前生效的止损。移动止损只上移不下移；触及即下 reduceOnly 平仓。
+    #: 交易所侧那条宽灾难止损不随它变（改不了也撤不掉）。
+    effective_stop: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    #: 开仓时刻，时间止损用。
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: 持仓期内最有利的价格（多仓取最高、空仓取最低），移动止损用它推算。
+    peak_price: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="OPEN")
 
 
