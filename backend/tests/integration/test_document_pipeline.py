@@ -320,3 +320,62 @@ def test_document_pipeline_commits_with_autoflush_off_and_foreign_keys_enforced(
         assert result["processed"] == 2
         assert len(db.scalars(select(SourceDocument)).all()) == 2
         assert len(db.scalars(select(DocumentSummary)).all()) == 2
+
+
+class MutableMacro:
+    """值可控的 FRED 桩件，用来验证同一观测被重复抓取时会不会更新。
+
+    无视 series_ids 恒返回同一条观测 —— 因此不需要操控 clock 去等调度到期。
+    """
+
+    def __init__(self) -> None:
+        self.value = 5.1
+
+    def collect(self, series_ids=(), fred_limit=30, fed_feed_url=None):
+        del series_ids, fred_limit, fed_feed_url
+        return (
+            CollectorResult(
+                source="fred",
+                items=[
+                    MacroObservation(
+                        series_id="DFF",
+                        observation_date=datetime.now(UTC).date(),
+                        value=self.value,
+                        source_url="https://fred.example/DFF",
+                        fetched_at=datetime.now(UTC),
+                    )
+                ],
+                succeeded=["DFF"],
+            ),
+            CollectorResult(source="federal-reserve"),
+        )
+
+
+def test_republishing_a_macro_observation_updates_the_stored_value(tmp_path):
+    """FRED 会修订历史值。落库只 insert 不 update 的话，首次写坏的值永远改不回来。
+
+    这不是假想问题：解析 bug 期间写进去的 152 行全是 NULL，修好解析后仍然会
+    因为「行已存在」而全部跳过。
+    """
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'macro.db'}")
+    Base.metadata.create_all(engine)
+    macro = MutableMacro()
+
+    with Session(engine) as db:
+        pipeline = DocumentPipeline(
+            db=db,
+            rss=FakeEmptyRSS(),
+            macro=macro,
+            summary_client=FakeSummary(),
+            embedder=FakeEmbedder(),
+            indexer=FakeIndexer(),
+        )
+
+        pipeline.run_once()
+        macro.value = 5.25
+        pipeline.run_once()
+
+        # 断言必须在 with 内：出去之后会话关闭，访问属性会 DetachedInstanceError
+        rows = db.scalars(select(MacroObservationRecord)).all()
+        assert len(rows) == 1, "同一 (series_id, observation_date) 不应重复插入"
+        assert rows[0].value == 5.25, "修订后的值必须覆盖旧值"
