@@ -360,6 +360,7 @@ class TradingCycleService:
             proposed_notional=proposed_notional,
             leverage=leverage,
             stop_loss=proposal.stop_loss,
+            take_profit=proposal.take_profit,
             entry=state.market_snapshot.last_price,
             daily_loss_pct=self._daily_loss_pct(state.user_id, current_equity),
             consecutive_losses=self._consecutive_losses(state.user_id),
