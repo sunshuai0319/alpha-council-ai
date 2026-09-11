@@ -12,6 +12,18 @@ const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:800
 
 type GetToken = (options?: { skipCache?: boolean }) => Promise<string | null>
 
+// 一个轮询周期里 6 个请求会同时撞上 401，各自去 Clerk 换个新 token 就是 6 次签发。
+// 按 getToken 合并成一次，等所有请求拿到同一个新 token 再重试。
+const pendingRefreshes = new WeakMap<GetToken, Promise<string | null>>()
+
+function refreshToken(getToken: GetToken): Promise<string | null> {
+  const pending = pendingRefreshes.get(getToken)
+  if (pending) return pending
+  const refresh = getToken({ skipCache: true }).finally(() => pendingRefreshes.delete(getToken))
+  pendingRefreshes.set(getToken, refresh)
+  return refresh
+}
+
 export async function apiRequest<T>(
   path: string,
   getToken: GetToken,
@@ -40,7 +52,7 @@ export async function apiRequest<T>(
   const token = await getToken()
   let response = await request(token)
   if (response.status === 401) {
-    const freshToken = await getToken({ skipCache: true })
+    const freshToken = await refreshToken(getToken)
     if (freshToken && freshToken !== token) response = await request(freshToken)
   }
   if (!response.ok) {

@@ -280,4 +280,17 @@ describe("console control panel", () => {
     expect(await screen.findByText(secret)).toBeVisible()
     expect(screen.queryByText("test-s••••••••6789")).toBeNull()
   })
+
+  it("blames the credentials, not the API, when the session token is rejected", async () => {
+    // 401 是凭证问题：让用户去重启 API 只会白折腾，8 秒后的下一轮轮询会自己恢复。
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ detail: "Invalid Clerk token" }), { status: 401 })),
+    )
+
+    render(<ConsolePage view="overview" />)
+
+    expect(await screen.findByText(/登录凭证正在自动更新/)).toBeVisible()
+    expect(screen.queryByText(/启动 API 并刷新/)).toBeNull()
+  })
 })

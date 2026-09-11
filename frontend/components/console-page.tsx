@@ -54,7 +54,13 @@ function useDashboardData({ decisionsPage = 1, eventsPage = 1 }: { decisionsPage
       setError(null)
       setUpdatedAt(new Date())
     } catch (cause) {
-      setError(cause instanceof ApiError ? t("console.apiError", { status: cause.status, message: cause.message }) : t("console.apiUnavailable"))
+      // 401 是凭证问题，不是 API 挂了：让用户去重启 API 只会白折腾，轮询还在跑，会自己恢复。
+      if (cause instanceof ApiError) {
+        const hint = cause.status === 401 ? t("console.reauthenticating") : t("console.reconnect")
+        setError(`${t("console.apiError", { status: cause.status, message: cause.message })} ${hint}`)
+      } else {
+        setError(`${t("console.apiUnavailable")} ${t("console.reconnect")}`)
+      }
     }
   }, [getToken, isLoaded, isSignedIn, t, decisionsPage, eventsPage])
 
@@ -433,7 +439,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
     <PageHeader title={t("overview.title")} description={t("overview.description")}>
       <VirtualBadge /><SyncNote error={error} updatedAt={updatedAt} />
     </PageHeader>
-    {error ? <div className="alert-banner"><ShieldAlert size={17} /><span>{error} {t("console.reconnect")}</span><button onClick={() => void refresh()}><RefreshCw size={14} />{t("console.retry")}</button></div> : null}
+    {error ? <div className="alert-banner"><ShieldAlert size={17} /><span>{error}</span><button onClick={() => void refresh()}><RefreshCw size={14} />{t("console.retry")}</button></div> : null}
     {message ? <div className="toast" role="status">{message}<button onClick={() => setMessage(null)}>{t("console.dismiss")}</button></div> : null}
     <div className="hero-grid">
       <section className="hero-panel">

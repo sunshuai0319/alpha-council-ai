@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -9,6 +10,14 @@ from jwt.exceptions import PyJWKClientConnectionError
 
 from app.config import Settings, get_settings
 from app.db.models import User
+
+logger = logging.getLogger(__name__)
+
+#: Clerk 会话 token 只活 60 秒，`iat`/`nbf` 由 Clerk 服务器的时钟签发。本机时钟只要比它慢
+#: 零点几秒，刚签发就被用上的 token 就会落进「本机未来」——零冗余校验判成尚未生效
+#: （ImmatureSignatureError），对外只表现为 401 Invalid Clerk token。留几秒冗余吸收这点偏差，
+#: 也覆盖 NTP 校时前后的抖动。
+CLOCK_SKEW_LEEWAY_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -49,7 +58,10 @@ def verify_session_token(token: str, settings: Settings | None = None) -> AuthPr
     if not settings.clerk_jwks_url:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Clerk JWKS is not configured")
 
-    decode_kwargs: dict[str, Any] = {"algorithms": ["RS256"]}
+    decode_kwargs: dict[str, Any] = {
+        "algorithms": ["RS256"],
+        "leeway": CLOCK_SKEW_LEEWAY_SECONDS,
+    }
     if settings.clerk_issuer:
         decode_kwargs["issuer"] = settings.clerk_issuer
     if settings.clerk_audience:
@@ -66,6 +78,9 @@ def verify_session_token(token: str, settings: Settings | None = None) -> AuthPr
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Clerk JWKS is unavailable"
         ) from exc
     except (jwt.PyJWTError, ValueError) as exc:
+        # 401 的根因就那几类（过期 / 尚未生效 / 签名不符 / JWKS 缺 kid / iss 不符），
+        # 对外文案统一是 Invalid Clerk token，只有异常类名能区分。只记类名，不带 token 内容。
+        logger.warning("clerk token rejected: %s", type(exc).__name__)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Clerk token") from exc
     return principal_from_claims(claims)
 
