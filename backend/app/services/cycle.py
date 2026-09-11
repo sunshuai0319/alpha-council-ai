@@ -51,6 +51,7 @@ from app.rag.retriever import Retriever
 from app.reconciliation.service import ReconciliationService
 from app.risk.engine import RiskEngine, daily_loss_pct
 from app.services.context import load_macro_context
+from app.signals.params import StrategyParams
 
 logger = logging.getLogger(__name__)
 
@@ -441,6 +442,7 @@ class TradingCycleService:
                 opened_at=row.opened_at,
                 now=now,
                 signal_score=state.signal_score,
+                params=StrategyParams.from_settings(self.settings),
             )
             if decision.action is POSITION_CLOSE:
                 logger.info(
