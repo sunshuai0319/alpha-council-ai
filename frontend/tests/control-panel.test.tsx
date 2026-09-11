@@ -631,3 +631,27 @@ describe("committee veto grid", () => {
     expect(await screen.findByText(zhT("committee.vetoIdle"))).toBeVisible()
   })
 })
+
+
+describe("committee model route", () => {
+  beforeEach(() => { vi.unstubAllGlobals() })
+  afterEach(() => { cleanup() })
+
+  it("shows the model that actually made the decision", async () => {
+    // 模型名曾经写死在词条里，换模型就过时、历史决策也会被显示成新模型。
+    const decision = { ...decisionRecord, model_versions: { committee: "some-other-model-v9" } }
+    stubApi("RUNNING", [], [], [decision])
+
+    render(<ConsolePage view="committee" />)
+
+    expect(await screen.findByText(/some-other-model-v9/)).toBeVisible()
+  })
+
+  it("says the route is pending before the first decision", async () => {
+    stubApi("RUNNING", [], [], [])
+
+    render(<ConsolePage view="committee" />)
+
+    expect(await screen.findByText(new RegExp(zhT("committee.modelUnknown")))).toBeVisible()
+  })
+})

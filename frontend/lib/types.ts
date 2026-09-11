@@ -78,6 +78,9 @@ export type Decision = {
     average_price?: string | number | null
     realized_pnl?: string | number | null
   } | null
+  //: 这次决策实际使用的模型（committee 等）。智囊团 banner 的模型路由读它，
+  //: 不再把模型名写死在文案里 —— 换模型时历史决策要显示当时的模型。
+  model_versions?: Record<string, string> | null
   //: 账户实际生效杠杆（虚拟盘固定，系统不下发提案杠杆）；显示用，不是提案值。
   leverage?: number | null
   created_at?: string | null

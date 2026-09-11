@@ -522,7 +522,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
 
   if (view === "committee") return <>
     <PageHeader title={t("committee.title")} description={t("committee.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
-    <section className="committee-banner"><Sparkles size={19} /><div><strong>{t("committee.modelRoute")}</strong><span>{t("committee.retrieval")}</span></div><RiskBadge status={latest?.status ?? "WAITING"} /></section>
+    <section className="committee-banner"><Sparkles size={19} /><div><strong>{t("committee.modelRoute", { model: latest?.model_versions?.committee ?? t("committee.modelUnknown") })}</strong><span>{t("committee.retrieval")}</span></div><RiskBadge status={latest?.status ?? "WAITING"} /></section>
     {latest ? <><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("committee.lastProposal")}</span><h2><ActionMark action={latest.action} /> {latest.symbol}</h2></div><span className="mono">{latest.cycle_id}</span></div><DecisionCard decision={latest} /></section><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("committee.vetoFanout")}</span><h2>{t("committee.vetoTitle")}</h2></div></div>{latestAnalysis?.veto_verdicts ? <VetoGrid verdicts={latestAnalysis.veto_verdicts} /> : <EmptyState title={t("committee.vetoIdle")} body={t("committee.vetoIdleBody")} />}</section></> : <EmptyState title={t("committee.noMeeting")} body={t("committee.noMeetingBody")} />}
   </>
 
