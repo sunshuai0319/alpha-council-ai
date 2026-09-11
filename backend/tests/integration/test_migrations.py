@@ -163,3 +163,17 @@ def test_microstructure_table_reaches_databases_that_already_migrated(tmp_path) 
     _upgrade(url)
 
     assert "market_microstructures" in inspect(create_engine(url)).get_table_names()
+
+
+def test_positions_gains_management_columns(tmp_path) -> None:
+    """持仓管理要有地方记：有效止损、开仓时刻、持仓期内的最有利价。
+
+    初始止损复用已有的 stop_loss 列（本来就有，只是从没写过）。
+    """
+    url = f"sqlite+pysqlite:///{tmp_path / 'positions.db'}"
+
+    _upgrade(url)
+
+    columns = _columns(url, "positions")
+    for name in ("effective_stop", "opened_at", "peak_price"):
+        assert name in columns, f"positions 缺少 {name}"
