@@ -174,6 +174,28 @@ class ReconciliationService:
             position_row.mark_price = item_position.entry_value / item_position.quantity if item_position.quantity else None
             position_row.leverage = item_position.leverage
             position_row.unrealized_pnl = item_position.unrealized_pnl
+            # 同一 symbol 平仓后重开会复用这行（唯一键是 user+account+symbol），
+            # 所以每次观测到仓位都要把状态翻回 OPEN。
+            position_row.status = "OPEN"
+
+        # 交易所没回报的仓位必须在本地跟着平掉。positions 是当前状态而不是事件流 ——
+        # 不做这步，任何不走本系统 CLOSE 路径的退出（止损触发、人工平仓、强平）都会
+        # 在本地留下永远 OPEN 的幽灵仓位，账本页面把它当活仓位显示。
+        reported_symbols = {item.symbol for item in positions}
+        for stale_row in db.scalars(
+            select(Position).where(
+                Position.user_id == user_id,
+                Position.trading_account_id == trading_account_id,
+                Position.status == "OPEN",
+            )
+        ).all():
+            if stale_row.symbol in reported_symbols:
+                continue
+            stale_row.status = "CLOSED"
+            stale_row.quantity = Decimal(0)
+            stale_row.unrealized_pnl = Decimal(0)
+            stale_row.stop_loss = None
+            stale_row.take_profit = None
         now = datetime.now(UTC)
         if balance is not None:
             unrealized = sum((position.unrealized_pnl for position in positions), Decimal(0))
