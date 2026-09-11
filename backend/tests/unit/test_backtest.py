@@ -104,7 +104,7 @@ def _position(**overrides) -> _OpenPosition:
 def test_a_stop_at_the_original_level_costs_one_r() -> None:
     """初始止损被打掉 = -1R（不计手续费）。R 的定义就在这。"""
     trade = _settle(
-        _position(), exit_time=1, exit_price=Decimal(97), exit_reason="stop", fee_pct=Decimal(0)
+        _position(), exit_time=1, exit_price=Decimal(97), exit_reason="stop", entry_fee_pct=Decimal(0), exit_fee_pct=Decimal(0)
     )
     assert trade.r_multiple == Decimal(-1)
 
@@ -124,7 +124,7 @@ def test_a_trailed_stop_can_still_exit_profitably() -> None:
     """
     position = _position(effective_stop=Decimal(102), peak_price=Decimal(105))
     trade = _settle(
-        position, exit_time=1, exit_price=Decimal(102), exit_reason="stop", fee_pct=Decimal(0)
+        position, exit_time=1, exit_price=Decimal(102), exit_reason="stop", entry_fee_pct=Decimal(0), exit_fee_pct=Decimal(0)
     )
     assert trade.r_multiple > 0
 
@@ -247,3 +247,18 @@ def test_mismatched_timeframes_produce_no_trades() -> None:
     result = run_backtest(_daily_frame(closes))  # 默认 1h/4h
 
     assert result.trade_count == 0
+
+
+def test_entry_and_exit_fees_are_separate() -> None:
+    """只有入场能挂 maker 单；平仓必须吃单。
+
+    用同一个费率算两边会高估挂单的收益 —— 这是路线 B 值不值得做的关键数字。
+    """
+    closes = _uptrend(160) + [124.0 + index * 1.2 for index in range(40)]
+    frame = _frame(closes)
+
+    both_taker = run_backtest(frame, entry_fee_pct=Decimal("0.0008"), exit_fee_pct=Decimal("0.0008"))
+    maker_entry = run_backtest(frame, entry_fee_pct=Decimal("0.0002"), exit_fee_pct=Decimal("0.0008"))
+
+    assert both_taker.trade_count == maker_entry.trade_count
+    assert maker_entry.avg_r > both_taker.avg_r, "便宜的入场费率应当改善平均 R"

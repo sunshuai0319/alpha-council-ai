@@ -163,13 +163,21 @@ def _settle(
     exit_time: int,
     exit_price: Decimal,
     exit_reason: str,
-    fee_pct: Decimal,
+    entry_fee_pct: Decimal,
+    exit_fee_pct: Decimal,
 ) -> BacktestTrade:
-    """按两个方向各收一次手续费，再算这笔的盈亏与 R。"""
+    """入场与出场分别计费。
+
+    两边用同一个费率会高估「入场改挂 maker 单」的收益：只有入场能挂单等成交，
+    平仓（止损）必须吃单。
+    """
 
     direction = Decimal(1) if position.side == "LONG" else Decimal(-1)
     gross = (exit_price - position.entry_price) * position.quantity * direction
-    fee = (position.entry_price + exit_price) * position.quantity * fee_pct
+    fee = (
+        position.entry_price * position.quantity * entry_fee_pct
+        + exit_price * position.quantity * exit_fee_pct
+    )
     pnl = gross - fee
     risk = abs(position.entry_price - position.initial_stop) * position.quantity
     return BacktestTrade(
@@ -193,8 +201,17 @@ def run_backtest(
     params: StrategyParams | None = None,
     initial_equity: Decimal = Decimal(10_000),
     fee_pct: Decimal = Decimal("0.0008"),
+    entry_fee_pct: Decimal | None = None,
+    exit_fee_pct: Decimal | None = None,
 ) -> BacktestResult:
-    """跑一遍历史，返回逐笔交易与汇总指标。"""
+    """跑一遍历史，返回逐笔交易与汇总指标。
+
+    `fee_pct` 是两边同价的简写；要分开算（例如入场挂 maker 单）就传
+    `entry_fee_pct` / `exit_fee_pct`。
+    """
+
+    entry_fee = entry_fee_pct if entry_fee_pct is not None else fee_pct
+    exit_fee = exit_fee_pct if exit_fee_pct is not None else fee_pct
 
     active = params or StrategyParams()
     # 按 open_time 排序：WEEX 的 klines 不保证有序（实测），不排会毁掉一切。
@@ -224,7 +241,8 @@ def run_backtest(
                     exit_time=bar.open_time,
                     exit_price=exit_price,
                     exit_reason=reason,
-                    fee_pct=fee_pct,
+                    entry_fee_pct=entry_fee,
+                    exit_fee_pct=exit_fee,
                 )
                 trades.append(trade)
                 equity += trade.pnl
@@ -255,7 +273,8 @@ def run_backtest(
                         exit_reason=(
                             EXIT_STRUCTURE if decision.reason == "structure_invalidated" else EXIT_TIME
                         ),
-                        fee_pct=fee_pct,
+                        entry_fee_pct=entry_fee,
+                        exit_fee_pct=exit_fee,
                     )
                     trades.append(trade)
                     equity += trade.pnl
