@@ -68,6 +68,24 @@ def test_hold_proposal_accepts_committee_style_zero_leverage_and_null_valid_unti
     assert proposal.valid_until is not None
 
 
+def test_hold_proposal_accepts_iso_or_garbage_valid_until():
+    """LLM 对 valid_until 的输出格式漂移：ISO 字符串、编造日期、乱串都出现过。"""
+    base = {
+        "proposal_id": "p-hold",
+        "action": Action.HOLD,
+        "symbol": "BTC-USDT",
+        "position_size_pct": 0,
+        "confidence": 0.0,
+        "reasoning_summary": "wait",
+        "evidence_refs": [],
+        "model_version": "committee-v1",
+        "trace_id": "t-3",
+    }
+    for bad_value in ["2025-04-11T00:00:00Z", "soon", 0]:
+        proposal = TradeProposal.model_validate({**base, "leverage": 0, "valid_until": bad_value})
+        assert proposal.valid_until is not None and isinstance(proposal.valid_until, int)
+
+
 def test_non_hold_proposal_rejects_invalid_leverage_or_valid_until():
     """真实信号（LONG/SHORT/CLOSE）仍要求合法杠杆与有效期，防 LLM 乱填。"""
     base = {
@@ -89,6 +107,10 @@ def test_non_hold_proposal_rejects_invalid_leverage_or_valid_until():
         TradeProposal.model_validate({**base, "leverage": 0, "valid_until": 1700000300})
     with pytest.raises(ValidationError):
         TradeProposal.model_validate({**base, "leverage": 2, "valid_until": None})
+
+    # ISO 字符串解析成毫秒时间戳后放行
+    proposal = TradeProposal.model_validate({**base, "leverage": 2, "valid_until": "2026-09-12T00:00:00Z"})
+    assert isinstance(proposal.valid_until, int)
 
 
 def test_risk_decision_defaults_to_rejected():

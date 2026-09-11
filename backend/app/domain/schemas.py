@@ -1,4 +1,5 @@
 import time
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -63,20 +64,46 @@ class TradeProposal(AnalysisResult):
     def normalize_side(cls, value: str | None) -> str | None:
         return value.upper() if value is not None else None
 
+    @field_validator("valid_until", mode="before")
+    @classmethod
+    def parse_valid_until(cls, value: Any) -> int | None:
+        """LLM 常把有效期输出成 ISO 字符串（甚至是编造的过去日期），收敛成毫秒。
+
+        null / 空串 / 无法解析 → None，交给 enforce_signal_fields 兜底
+        （HOLD 填当前时间、非 HOLD 拒绝）。
+        """
+
+        if value is None or value == "" or isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if text.isdigit():
+                return int(text)
+            try:
+                return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+            except ValueError:
+                return None
+        return None
+
     @model_validator(mode="after")
     def enforce_signal_fields(self) -> "TradeProposal":
         """HOLD 不下单，放行 LLM 的 leverage=0 / valid_until=null 并归一化。
 
-        实测 LLM 对 HOLD 常返回这两个"无操作"值，严格 schema 会把整个提案拒掉、
-        fallback 成 safe-hold，真实的观望判断永远到不了风控。非 HOLD（真实信号）
-        仍然强制杠杆 >= 1 且有效期必填。
+        实测 LLM 对 HOLD 常返回"无操作"值（leverage=0、valid_until 为 null 或
+        ISO 字符串），严格 schema 会把整个提案拒掉、fallback 成 safe-hold，
+        真实的观望判断永远到不了风控。非 HOLD（真实信号）仍然强制杠杆 >= 1
+        且有效期必填。
         """
 
         if self.action is Action.HOLD:
             if self.leverage < 1:
                 self.leverage = 1
-            if self.valid_until is None:
-                self.valid_until = int(time.time() * 1000)
+            # HOLD 不下单，valid_until 无实际意义：不信任 LLM 的 null / ISO / 编造日期。
+            self.valid_until = int(time.time() * 1000)
             return self
         if self.leverage < 1:
             raise ValueError("non-HOLD proposal requires leverage >= 1")
