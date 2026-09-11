@@ -1214,3 +1214,54 @@ def test_decisions_report_the_symbols_available_for_filtering(tmp_path) -> None:
     result = service.decisions("u-1")
 
     assert result["symbols"] == ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+
+
+class BrokerDownAfterDecision(FakeExchange):
+    """行情可用，但账户类端点全部不可用（对端抖动时的真实形态）。"""
+
+    def get_positions(self) -> list[object]:
+        raise ExchangeError("WEEX request failed: GET /capi/v3/sim/position/allPosition: 503")
+
+    def get_balances(self) -> list[ExchangeBalance]:
+        raise ExchangeError("WEEX request failed: GET /capi/v3/sim/balance: 503")
+
+
+def test_cycle_survives_an_account_endpoint_outage(tmp_path) -> None:
+    """对账/持仓管理失败不能把整个周期炸掉。
+
+    实测踩到：对端 503 时 reconcile 抛异常，而它在 _persist **之前** —— 于是这一轮
+    的决策根本没落库，异常还冒到调度器记成 trading cycle failed。决策已经做完了，
+    丢掉它比晚一轮同步仓位糟糕得多。
+    """
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'outage.db'}")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+    db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+    db.commit()
+    service = TradingCycleService(db=db, exchange_factory=BrokerDownAfterDecision)
+
+    result = service.run(user_id="u-1", symbol="BTC-USDT", llm=FailingLLM())
+
+    assert result.action == "HOLD"
+    assert result.persisted is True, "对端故障不该让决策丢失"
+    rows = db.scalars(select(TradingDecision)).all()
+    assert len(rows) == 1
+
+
+def test_cycle_records_an_account_outage_without_halting(tmp_path) -> None:
+    """故障要留痕（便于排查），但不能熔断账户。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'outage-events.db'}")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+    db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+    db.commit()
+    service = TradingCycleService(db=db, exchange_factory=BrokerDownAfterDecision)
+
+    for _ in range(6):  # 超过 max_consecutive_failures
+        service.run(user_id="u-1", symbol="BTC-USDT", llm=FailingLLM())
+
+    assert service.control_status("u-1") == "RUNNING", "对端故障不该熔断账户"
+    event_types = {row.event_type for row in db.scalars(select(RiskEvent)).all()}
+    assert event_types, "故障必须留痕，否则排查时无从下手"

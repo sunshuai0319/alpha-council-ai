@@ -230,7 +230,9 @@ class TradingCycleService:
         # 交易所那条 3× 的宽灾难止损，而不是软件层的 1R。
         # 没有 state.signal_score 时结构失效不会触发（暂停期没有新信号），
         # 但止损触及、保本、移动、时间止损照常。
-        self._manage_positions(exchange, state)
+        #
+        # 失败不终止周期：它同样是观测/降险步骤，对端抖动时把整轮炸掉只会丢掉决策。
+        self._best_effort("position_management", user_id, symbol, lambda: self._manage_positions(exchange, state))
         if halt_reason is not None:
             logger.info(
                 "cycle halted: user=%s symbol=%s reason=%s (no committee, no order)",
@@ -301,16 +303,22 @@ class TradingCycleService:
         # 唯一机制。放在暂停分支之外，暂停期间才不会留下幽灵持仓。
         account = self._account_for_user(user_id)
         if account is not None:
-            self.reconciliation.reconcile(
-                exchange,
-                user_id=user_id,
-                trading_account_id=account.id,
-                order_ids=[execution.exchange_order_id] if execution and execution.exchange_order_id else [],
-                symbol=symbol,
-            )
-            # 必须在 reconcile 之后：行是它建的。把管理所需的元数据登记上去，
-            # 否则下一轮 PositionManager 无从知道成本与止损在哪。
-            self._register_position_metadata(user_id, account.id, symbol, state, execution)
+            def _sync() -> None:
+                self.reconciliation.reconcile(
+                    exchange,
+                    user_id=user_id,
+                    trading_account_id=account.id,
+                    order_ids=[execution.exchange_order_id] if execution and execution.exchange_order_id else [],
+                    symbol=symbol,
+                )
+                # 必须在 reconcile 之后：行是它建的。把管理所需的元数据登记上去，
+                # 否则下一轮 PositionManager 无从知道成本与止损在哪。
+                self._register_position_metadata(user_id, account.id, symbol, state, execution)
+
+            # 对账失败**绝不能**让周期失败：它在 _persist 之前，抛出去这一轮的决策就
+            # 根本没落库（实测对端 503 时正是如此）。决策已经做完，丢掉它比晚一轮
+            # 同步仓位糟糕得多 —— 下一轮对账会把落下的补上。
+            self._best_effort("reconciliation", user_id, symbol, _sync)
         persisted = self._persist(result_state=state, risk=risk_decision, execution=execution)
         result = CycleResult(state, risk_decision, execution, persisted)
         logger.info(
@@ -399,6 +407,29 @@ class TradingCycleService:
             is_reducing=is_reducing,
             checked_at=now_ms,
         )
+
+    def _best_effort(
+        self,
+        step: str,
+        user_id: str,
+        symbol: str,
+        action: Callable[[], None],
+    ) -> None:
+        """跑一个观测/降险步骤，失败只留痕，不终止周期。
+
+        周期里除了「做决策」和「落库决策」，其余都是观测（对账、持仓管理）。
+        它们失败时把整轮炸掉，代价是丢掉一个已经做完的决策 —— 而下一轮会把
+        落下的补上。留痕用 record_failure，外部故障不会熔断账户（见第 1 层）。
+        """
+
+        try:
+            action()
+        except Exception as exc:  # noqa: BLE001 - 观测失败不该终止周期
+            logger.warning("%s failed (cycle continues): user=%s symbol=%s error=%s", step, user_id, symbol, exc)
+            try:
+                self.record_failure(user_id, symbol, exc)
+            except Exception:
+                logger.exception("recording the %s failure also failed", step)
 
     def _manage_positions(self, exchange: ExchangeClient, state: TradingCycleState) -> None:
         """对**本品种**已有仓位跑持仓管理：触及有效止损/结构失效/时间止损就平，
