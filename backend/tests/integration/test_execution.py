@@ -126,7 +126,7 @@ def test_exchange_stop_uses_the_wide_disaster_level_not_the_software_stop() -> N
         exchange, proposal, RiskDecision(status="ALLOWED"), quantity=Decimal("0.01")
     )
 
-    assert exchange.request.stop_loss == Decimal("109")
+    assert exchange.request.stop_loss == Decimal(109)
 
 
 def test_falls_back_to_the_software_stop_when_no_disaster_level_is_given() -> None:
@@ -137,4 +137,4 @@ def test_falls_back_to_the_software_stop_when_no_disaster_level_is_given() -> No
         exchange, proposal, RiskDecision(status="ALLOWED"), quantity=Decimal("0.01")
     )
 
-    assert exchange.request.stop_loss == Decimal("103")
+    assert exchange.request.stop_loss == Decimal(103)
