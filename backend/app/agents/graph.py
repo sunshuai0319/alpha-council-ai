@@ -50,6 +50,7 @@ class GraphState(TypedDict, total=False):
     signal_score: float | None
     veto_type: str | None
     equity: Decimal | None
+    signal_decided_at: int | None
     errors: list[str]
     data_versions: dict[str, str]
     model_versions: dict[str, str]
@@ -236,6 +237,7 @@ def signal_node(
         return {
             "trade_proposal": _hold_proposal(current, f"signal_hold_score_{composite:.2f}", now).model_dump(),
             "signal_score": composite,
+            "signal_decided_at": now,
         }
     snapshot = current.market_snapshot
     one_h = (current.technical_indicators or {}).get("1h") or {}
@@ -245,6 +247,7 @@ def signal_node(
         return {
             "trade_proposal": _hold_proposal(current, "signal_missing_atr_or_price", now).model_dump(),
             "signal_score": composite,
+            "signal_decided_at": now,
         }
     # 仓位由风险预算反推，不依赖实际 equity —— position_size_pct 是比例，
     # equity 只用于把比例换算成名义金额，cycle 层再用真实余额算。
@@ -275,7 +278,11 @@ def signal_node(
         model_version="rule-signal-v1",
         trace_id=str(uuid4()),
     )
-    return {"trade_proposal": proposal.model_dump(), "signal_score": composite}
+    return {
+        "trade_proposal": proposal.model_dump(),
+        "signal_score": composite,
+        "signal_decided_at": now,
+    }
 
 
 def veto_node(

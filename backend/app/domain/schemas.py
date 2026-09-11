@@ -221,6 +221,9 @@ class TradingCycleState(BaseModel):
     veto_type: str | None = None
     #: 当前权益，cycle 注入给 signal_node 做仓位反推。
     equity: Decimal | None = None
+    #: signal_node 决策的时刻（ms）。风控的 data_age 以它为基准，而不是采集时刻 ——
+    #: 否则 LLM 否决耗时（最坏 = 重试 3 次 × 60s 超时）会被误算成行情过期。
+    signal_decided_at: int | None = None
     errors: list[str] = Field(default_factory=list)
     data_versions: dict[str, str] = Field(default_factory=dict)
     model_versions: dict[str, str] = Field(default_factory=dict)
