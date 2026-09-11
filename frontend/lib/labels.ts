@@ -50,6 +50,7 @@ const REASON_KEYS: Record<string, string> = {
   committee_llm_not_configured: "reason.committeeLlmMissing",
   signal_missing_atr_or_price: "reason.signalMissingAtr",
   safe_hold: "reason.safeHold",
+  repeated_cycle_failures: "reason.repeatedCycleFailures",
 
   // 否决（VetoReason 枚举）
   NEWS_SHOCK: "veto.NEWS_SHOCK",
@@ -71,6 +72,15 @@ const PREFIX_KEYS: Array<[string, string]> = [
   ["retrieval_failed:", "reason.retrievalFailed"],
   ["vetoed:", "reason.vetoed"],
 ];
+
+/** 风控事件类型。 */
+const EVENT_KEYS: Record<string, string> = {
+  RISK_GATE: "event.RISK_GATE",
+  CYCLE_FAILURE: "event.CYCLE_FAILURE",
+  CIRCUIT_BREAKER: "event.CIRCUIT_BREAKER",
+  CYCLE_SAFETY: "event.CYCLE_SAFETY",
+  DATA_SOURCE_DEGRADED: "event.DATA_SOURCE_DEGRADED",
+};
 
 /** 模型版本 / 信号来源。 */
 const MODEL_KEYS: Record<string, string> = {
@@ -112,6 +122,20 @@ export function reasonLabel(code: string): Label {
     };
   }
   return labelFor(code, REASON_KEYS);
+}
+
+/** 风控事件类型。 */
+export function eventTypeLabel(code: string): Label {
+  return labelFor(code, EVENT_KEYS, []);
+}
+
+/**
+ * 风控事件的原因。后端可能把多条用 `;` 拼成一串
+ * （`entry_evidence_missing;hold_no_order`），所以要拆开逐条翻译。
+ * 认不出的部分（WEEX 报错、psycopg 异常原文）原样保留。
+ */
+export function reasonParts(reason: string): Label[] {
+  return reason.split(";").filter(Boolean).map(reasonLabel);
 }
 
 /** 模型版本。旧版委员会有 v1 / v1.0 / v1.0.0 三种写法。 */

@@ -4,7 +4,7 @@ import { useAuth } from "@clerk/nextjs"
 import { ChevronRight, CircleAlert, CirclePause, CirclePlay, RefreshCw, ShieldAlert, Sparkles } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
-import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, Pagination, PortfolioTable, RiskBadge, VirtualBadge } from "@/components/console-primitives"
+import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, ModelText, Pagination, PortfolioTable, ReasonText, RiskBadge, VirtualBadge } from "@/components/console-primitives"
 import { labelText, modelLabel, reasonLabel } from "@/lib/labels"
 import { ApiError, apiRequest } from "@/lib/api"
 import { emptyOverviewHint } from "@/lib/console-hints"
@@ -338,7 +338,7 @@ function DecisionRow({ decision }: { decision: Decision }) {
       <ActionMark action={decision.action} />
       <span className="decision-row-symbol">{decision.symbol}</span>
       <RiskBadge status={decision.status} />
-      <span className="decision-row-reason">{proposal?.reasoning_summary ?? t("common.noProposal")}</span>
+      <span className="decision-row-reason"><ReasonText code={proposal?.reasoning_summary} fallback={t("common.noProposal")} /></span>
       <time>{formatDate(decision.created_at, locale)}</time>
       <ChevronRight size={14} className={open ? "decision-row-chevron is-open" : "decision-row-chevron"} />
     </button>
@@ -369,8 +369,8 @@ function DecisionRow({ decision }: { decision: Decision }) {
         <div className="agent-grid">
           {agents.map(([labelKey, analysis]) => <article className="agent-card" key={labelKey}>
             <div className="agent-card-top"><span className="agent-glyph"><Sparkles size={14} /></span><span className="eyebrow">{t(labelKey)}</span><b>{formatPercent(analysis.confidence)}</b></div>
-            <p>{analysis.reasoning_summary ?? "—"}</p>
-            <footer>{analysis.model_version ? labelText(modelLabel(analysis.model_version), t) : t("committee.noModelTrace")}</footer>
+            <p><ReasonText code={analysis.reasoning_summary} /></p>
+            <footer><ModelText version={analysis.model_version} fallback={t("committee.noModelTrace")} /></footer>
           </article>)}
         </div>
       </section> : null}
@@ -505,7 +505,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
   if (view === "committee") return <>
     <PageHeader title={t("committee.title")} description={t("committee.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
     <section className="committee-banner"><Sparkles size={19} /><div><strong>{t("committee.modelRoute")}</strong><span>{t("committee.retrieval")}</span></div><RiskBadge status={latest?.status ?? "WAITING"} /></section>
-    {latest ? <><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("committee.lastProposal")}</span><h2><ActionMark action={latest.action} /> {latest.symbol}</h2></div><span className="mono">{latest.cycle_id}</span></div><DecisionCard decision={latest} /></section><section className="agent-grid">{([ ["committee.agentMarket", latestAnalysis?.market], ["committee.agentQuant", latestAnalysis?.quant], ["committee.agentMacro", latestAnalysis?.macro] ] as const).map(([labelKey, analysis]) => <article className="agent-card" key={labelKey}><div className="agent-card-top"><span className="agent-glyph"><Sparkles size={14} /></span><span className="eyebrow">{t(labelKey)}</span><b>{analysis?.confidence == null ? "—" : formatPercent(analysis.confidence)}</b></div><p>{analysis?.reasoning_summary ?? t("committee.noMeetingBody")}</p><footer>{analysis?.model_version ?? t("committee.noModelTrace")}</footer></article>)}</section></> : <EmptyState title={t("committee.noMeeting")} body={t("committee.noMeetingBody")} />}
+    {latest ? <><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("committee.lastProposal")}</span><h2><ActionMark action={latest.action} /> {latest.symbol}</h2></div><span className="mono">{latest.cycle_id}</span></div><DecisionCard decision={latest} /></section><section className="agent-grid">{([ ["committee.agentMarket", latestAnalysis?.market], ["committee.agentQuant", latestAnalysis?.quant], ["committee.agentMacro", latestAnalysis?.macro] ] as const).map(([labelKey, analysis]) => <article className="agent-card" key={labelKey}><div className="agent-card-top"><span className="agent-glyph"><Sparkles size={14} /></span><span className="eyebrow">{t(labelKey)}</span><b>{analysis?.confidence == null ? "—" : formatPercent(analysis.confidence)}</b></div><p><ReasonText code={analysis?.reasoning_summary} fallback={t("committee.noMeetingBody")} /></p><footer><ModelText version={analysis?.model_version} fallback={t("committee.noModelTrace")} /></footer></article>)}</section></> : <EmptyState title={t("committee.noMeeting")} body={t("committee.noMeetingBody")} />}
   </>
 
   if (view === "settings") return <>

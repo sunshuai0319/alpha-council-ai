@@ -1,7 +1,28 @@
 import { Check, CircleAlert, Minus, TrendingDown, TrendingUp } from "lucide-react"
 
 import { translate, useI18n, type Locale } from "@/lib/i18n"
+import { labelText, modelLabel, eventTypeLabel, reasonLabel, reasonParts } from "@/lib/labels"
 import type { Decision, MarketSnapshot, Position, RiskEvent } from "@/lib/types"
+
+/**
+ * 后端机器码 → 当前语言文案。
+ *
+ * 单点转换：折叠行、决策卡片、委员会页、展开详情全都用它。之前只有详情做了
+ * 转换，于是列表行仍在显示 `signal_hold_score_0.18` 这种英文码。
+ * 认不出的码（包括 LLM 写的中文摘要）原样返回。
+ */
+export function ReasonText({ code, fallback = "—" }: { code?: string | null; fallback?: string }) {
+  const { t } = useI18n()
+  if (!code) return <>{fallback}</>
+  return <>{labelText(reasonLabel(code), t)}</>
+}
+
+/** 模型版本 → 当前语言文案。 */
+export function ModelText({ version, fallback = "—" }: { version?: string | null; fallback?: string }) {
+  const { t } = useI18n()
+  if (!version) return <>{fallback}</>
+  return <>{labelText(modelLabel(version), t)}</>
+}
 
 export function VirtualBadge({ compact = false }: { compact?: boolean }) {
   const { t } = useI18n()
@@ -87,7 +108,7 @@ export function DecisionCard({ decision }: { decision: Decision }) {
         <RiskBadge status={decision.status} />
       </div>
       <p className="decision-reasoning">
-        {proposal?.reasoning_summary ?? t("common.noProposal")}
+        <ReasonText code={proposal?.reasoning_summary} fallback={t("common.noProposal")} />
       </p>
       <div className="decision-meta">
         <span>{t("common.confidence")} <b>{formatPercent(proposal?.confidence)}</b></span>
@@ -95,7 +116,7 @@ export function DecisionCard({ decision }: { decision: Decision }) {
         {/* 虚拟盘杠杆固定、系统不下发提案杠杆，展示账户实际值而非提案占位值。 */}
         <span title={t("console.leverageFixed")}>{t("common.leverage")} <b>{decision.leverage ?? proposal?.leverage ?? 1}×</b></span>
       </div>
-      {reasons.length ? <div className="risk-reasons">{reasons.join(" · ")}</div> : null}
+      {reasons.length ? <div className="risk-reasons">{reasons.map((reason, index) => <span key={`${reason}-${index}`}>{index ? t("common.listSeparator") : ""}<ReasonText code={reason} /></span>)}</div> : null}
       <div className="decision-footer">
         <code>{decision.cycle_id.slice(0, 12)}</code>
         <span>{formatDate(decision.created_at, locale)}</span>
@@ -129,7 +150,12 @@ export function EventList({ events }: { events: RiskEvent[] }) {
   if (!events.length) return <EmptyState title={t("common.noRiskEvents")} body={t("common.noRiskEventsBody")} />
   return <div className="event-list">{events.map((event) => <div className="event-row" key={event.id}>
     <div className="event-icon"><CircleAlert size={16} /></div>
-    <div><strong>{event.event_type}</strong><p>{event.reason}</p></div>
+    <div>
+      <strong>{labelText(eventTypeLabel(event.event_type), t)}</strong>
+      {/* 原因可能是后端用 `;` 拼起来的多条（entry_evidence_missing;hold_no_order），
+          逐条翻译；认不出的部分（WEEX 报错原文）原样保留。 */}
+      <p>{reasonParts(event.reason).map((part, index) => <span key={`${event.id}-${index}`}>{index ? t("common.listSeparator") : ""}{labelText(part, t)}</span>)}</p>
+    </div>
     <RiskBadge status={event.status} />
     <time>{formatDate(event.created_at, locale)}</time>
   </div>)}</div>

@@ -86,6 +86,13 @@ export const messages: Record<Locale, MessageTree> = {
     "console.reconnect": "启动 API 并刷新以重新连接。",
     // ——— 后端内部码的本地化（见 lib/labels.ts）———
     "reason.holdNoOrder": "规则信号未达开仓条件，未下单",
+    "event.RISK_GATE": "风控闸门",
+    "event.CYCLE_FAILURE": "周期失败",
+    "event.CIRCUIT_BREAKER": "熔断",
+    "event.CYCLE_SAFETY": "周期安全",
+    "event.DATA_SOURCE_DEGRADED": "数据源降级",
+    "reason.repeatedCycleFailures": "连续周期失败触发熔断",
+
     "reason.paused": "账户已暂停",
     "reason.tradingDisabled": "全局交易开关已关闭",
     "reason.marketDataStale": "行情数据过期",
@@ -354,6 +361,13 @@ export const messages: Record<Locale, MessageTree> = {
     "console.reconnect": "Start the API and refresh to reconnect.",
     // ——— Localization of backend codes (see lib/labels.ts) ———
     "reason.holdNoOrder": "Rule signal did not meet entry conditions; no order",
+    "event.RISK_GATE": "Risk gate",
+    "event.CYCLE_FAILURE": "Cycle failure",
+    "event.CIRCUIT_BREAKER": "Circuit breaker",
+    "event.CYCLE_SAFETY": "Cycle safety",
+    "event.DATA_SOURCE_DEGRADED": "Data source degraded",
+    "reason.repeatedCycleFailures": "Repeated cycle failures tripped the breaker",
+
     "reason.paused": "Account is paused",
     "reason.tradingDisabled": "Global trading switch is off",
     "reason.marketDataStale": "Market data is stale",

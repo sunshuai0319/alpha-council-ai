@@ -517,3 +517,34 @@ describe("rule signal labels", () => {
     expect(labelText(reasonLabel("some_future_code_42"), zhT)).toBe("some_future_code_42")
   })
 })
+
+
+describe("reason codes in the collapsed list", () => {
+  beforeEach(() => { vi.unstubAllGlobals() })
+  afterEach(() => { cleanup() })
+
+  it("shows the ledger row in Chinese, not the raw code", async () => {
+    // 实测报的问题：详情做了本地化，但折叠的列表行仍在显示 signal_hold_score_0.18。
+    const holdWithCode = {
+      ...decisionRecord,
+      proposal: { ...decisionRecord.proposal, reasoning_summary: "signal_hold_score_0.18" },
+    }
+    stubApi("RUNNING", [virtualAccount], [], [holdWithCode])
+    render(<ConsolePage view="trades" />)
+
+    expect(await screen.findByText("信号分 0.18，未达开仓阈值")).toBeVisible()
+    expect(screen.queryByText("signal_hold_score_0.18")).toBeNull()
+  })
+
+  it("localizes the code on the overview card too", async () => {
+    const holdWithCode = {
+      ...decisionRecord,
+      proposal: { ...decisionRecord.proposal, reasoning_summary: "signal_hold_score_0.18" },
+    }
+    stubApi("RUNNING", [virtualAccount], [], [holdWithCode])
+    render(<ConsolePage view="overview" />)
+
+    expect(await screen.findAllByText("信号分 0.18，未达开仓阈值")).not.toHaveLength(0)
+    expect(screen.queryByText("signal_hold_score_0.18")).toBeNull()
+  })
+})
