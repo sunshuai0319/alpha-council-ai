@@ -1405,3 +1405,26 @@ def test_market_reports_the_freshness_rules_from_settings() -> None:
 
     assert payload["timeframes"] == ["12h", "1d"]
     assert payload["max_age_seconds"] == 90
+
+
+def test_decisions_expose_the_model_versions() -> None:
+    """智囊团 banner 的模型路由跟决策走，不能在文案里硬编码模型名。
+
+    model_versions 早就存进了 trading_decisions（哪个模型做的这次决策），只是
+    没从接口返回 —— 前端于是把 'deepseek-v4-pro-ga-260813' 写死在词条里，换模型
+    就过时，连历史决策都会被显示成新模型。
+    """
+    row = TradingDecision(
+        id="d-1",
+        user_id="u-1",
+        cycle_id="c-1",
+        trace_id="t-1",
+        symbol="BTC-USDT",
+        action="HOLD",
+        status="ALLOWED",
+        model_versions={"committee": "deepseek-v4-pro-ga-260813"},
+    )
+
+    payload = TradingCycleService._decision_dict(row)
+
+    assert payload["model_versions"] == {"committee": "deepseek-v4-pro-ga-260813"}

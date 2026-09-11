@@ -1291,6 +1291,9 @@ class TradingCycleService:
             "analyses": row.analyses,
             "risk_decision": row.risk_decision,
             "execution_result": row.execution_result,
+            # 这次决策用的模型（committee 等）。智囊团 banner 的「模型路由」读它，
+            # 而不是把模型名写死在词条里 —— 换模型时历史决策也要显示当时的模型。
+            "model_versions": row.model_versions,
             "leverage": leverage,
             "created_at": row.created_at,
         }
