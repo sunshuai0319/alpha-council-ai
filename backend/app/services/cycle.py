@@ -13,8 +13,10 @@ from sqlalchemy.orm import Session
 from app.agents.graph import TradingCycleGraph, build_trading_cycle_graph
 from app.agents.llm import ArkChatClient
 from app.analytics.indicators import INDICATOR_VERSION, calculate_indicators
+from app.collectors.codes import market_data_error_code
 from app.collectors.weex import WeexCollector
 from app.config import Settings, get_settings
+from app.db.collector_errors import record_collector_errors
 from app.db.models import (
     AccountSnapshot,
     ControlState,
@@ -185,6 +187,11 @@ class TradingCycleService:
             len(candle_result.items),
             len(candle_result.errors) + len(snapshot_result.errors),
         )
+        # 原始异常只在这里（日志）与 collector_errors 表留痕 —— 决策记录里存的是
+        # 稳定码。以前两头都没有：界面上是英文原文，库里也数不出行情错误率。
+        for collected in (candle_result, snapshot_result, microstructure_result):
+            for error in collected.errors:
+                logger.warning("market collector error: user=%s symbol=%s %s", user_id, symbol, error)
         state = TradingCycleState(
             user_id=user_id,
             cycle_id=cycle_id,
@@ -203,10 +210,13 @@ class TradingCycleService:
                     for timeframe in timeframes
                 }
             ),
+            # 进决策记录（并最终渲染到界面）的是**稳定码**，不是原始异常：
+            # 原文走日志与 collector_errors 表，界面只显示「哪个品种/周期没抓到」。
+            # 见 app/collectors/codes.py。
             errors=[
-                *candle_result.errors,
-                *snapshot_result.errors,
-                *microstructure_result.errors,
+                market_data_error_code(error)
+                for collected in (candle_result, snapshot_result, microstructure_result)
+                for error in collected.errors
             ],
             # 宏观事实只能从库里读（行情与账户事实不写进 RAG）。不传的话宏观 agent
             # 的上下文恒为空数组，只会一直报 insufficient_data。
@@ -218,6 +228,8 @@ class TradingCycleService:
             snapshot_result.items,
             microstructure_result.items,
         )
+        # 归并落库必须在 _persist 的 commit 之前（生产会话 autoflush=False）。
+        record_collector_errors(self.db, candle_result, snapshot_result, microstructure_result)
         halt_reason = (
             None
             if self.control_status(user_id) != "PAUSED"

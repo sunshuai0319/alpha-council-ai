@@ -51,6 +51,7 @@ const REASON_KEYS: Record<string, string> = {
   signal_missing_atr_or_price: "reason.signalMissingAtr",
   safe_hold: "reason.safeHold",
   repeated_cycle_failures: "reason.repeatedCycleFailures",
+  market_data_unavailable: "reason.marketDataUnavailable",
 
   // 否决（VetoReason 枚举）
   NEWS_SHOCK: "veto.NEWS_SHOCK",
@@ -68,6 +69,8 @@ const REASON_KEYS: Record<string, string> = {
 /** 带参数的码：前缀 + 参数名。 */
 const PREFIX_KEYS: Array<[string, string]> = [
   ["signal_hold_score_", "reason.signalHoldScore"],
+  // 只带范围（品种/周期），不带上游异常原文 —— 原文在日志与 collector_errors 里。
+  ["market_data_unavailable:", "reason.marketDataUnavailableScoped"],
   ["account_unavailable:", "reason.accountUnavailable"],
   ["retrieval_failed:", "reason.retrievalFailed"],
   ["vetoed:", "reason.vetoed"],
@@ -93,6 +96,16 @@ export type Label = { key: string; params?: Record<string, string> } | { text: s
 
 /** 规则信号器开仓时的摘要：「rule signal SHORT score=-0.55」。 */
 const RULE_SIGNAL = /^rule signal (LONG|SHORT) score=(-?[\d.]+)$/;
+
+/**
+ * 2026-09-11 之前落库的行情采集失败：`ETH-USDT/12h: WEEX request failed: <英文原文>`。
+ *
+ * 那时采集错误未经归一就进了提案理由，界面上直接冒出英文异常。新记录存的是
+ * `market_data_unavailable:<范围>`（见 `app/collectors/codes.py`），但历史行不会
+ * 自己消失 —— 在这里按模式认出来，就不必回头刷数据。
+ * 范围限定在 `品种[-周期]`，保证只吃掉这种格式，不会误伤别的自由文本。
+ */
+const LEGACY_MARKET_DATA_FAILURE = /^([A-Z0-9]+(?:-[A-Z0-9]+)?(?:\/\w+)?): WEEX request failed:/;
 
 function labelFor(code: string, table: Record<string, string>, prefixTable = PREFIX_KEYS): Label {
   if (table[code]) return { key: table[code] };
@@ -120,6 +133,10 @@ export function reasonLabel(code: string): Label {
       key: "reason.ruleSignalEntry",
       params: { direction: entry[1], score: String(Number(Number(entry[2]).toFixed(2))) },
     };
+  }
+  const legacyFailure = LEGACY_MARKET_DATA_FAILURE.exec(code);
+  if (legacyFailure) {
+    return { key: "reason.marketDataUnavailableScoped", params: { detail: legacyFailure[1] } };
   }
   return labelFor(code, REASON_KEYS);
 }

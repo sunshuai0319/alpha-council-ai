@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session
 from app.collectors.macro import DEFAULT_FRED_SERIES, FRED_SERIES_CADENCE, MacroCollector
 from app.collectors.rss import RSSCollector
 from app.config import Settings, get_settings
-from app.db.models import CollectorError, MacroObservationRecord, SourceDocument
+from app.db.collector_errors import record_collector_errors
 from app.db.models import DocumentSummary as DocumentSummaryRecord
+from app.db.models import MacroObservationRecord, SourceDocument
 from app.processing.ark import ArkSummaryClient, DocumentSummary
 from app.processing.documents import DocumentInput, chunk_text, prepare_document
 from app.rag.embeddings import BGEEmbedder
@@ -155,34 +156,9 @@ class DocumentPipeline:
         }
 
     def _record_errors(self, *results: Any) -> None:
-        """把采集错误按 (collector, message) 归并落库。
+        """把采集错误按 (collector, message) 归并落库（调用方负责 commit）。"""
 
-        只打日志的话，"网络到底稳不稳"无从判断 —— 翻日志数不出错误率，也分不清
-        是单个站点的波动还是整条出口的故障。归并计数避免每轮写一行撑爆表。
-        """
-
-        now = datetime.now(UTC)
-        for result in results:
-            for message in result.errors:
-                row = self.db.scalar(
-                    select(CollectorError).where(
-                        CollectorError.collector == result.source,
-                        CollectorError.message == message,
-                    )
-                )
-                if row is None:
-                    self.db.add(
-                        CollectorError(
-                            collector=result.source,
-                            message=message,
-                            occurrences=1,
-                            first_seen_at=now,
-                            last_seen_at=now,
-                        )
-                    )
-                else:
-                    row.occurrences += 1
-                    row.last_seen_at = now
+        record_collector_errors(self.db, *results)
 
     def _process(self, document: DocumentInput) -> bool | None:
         """Return True when indexed, None when already indexed, False on failure."""

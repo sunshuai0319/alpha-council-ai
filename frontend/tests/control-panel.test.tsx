@@ -518,6 +518,30 @@ describe("rule signal labels", () => {
   })
 })
 
+describe("market data failure labels", () => {
+  it("shows which symbol and timeframe failed, not the upstream exception", () => {
+    expect(labelText(reasonLabel("market_data_unavailable:ETH-USDT/12h"), zhT)).toBe(
+      "行情获取失败：ETH-USDT/12h",
+    )
+  })
+
+  it("still reads as Chinese when the scope is missing", () => {
+    expect(labelText(reasonLabel("market_data_unavailable"), zhT)).toBe("行情获取失败")
+  })
+
+  it("translates the legacy rows that stored the raw exception", () => {
+    // 库里已经躺着的历史决策存的是英文原文。界面认得出来就不必回头改数据。
+    const legacy =
+      "ETH-USDT/12h: WEEX request failed: GET /capi/v3/market/klines: _ssl.c:1011: The handshake operation timed out"
+    expect(labelText(reasonLabel(legacy), zhT)).toBe("行情获取失败：ETH-USDT/12h")
+  })
+
+  it("translates a legacy snapshot failure too", () => {
+    const legacy = "BTC-USDT: WEEX request failed: GET /capi/v3/market/ticker/24hr: 503 Service Unavailable"
+    expect(labelText(reasonLabel(legacy), zhT)).toBe("行情获取失败：BTC-USDT")
+  })
+})
+
 
 describe("reason codes in the collapsed list", () => {
   beforeEach(() => { vi.unstubAllGlobals() })

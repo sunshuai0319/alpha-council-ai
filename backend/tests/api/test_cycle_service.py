@@ -8,6 +8,7 @@ from app.config import Settings
 from app.db.models import (
     AccountSnapshot,
     Base,
+    CollectorError,
     MarketMicrostructureRecord,
     PnlSnapshot,
     Position,
@@ -170,6 +171,46 @@ def test_cycle_persists_microstructure_without_affecting_the_decision(tmp_path) 
         assert len(rows) == 1
         assert rows[0].symbol == "BTC-USDT"
         assert rows[0].funding_rate == 0.0001
+
+
+class PartiallyFailingExchange(FakeExchange):
+    """只有一个周期抓不到，其余正常 —— 复现 2026-09-11 那次 12h 抓取超时。"""
+
+    def get_candles(self, symbol: str, timeframe: str, limit: int = 100) -> list[Candle]:
+        if timeframe == "12h":
+            raise ExchangeError(
+                "WEEX request failed: GET /capi/v3/market/klines: "
+                "_ssl.c:1011: The handshake operation timed out"
+            )
+        return super().get_candles(symbol, timeframe, limit)
+
+
+def test_a_market_fetch_failure_is_stored_as_a_code_not_an_exception(tmp_path) -> None:
+    """决策记录是要渲染到界面上的 —— 它只能存稳定码，不能存英文异常。
+
+    原文不丢：它照旧进日志，并归并进 collector_errors 表供排查。
+    """
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'codes.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.commit()
+        service = TradingCycleService(
+            db=db,
+            settings=Settings(market_timeframes="12h,1d"),
+            exchange_factory=PartiallyFailingExchange,
+        )
+        service.run(user_id="u-1", llm=FailingLLM())
+
+        decision = db.scalars(select(TradingDecision)).one()
+        assert decision.proposal["reasoning_summary"] == "market_data_unavailable:BTC-USDT/12h"
+
+        # 原文没有丢，只是换了个地方待着。
+        errors = db.scalars(select(CollectorError)).all()
+        assert len(errors) == 1
+        assert errors[0].collector == "weex-candles"
+        assert "_ssl.c:1011" in errors[0].message
 
 
 class RecordingExchange:
