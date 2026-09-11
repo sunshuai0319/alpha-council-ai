@@ -107,9 +107,12 @@ def test_daily_loss_pct_needs_a_positive_baseline() -> None:
 
 
 def test_risk_rejects_position_above_equity_limit() -> None:
+    """账户总敞口超限要拒。上限已从 20% 放宽到 60%（见 max_total_notional_pct），
+    否则同时只能持一个品种。"""
+
     decision = evaluate_risk(
         equity=10000,
-        current_notional=1500,
+        current_notional=5500,  # 55%，加上新开就过 60%
         proposed_notional=1000,
         leverage=2,
         stop_loss=95,
@@ -121,6 +124,21 @@ def test_risk_rejects_position_above_equity_limit() -> None:
     )
     assert decision.allowed is False
     assert "max_notional" in decision.reasons
+
+    # 55% + 4% = 59% ≤ 60% → 放行，这样才装得下第二个品种
+    roomy = evaluate_risk(
+        equity=10000,
+        current_notional=5500,
+        proposed_notional=400,
+        leverage=2,
+        stop_loss=95,
+        entry=100,
+        daily_loss_pct=0,
+        consecutive_losses=0,
+        paused=False,
+        data_age_s=5,
+    )
+    assert "max_notional" not in roomy.reasons
 
 
 def test_risk_rejects_entry_without_stop_loss_or_with_excessive_loss() -> None:
@@ -215,3 +233,28 @@ def test_take_profit_checks_are_skipped_for_reducing_orders() -> None:
 def test_missing_take_profit_skips_the_checks() -> None:
     """没给止盈时跳过 —— 趋势策略可能靠移动止损离场，不强制设 TP。"""
     assert _plan(take_profit=None).reasons == []
+
+
+def test_total_exposure_cap_allows_multiple_positions() -> None:
+    """账户级总敞口上限 —— 才是允许同时持多个品种的那道门。
+
+    单笔上限 20%、总上限 60% → 最多同时 3 个仓位。原来总上限也是 20%，
+    于是第二个品种必然被拒，加品种等于白加。
+    """
+    limits = RiskLimits(max_position_notional_pct=Decimal("0.20"), max_total_notional_pct=Decimal("0.60"))
+
+    # 已有 4000（40%）+ 新开 1500（15%）= 55% ≤ 60% → 放行
+    ok = _risk(limits=limits, current_notional=4000, proposed_notional=1500, stop_loss=97)
+    assert "max_notional" not in ok.reasons
+
+    # 已有 5000（50%）+ 新开 1500（15%）= 65% > 60% → 拒绝
+    too_much = _risk(limits=limits, current_notional=5000, proposed_notional=1500, stop_loss=97)
+    assert "max_notional" in too_much.reasons
+
+
+def test_single_position_cap_still_applies() -> None:
+    """单笔名义上限不能被绕过 —— 总上限放宽不等于单笔可以无限大。"""
+    limits = RiskLimits(max_position_notional_pct=Decimal("0.20"), max_total_notional_pct=Decimal("0.60"))
+
+    decision = _risk(limits=limits, current_notional=0, proposed_notional=8000, stop_loss=97)
+    assert "max_position_notional" in decision.reasons
