@@ -40,6 +40,7 @@ from app.rag.milvus import MilvusVectorStore
 from app.rag.retriever import Retriever
 from app.reconciliation.service import ReconciliationService
 from app.risk.engine import RiskEngine, daily_loss_pct
+from app.services.context import load_macro_context
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +174,9 @@ class TradingCycleService:
                 }
             ),
             errors=[*candle_result.errors, *snapshot_result.errors],
+            # 宏观事实只能从库里读（行情与账户事实不写进 RAG）。不传的话宏观 agent
+            # 的上下文恒为空数组，只会一直报 insufficient_data。
+            macro_events=load_macro_context(self.db, limit=20),
         )
         state = state.model_copy(update={"data_versions": {"technical_indicators": INDICATOR_VERSION}})
         self._persist_market_data(candle_result.items, snapshot_result.items)
