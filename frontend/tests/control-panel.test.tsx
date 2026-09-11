@@ -363,3 +363,32 @@ describe("positions ledger", () => {
     expect(metric.parentElement).toHaveTextContent("1")
   })
 })
+
+
+describe("closed round detail", () => {
+  beforeEach(() => { vi.unstubAllGlobals() })
+  afterEach(() => { cleanup() })
+
+  it("shows the realized P&L of a closed round", async () => {
+    // 后端一直在记 realized_pnl / average_price，但界面从不显示 ——
+    // 于是「这笔平仓赚没赚」在界面上看不到，而那正是最该看的数。
+    const closed = {
+      ...decisionRecord,
+      id: "d-close",
+      action: "CLOSE",
+      execution_result: {
+        status: "FILLED", client_order_id: "alpha-1", exchange_order_id: "o-1",
+        average_price: "77343.2", realized_pnl: "-12.34",
+      },
+    }
+    stubApi("RUNNING", [], [], [closed], 1)
+    render(<ConsolePage view="trades" />)
+
+    // 展开这条决策
+    fireEvent.click(await screen.findByRole("button", { name: /BTC-USDT/ }))
+
+    expect(await screen.findByText("本回合盈亏")).toBeVisible()
+    expect(screen.getByText("-12.34")).toBeVisible()
+    expect(screen.getByText("成交均价")).toBeVisible()
+  })
+})

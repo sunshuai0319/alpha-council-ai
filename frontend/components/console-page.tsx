@@ -364,6 +364,10 @@ function DecisionRow({ decision }: { decision: Decision }) {
         <h4>{t("trades.detailExecution")}</h4>
         <div className="decision-detail-grid">
           <span>{t("trades.execStatus")} <b>{execution.status}</b></span>
+          {/* 成交均价与回合盈亏：后端一直在记，但之前从不显示 —— 于是「这笔平仓
+              到底赚没赚」在界面上根本看不到。 */}
+          {execution.average_price != null ? <span>{t("trades.avgPrice")} <b>{formatNumber(Number(execution.average_price), 2)}</b></span> : null}
+          {execution.realized_pnl != null ? <span>{t("trades.realizedPnl")} <b className={Number(execution.realized_pnl) >= 0 ? "positive-text" : "negative-text"}>{formatSignedPnl(Number(execution.realized_pnl))}</b></span> : null}
           {execution.client_order_id ? <span>{t("trades.clientOrderId")} <b>{execution.client_order_id}</b></span> : null}
           {execution.exchange_order_id ? <span>{t("trades.orderId")} <b>{execution.exchange_order_id}</b></span> : null}
           {execution.message ? <span>{t("trades.message")} <b>{execution.message}</b></span> : null}

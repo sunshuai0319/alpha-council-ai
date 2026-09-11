@@ -59,6 +59,10 @@ export type Decision = {
     client_order_id?: string
     exchange_order_id?: string | null
     message?: string | null
+    //: 成交均价与平仓回合盈亏。后端用 model_dump(mode="json") 序列化，
+    //: Decimal 会变成字符串，所以两者都可能是 string。
+    average_price?: string | number | null
+    realized_pnl?: string | number | null
   } | null
   //: 账户实际生效杠杆（虚拟盘固定，系统不下发提案杠杆）；显示用，不是提案值。
   leverage?: number | null
