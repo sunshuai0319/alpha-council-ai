@@ -172,9 +172,9 @@ export function formatNumber(value: number | null | undefined, digits = 2) {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(value)
 }
 
-export function formatPercent(value: number | null | undefined) {
+export function formatPercent(value: number | null | undefined, digits = 1) {
   if (value == null || Number.isNaN(value)) return "—"
-  return `${(value * 100).toFixed(1)}%`
+  return `${(value * 100).toFixed(digits)}%`
 }
 
 export function formatSigned(value: number, digits = 2) {

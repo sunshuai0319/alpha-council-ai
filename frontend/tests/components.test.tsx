@@ -10,7 +10,7 @@ const zhT = (key: string, params?: Record<string, string>) => {
   return text
 }
 
-import { ActionMark, DecisionCard, EmptyState, RiskBadge, VirtualBadge } from "@/components/console-primitives"
+import { ActionMark, DecisionCard, EmptyState, RiskBadge, VirtualBadge, formatPercent } from "@/components/console-primitives"
 import type { Decision } from "@/lib/types"
 
 const holdDecision: Decision = {
@@ -64,5 +64,19 @@ describe("event localization", () => {
     // WEEX 报错是自由文本，翻不了也不该被吞
     const raw = "WEEX request failed: GET /capi/v3/sim/position/allPosition: 503"
     expect(labelText(reasonParts(raw)[0], zhT)).toBe(raw)
+  })
+})
+
+
+describe("percent formatting", () => {
+  it("keeps a small funding rate from collapsing to zero", () => {
+    // 资金费率量级 ~1e-5；固定 1 位小数会把它截成 0.0%，负值还带个多余的负号
+    // （-0.0%）。资金费率这类小数值要更多位数。
+    expect(formatPercent(0.00006176, 4)).toBe("0.0062%")
+    expect(formatPercent(-0.00002364, 4)).toBe("-0.0024%")
+  })
+
+  it("defaults to one decimal for position sizes and the like", () => {
+    expect(formatPercent(0.05)).toBe("5.0%")
   })
 })
