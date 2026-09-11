@@ -165,6 +165,31 @@ def test_account_api_stores_ui_credentials_for_virtual_account(tmp_path) -> None
         engine.dispose()
 
 
+def test_account_create_strips_pasted_weex_env_var_prefixes(tmp_path) -> None:
+    """用户从 .env 复制凭证行时会把 WEEX_API_SECRET= 之类前缀一起粘进来。
+
+    这正是线上 401 -1047 的根因：HMAC 用了带前缀的 secret，签名永远不匹配。
+    """
+    client, db = _account_client(tmp_path)
+    try:
+        response = client.post(
+            "/api/accounts",
+            json={
+                "api_key_ref": "WEEX_API_KEY=weex_key_123",
+                "api_secret_ref": "WEEX_API_SECRET=test-secret-redacted\n",
+                "passphrase_ref": "WEEX_PASSPHRASE=test-passphrase",
+                "environment": "virtual",
+            },
+        )
+        assert response.status_code == 201
+        account = db.scalar(select(TradingAccount).order_by(TradingAccount.created_at.desc()))
+        assert account.api_key_ref == "weex_key_123"
+        assert account.api_secret_ref == "test-secret-redacted"
+        assert account.passphrase_ref == "test-passphrase"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_pause_is_persisted_per_user(tmp_path) -> None:
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'control.db'}")
     Base.metadata.create_all(engine)

@@ -2,7 +2,7 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 from sqlalchemy import select
 
 from app.api.dependencies import get_cycle_service
@@ -14,6 +14,14 @@ from app.services.cycle import TradingCycleService
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
+#: 从 .env 复制凭证行时会带着变量名前缀一起粘进来，签名因此永远失败。
+#: 剥掉前缀并按名匹配，避免把 WEEX_API_SECRET=abc 整串当成 secret。
+_WEEX_ENV_PREFIXES = {
+    "api_key_ref": "WEEX_API_KEY=",
+    "api_secret_ref": "WEEX_API_SECRET=",
+    "passphrase_ref": "WEEX_PASSPHRASE=",
+}
+
 
 class AccountCreate(BaseModel):
     api_key_ref: str = Field(min_length=1)
@@ -24,10 +32,13 @@ class AccountCreate(BaseModel):
 
     @field_validator("api_key_ref", "api_secret_ref", "passphrase_ref")
     @classmethod
-    def reject_environment_references(cls, value: str) -> str:
+    def reject_environment_references(cls, value: str, info: ValidationInfo) -> str:
         if value.startswith("env:"):
             raise ValueError("environment references are not supported")
-        return value
+        prefix = _WEEX_ENV_PREFIXES.get(info.field_name)
+        if prefix and value.startswith(prefix):
+            value = value[len(prefix):]
+        return value.strip()
 
 
 class AccountRiskLimits(BaseModel):
