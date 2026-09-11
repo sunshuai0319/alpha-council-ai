@@ -25,7 +25,13 @@ from app.domain.schemas import (
     TradeProposal,
     TradingCycleState,
 )
-from app.exchange.base import ExchangeBalance, ExchangeOrder, ExchangePosition, OrderRequest
+from app.exchange.base import (
+    ExchangeBalance,
+    ExchangeError,
+    ExchangeOrder,
+    ExchangePosition,
+    OrderRequest,
+)
 from app.risk.engine import RiskLimits
 from app.services.cycle import TradingCycleService
 
@@ -98,6 +104,39 @@ class RecordingCandleExchange(FakeExchange):
     def get_candles(self, symbol: str, timeframe: str, limit: int = 100) -> list[Candle]:
         self.candle_limits.append(limit)
         return super().get_candles(symbol, timeframe, limit)
+
+
+def _failure_service(tmp_path, name: str, **settings_kwargs) -> TradingCycleService:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / name}")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+    db.commit()
+    return TradingCycleService(db=db, settings=Settings(**settings_kwargs))
+
+
+def test_exchange_outage_does_not_pause_the_account(tmp_path) -> None:
+    """对端 503 不是策略失败，不该把账户熔断。
+
+    实测 WEEX 的 503 是间歇性的常规抖动（order/history 与 position/allPosition
+    都出现过）。把它算进连亏熔断，会让一次对端抖动把账户 PAUSED 到需要人工恢复。
+    """
+    service = _failure_service(tmp_path, "outage.db", max_consecutive_failures=2)
+
+    for _ in range(5):
+        service.record_failure("u-1", "BTC-USDT", ExchangeError("WEEX request failed: 503"))
+
+    assert service.control_status("u-1") == "RUNNING", "对端故障不应触发 pause"
+
+
+def test_strategy_failures_still_pause_the_account(tmp_path) -> None:
+    """外部故障豁免不能把真正的熔断也豁免掉。"""
+    service = _failure_service(tmp_path, "strategy.db", max_consecutive_failures=2)
+
+    for _ in range(3):
+        service.record_failure("u-1", "BTC-USDT", RuntimeError("committee output exploded"))
+
+    assert service.control_status("u-1") == "PAUSED"
 
 
 def test_cycle_collects_the_deepest_history_the_api_allows() -> None:

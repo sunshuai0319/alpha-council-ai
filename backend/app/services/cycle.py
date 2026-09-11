@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any, ClassVar
 from uuid import uuid4
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -33,7 +34,7 @@ from app.domain.schemas import (
     TradeProposal,
     TradingCycleState,
 )
-from app.exchange.base import ExchangeBalance, ExchangeClient, ExchangePosition
+from app.exchange.base import ExchangeBalance, ExchangeClient, ExchangeError, ExchangePosition
 from app.exchange.weex import WeexClient, WeexCredentials
 from app.execution.service import ExecutionService, stable_client_order_id
 from app.rag.embeddings import BGEEmbedder, BGEReranker
@@ -44,6 +45,17 @@ from app.risk.engine import RiskEngine, daily_loss_pct
 from app.services.context import load_macro_context
 
 logger = logging.getLogger(__name__)
+
+#: 对端不可用（5xx / 超时 / 网络抖动）不是策略失败。把它算进连亏熔断，会让一次短暂
+#: 的对端抖动把账户 PAUSED 到需要人工恢复 —— 实测 WEEX 的 503 是常规抖动。
+EXTERNAL_FAILURE_TYPES = (ExchangeError, httpx.TimeoutException, httpx.TransportError)
+
+
+def is_external_failure(error: BaseException) -> bool:
+    """httpx 的异常常被包在 ExchangeError 里，所以也要看 __cause__。"""
+
+    candidates = (error, error.__cause__)
+    return any(isinstance(item, EXTERNAL_FAILURE_TYPES) for item in candidates if item is not None)
 
 
 def round_trip_pnl(position: ExchangePosition, exit_price: Decimal) -> Decimal | None:
@@ -736,17 +748,24 @@ class TradingCycleService:
     def record_failure(self, user_id: str, symbol: str, error: Exception) -> None:
         if self.db is None:
             return
+        external = is_external_failure(error)
         self.db.add(
             RiskEvent(
                 id=str(uuid4()),
                 user_id=user_id,
-                event_type="CYCLE_FAILURE",
+                # 事件类型就是熔断计数器的口径（见 _consecutive_failures），
+                # 所以外部故障必须用另一个类型，否则等于没豁免。
+                event_type="DATA_SOURCE_DEGRADED" if external else "CYCLE_FAILURE",
                 status=RiskStatus.REJECTED,
                 reason=str(error),
-                metadata_json={"symbol": symbol},
+                metadata_json={"symbol": symbol, "external": external},
             )
         )
         self.db.commit()
+        if external:
+            # 只留痕，不动账户状态：对端恢复后下一轮自动继续。
+            logger.warning("external data source failure, not counting toward the breaker: %s", error)
+            return
         if self._consecutive_failures(user_id) >= self.settings.max_consecutive_failures:
             self._halt(
                 user_id,
