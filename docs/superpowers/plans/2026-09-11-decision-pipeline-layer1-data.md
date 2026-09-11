@@ -302,6 +302,162 @@ restart refetches everything and self-heals."
 
 ---
 
+## Task 2.5: 对账要把消失的仓位置为已平
+
+**问题**：`app/reconciliation/service.py:153` 的 `_persist_db` 只遍历交易所**当前回报**的仓位，
+对「本地有 OPEN 行、但交易所已无该仓位」不做任何处理。于是任何**不经过本系统 CLOSE 路径**的退出
+（止损触发、交易所侧强平、人工平仓、别的工具下单）都会在本地留下永远 `OPEN` 的幽灵仓位。
+
+**已实际发生**：在交易所手工开了一笔 BTC 空头，worker 恰好在那个对账窗口里把它写成 OPEN；
+随后手工平掉，交易所返回空仓位，但本地那行至今停在 OPEN，账本页面把它当活仓位显示。
+
+**同一条道理在内存那份已经处理过**（`reconcile()` 里的注释：「positions 是当前状态而不是事件流：
+整体替换，否则已平掉的仓位会永远留在结果里」）—— 只有 DB 这一支漏了。
+
+**影响不止于显示**：第 3 层的 PositionManager 靠仓位状态判断保本 / 移动止损，幽灵仓位会让它
+对着一个不存在的仓位反复下 reduceOnly 单。
+
+**Files:**
+- Modify: `app/reconciliation/service.py:153-176`
+- Test: `tests/integration/test_reconciliation_persistence.py`
+
+- [ ] **Step 1: 写失败的测试**
+
+追加到 `tests/integration/test_reconciliation_persistence.py` 末尾（该文件已有 `_scoped_db` /
+`_reconcile` / `NoTradeFeedFixture` / `_FlatFixture`，直接复用）：
+
+```python
+def test_reconciliation_closes_local_rows_when_the_exchange_position_is_gone(tmp_path) -> None:
+    """本地仓位的 status 必须跟着交易所走，否则会留下幽灵持仓。
+
+    实测触发：在交易所手工开了一笔空头，worker 恰好在那个对账窗口里把它写成 OPEN；
+    随后手工平掉，交易所返回空仓位，本地那行却一直停在 OPEN —— 账本页面把它当活仓位
+    显示，持仓管理也会对着不存在的仓位下单。
+    """
+    db = _scoped_db(tmp_path)
+    service = ReconciliationService(db=db)
+
+    _reconcile(service, NoTradeFeedFixture("1000"))
+    db.commit()
+    assert [row.status for row in db.scalars(select(Position)).all()] == ["OPEN"]
+
+    _reconcile(service, _FlatFixture("1000"))
+    db.commit()
+
+    rows = db.scalars(select(Position)).all()
+    assert rows != [], "行要保留供审计，只改状态"
+    assert [row.status for row in rows] == ["CLOSED"]
+    assert rows[0].quantity == Decimal(0), "已平仓位不该继续报告数量"
+
+
+def test_reopening_the_same_symbol_marks_the_row_open_again(tmp_path) -> None:
+    """唯一键是 (user, account, symbol)，平仓后重开会复用同一行，状态要能回头。"""
+    db = _scoped_db(tmp_path)
+    service = ReconciliationService(db=db)
+
+    _reconcile(service, NoTradeFeedFixture("1000"))
+    _reconcile(service, _FlatFixture("1000"))
+    _reconcile(service, NoTradeFeedFixture("1000"))
+    db.commit()
+
+    rows = db.scalars(select(Position)).all()
+    assert len(rows) == 1, "同一 symbol 不该产生第二行"
+    assert rows[0].status == "OPEN"
+    assert rows[0].quantity == Decimal("0.01")
+```
+
+> `Decimal` 与 `Position` 已在该文件的 import 里，无需新增。
+
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+cd backend && uv run pytest tests/integration/test_reconciliation_persistence.py -k "closes_local_rows or reopening" -q
+```
+
+Expected: 第一个 FAIL（状态仍是 `["OPEN"]`）；第二个可能碰巧通过 —— 记下实际输出再继续。
+
+- [ ] **Step 3: 实现**
+
+在 `app/reconciliation/service.py` 的 `_persist_db` 里，把仓位循环改成：
+
+```python
+        for item_position in positions:
+            position_row = db.scalar(
+                select(Position).where(
+                    Position.user_id == user_id,
+                    Position.trading_account_id == trading_account_id,
+                    Position.symbol == item_position.symbol,
+                )
+            )
+            if position_row is None:
+                position_row = Position(
+                    id=str(uuid4()),
+                    user_id=user_id,
+                    trading_account_id=trading_account_id,
+                    symbol=item_position.symbol,
+                    side=item_position.side,
+                    quantity=item_position.quantity,
+                    entry_price=item_position.entry_value / item_position.quantity if item_position.quantity else 0,
+                )
+                db.add(position_row)
+            position_row.side = item_position.side
+            position_row.quantity = item_position.quantity
+            position_row.mark_price = item_position.entry_value / item_position.quantity if item_position.quantity else None
+            position_row.leverage = item_position.leverage
+            position_row.unrealized_pnl = item_position.unrealized_pnl
+            # 同一 symbol 平仓后重开会复用这行（唯一键是 user+account+symbol），
+            # 所以每次观测到仓位都要把状态翻回 OPEN。
+            position_row.status = "OPEN"
+
+        # 交易所没回报的仓位必须在本地跟着平掉。positions 是当前状态而不是事件流 ——
+        # 不做这步，任何不走本系统 CLOSE 路径的退出（止损触发、人工平仓、强平）都会
+        # 在本地留下永远 OPEN 的幽灵仓位。
+        reported_symbols = {item.symbol for item in positions}
+        for stale_row in db.scalars(
+            select(Position).where(
+                Position.user_id == user_id,
+                Position.trading_account_id == trading_account_id,
+                Position.status == "OPEN",
+            )
+        ).all():
+            if stale_row.symbol in reported_symbols:
+                continue
+            stale_row.status = "CLOSED"
+            stale_row.quantity = Decimal(0)
+            stale_row.unrealized_pnl = Decimal(0)
+            stale_row.stop_loss = None
+            stale_row.take_profit = None
+```
+
+> 这段必须放在仓位 upsert 循环**之后**。新加入的行此时还在 pending（会话是
+> `autoflush=False`，这条 `select` 不会触发 flush），所以不会被误判成 stale —— 不要为了
+> 「保险」去加 `db.flush()`，那样反而会把新行扫进来。
+
+- [ ] **Step 4: 跑测试确认通过**
+
+```bash
+cd backend && uv run pytest tests/integration/test_reconciliation_persistence.py -q
+```
+
+Expected: 全部 PASS（含原有的 `test_reconciliation_positions_reflect_current_state_not_history`）。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add app/reconciliation/service.py tests/integration/test_reconciliation_persistence.py
+git commit -m "fix: close local position rows the exchange no longer reports
+
+_persist_db only walked the positions the exchange returned, so any exit
+that does not go through this system's CLOSE path — a stop trigger, a
+manual close, a liquidation — left the local row OPEN forever. The
+in-memory store already handled this ('positions is current state, not an
+event stream'); the DB branch did not. A phantom row shows up in the
+ledger as a live position and would have had position management send
+reduce-only orders against a position that does not exist."
+```
+
+---
+
 ## Task 3: 宏观上下文 loader
 
 **问题**：`app/services/cycle.py:158` 构造 `TradingCycleState` 时没传 `macro_events`，
@@ -1512,6 +1668,7 @@ git status --short
 - [ ] 新落的 `market_snapshots` 带 24h 区间与 mark/index
 - [ ] `market_candles` 1h 深度达到约 1000 根
 - [ ] `market_microstructures` 有数据（本层只存不用）
+- [ ] 交易所没回报的仓位在本地被标为 `CLOSED`，账本页面不再显示幽灵持仓
 - [ ] WEEX 连续 5xx 不再把账户 PAUSED，而策略性失败仍然熔断
 - [ ] `uv run pytest` / `ruff check` / `mypy` 全绿
 
