@@ -162,3 +162,27 @@ export function formatRelativeTime(value: string | number, locale: Locale = "en-
   if (seconds < 60) return translate(locale, "common.secondsAgo", { n: seconds })
   return translate(locale, "common.minutesAgo", { n: Math.floor(seconds / 60) })
 }
+
+export function Pagination({
+  page,
+  total,
+  pageSize,
+  onChange,
+}: {
+  page: number
+  total: number
+  pageSize: number
+  onChange: (page: number) => void
+}) {
+  const { t } = useI18n()
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  // 只有多于一页才需要控件；单页时整个隐藏，避免噪音。
+  if (total <= pageSize) return null
+  return (
+    <div className="pagination">
+      <button type="button" className="button button--quiet" disabled={page <= 1} onClick={() => onChange(Math.max(1, page - 1))}>{t("common.prevPage")}</button>
+      <span>{t("common.pageOf", { page, total: totalPages })}</span>
+      <button type="button" className="button button--quiet" disabled={page >= totalPages} onClick={() => onChange(page + 1)}>{t("common.nextPage")}</button>
+    </div>
+  )
+}

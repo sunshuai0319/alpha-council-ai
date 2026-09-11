@@ -4,7 +4,7 @@ import { useAuth } from "@clerk/nextjs"
 import { ChevronRight, CircleAlert, CirclePause, CirclePlay, RefreshCw, ShieldAlert, Sparkles } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
-import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, PortfolioTable, RiskBadge, VirtualBadge } from "@/components/console-primitives"
+import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, Pagination, PortfolioTable, RiskBadge, VirtualBadge } from "@/components/console-primitives"
 import { ApiError, apiRequest } from "@/lib/api"
 import { emptyOverviewHint } from "@/lib/console-hints"
 import { useI18n } from "@/lib/i18n"
@@ -462,11 +462,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
   if (view === "trades") return <>
     <PageHeader title={t("trades.title")} description={t("trades.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.openBook")}</span><h2>{t("trades.positions")}</h2></div><RiskBadge status="VIRTUAL" /></div><PortfolioTable positions={data.positions} />{data.positions.length ? <div className="close-actions">{data.positions.map((position) => <button className="button button--danger" key={position.id} onClick={() => void closePosition(position.symbol)}>{t("trades.close", { symbol: position.symbol })}</button>)}</div> : null}</section>
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.history")}</span><h2>{t("trades.calls")}</h2></div><span className="section-index">{t("trades.records", { count: data.decisionsTotal })}</span></div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <DecisionRow key={decision.id} decision={decision} />)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}{data.decisionsTotal > DECISIONS_PAGE_SIZE ? <div className="pagination">
-      <button type="button" className="button button--quiet" disabled={decisionsPage <= 1} onClick={() => setDecisionsPage((page) => Math.max(1, page - 1))}>{t("common.prevPage")}</button>
-      <span>{t("common.pageOf", { page: decisionsPage, total: Math.ceil(data.decisionsTotal / DECISIONS_PAGE_SIZE) })}</span>
-      <button type="button" className="button button--quiet" disabled={decisionsPage >= Math.ceil(data.decisionsTotal / DECISIONS_PAGE_SIZE)} onClick={() => setDecisionsPage((page) => page + 1)}>{t("common.nextPage")}</button>
-    </div> : null}</section>
+    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.history")}</span><h2>{t("trades.calls")}</h2></div><span className="section-index">{t("trades.records", { count: data.decisionsTotal })}</span></div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <DecisionRow key={decision.id} decision={decision} />)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}<Pagination page={decisionsPage} total={data.decisionsTotal} pageSize={DECISIONS_PAGE_SIZE} onChange={setDecisionsPage} /></section>
   </>
 
   return <>
