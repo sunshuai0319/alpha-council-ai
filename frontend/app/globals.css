@@ -42,6 +42,8 @@ button { color: inherit; font: inherit; }
 .status-dot, .sync-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--lime); box-shadow: 0 0 0 3px rgba(221,255,105,.12); }
 .account-row { display: flex; align-items: center; gap: 9px; color: var(--muted); text-transform: none; letter-spacing: 0; font: 12px var(--sans); }
 .account-row .cl-userButtonBox { width: 28px; height: 28px; }
+.account-settings { display: grid; place-items: center; width: 28px; height: 28px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; }
+.account-settings:hover { color: var(--paper); border-color: #687f7e; }
 .language-switcher { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); padding: 7px 9px; color: var(--muted); background: transparent; cursor: pointer; font: 10px var(--mono); }
 .language-switcher:hover { color: var(--paper); border-color: #5e7774; }
 .sidebar-mobile-badge { display: none; }

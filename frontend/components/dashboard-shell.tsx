@@ -1,6 +1,6 @@
 "use client"
 
-import { Activity, BrainCircuit, ChartNoAxesCombined, CircleAlert, LayoutDashboard, Radio, ShieldCheck } from "lucide-react"
+import { Activity, BrainCircuit, ChartNoAxesCombined, CircleAlert, LayoutDashboard, Radio, Settings, ShieldCheck } from "lucide-react"
 import { UserButton } from "@clerk/nextjs"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
@@ -50,7 +50,7 @@ export function DashboardShell({
         <div className="sidebar-bottom">
           <div className="guardrail-note"><CircleAlert size={16} /><span>{t("landing.boundary")}</span></div>
           <VirtualBadge />
-          <div className="account-row"><LanguageSwitcher />{clerkEnabled ? <UserButton afterSignOutUrl="/" /> : <span className="account-placeholder">●</span>}<span>{t("nav.account")}</span></div>
+          <div className="account-row"><Link className="account-settings" href="/settings" aria-label={t("nav.accountSettings")} title={t("nav.accountSettings")}><Settings size={14} /></Link><LanguageSwitcher />{clerkEnabled ? <UserButton afterSignOutUrl="/" /> : <span className="account-placeholder">●</span>}<span>{t("nav.account")}</span></div>
         </div>
       </aside>
       <main className="main-canvas">{children}</main>
