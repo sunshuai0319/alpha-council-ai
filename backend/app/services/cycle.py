@@ -939,7 +939,18 @@ class TradingCycleService:
                         captured_at=captured_at,
                     )
                 )
+        # ticker 不返回资金费率/持仓量，真实值在同一轮的微观结构采集里。快照行
+        # 从它补上 —— 否则 market_snapshots 这两列永远是空，概览页的资金费率
+        # 只能显示占位符，而真值一直躺在 market_microstructures 里没人用。
+        micro_by_symbol = {micro.symbol: micro for micro in (microstructures or [])}
         for snapshot in snapshots:
+            micro = micro_by_symbol.get(snapshot.symbol)
+            funding_rate = snapshot.funding_rate
+            if funding_rate is None and micro is not None:
+                funding_rate = micro.funding_rate
+            open_interest = snapshot.open_interest
+            if open_interest is None and micro is not None:
+                open_interest = micro.open_interest
             self.db.add(
                 MarketSnapshotModel(
                     symbol=snapshot.symbol,
@@ -954,8 +965,8 @@ class TradingCycleService:
                     index_price=snapshot.index_price,
                     bid=snapshot.bid,
                     ask=snapshot.ask,
-                    funding_rate=snapshot.funding_rate,
-                    open_interest=snapshot.open_interest,
+                    funding_rate=funding_rate,
+                    open_interest=open_interest,
                     volume_24h=snapshot.volume_24h,
                 )
             )

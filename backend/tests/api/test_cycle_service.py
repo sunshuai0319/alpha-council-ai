@@ -17,6 +17,9 @@ from app.db.models import (
     TradingDecision,
     User,
 )
+from app.db.models import (
+    MarketSnapshot as MarketSnapshotModel,
+)
 from app.domain.enums import Action, RiskStatus
 from app.domain.schemas import (
     AnalysisResult,
@@ -171,6 +174,24 @@ def test_cycle_persists_microstructure_without_affecting_the_decision(tmp_path) 
         assert len(rows) == 1
         assert rows[0].symbol == "BTC-USDT"
         assert rows[0].funding_rate == 0.0001
+
+
+def test_snapshot_borrows_funding_rate_from_microstructure(tmp_path) -> None:
+    """ticker 不返回资金费率/持仓量，快照行要从同一轮的微观结构补上。
+
+    否则 market_snapshots 这两列永远是空 —— 真实值一直躺在
+    market_microstructures 里，概览页的资金费率只能显示占位符。
+    """
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'funding.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        service = TradingCycleService(db=db, exchange_factory=FakeExchange)
+        service.run(user_id="u-1", llm=FailingLLM())
+
+        rows = db.scalars(select(MarketSnapshotModel)).all()
+        assert len(rows) == 1
+        assert rows[0].funding_rate == 0.0001
+        assert rows[0].open_interest == 1000.0
 
 
 class PartiallyFailingExchange(FakeExchange):
