@@ -52,6 +52,23 @@ FRED_SERIES_CADENCE = {
 FRED_GRAPH_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 FED_PRESS_RSS_URL = "https://www.federalreserve.gov/feeds/press_all.xml"
 
+#: FRED 的 CSV 表头形如 `observation_date,CPIAUCSL` —— 值列名就是序列 id，
+#: 不是固定的 "value"。早期实现按 "value" 取值，导致所有观测都解析成 None。
+FRED_DATE_COLUMNS = ("observation_date", "DATE")
+FRED_VALUE_COLUMNS = ("value", "VALUE")
+
+
+def _fred_value_column(fieldnames: list[str] | None, series_id: str) -> str | None:
+    """挑出承载数值的那一列，优先序列 id，其次兼容旧式 value/VALUE 表头。"""
+
+    named = [name for name in (fieldnames or []) if name not in FRED_DATE_COLUMNS]
+    if not named:
+        return None
+    for candidate in (series_id, *FRED_VALUE_COLUMNS):
+        if candidate in named:
+            return candidate
+    return named[0]
+
 
 class MacroCollector:
     """Collect free FRED series and Federal Reserve official RSS events."""
@@ -77,13 +94,16 @@ class MacroCollector:
             try:
                 payload = self._fetcher(url)
                 text = payload.decode() if isinstance(payload, bytes) else payload
-                rows = list(csv.DictReader(io.StringIO(text)))
+                reader = csv.DictReader(io.StringIO(text))
+                value_column = _fred_value_column(reader.fieldnames, series_id)
+                rows = list(reader)
                 for row in rows[-limit:]:
-                    raw_value = row.get("value") or row.get("VALUE") or ""
+                    raw_date = (row.get("observation_date") or row.get("DATE") or "").strip()
+                    raw_value = ((row.get(value_column) if value_column else None) or "").strip()
                     result.items.append(
                         MacroObservation(
                             series_id=series_id,
-                            observation_date=date.fromisoformat(row.get("observation_date") or row["DATE"]),
+                            observation_date=date.fromisoformat(raw_date),
                             value=None if raw_value in {"", "."} else float(raw_value),
                             source_url=url,
                             fetched_at=result.collected_at,

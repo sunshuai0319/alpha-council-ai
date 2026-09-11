@@ -118,6 +118,31 @@ def test_fred_csv_is_normalized_and_missing_values_are_preserved() -> None:
     assert result.items[1].observation_date.isoformat() == "2026-02-01"
 
 
+def test_fred_values_are_parsed_from_the_real_series_named_header() -> None:
+    """FRED 的 CSV 表头是 `observation_date,<SERIES_ID>`，值列名就是序列 id。
+
+    早期实现读的是 `row["value"]`，而 FRED 从来没有过这个列名 —— 结果每一条都
+    解析成 None，宏观 agent 永远拿到空上下文。
+    """
+    payload = b"observation_date,CPIAUCSL\n2026-06-01,332.568\n2026-07-01,332.813\n"
+
+    result = MacroCollector(fetcher=lambda _: payload).collect_fred(("CPIAUCSL",))
+
+    assert [item.value for item in result.items] == [332.568, 332.813]
+    assert [item.observation_date.isoformat() for item in result.items] == ["2026-06-01", "2026-07-01"]
+    assert result.ok
+
+
+def test_fred_missing_marker_with_series_named_header_becomes_none() -> None:
+    """序列名表头下 FRED 仍用 `.` 表示非交易日/未发布，必须映射成 None。"""
+    payload = b"observation_date,DGS10\n2026-07-03,.\n2026-07-04,\n"
+
+    result = MacroCollector(fetcher=lambda _: payload).collect_fred(("DGS10",))
+
+    assert [item.value for item in result.items] == [None, None]
+    assert result.ok
+
+
 def test_macro_source_failure_isolated_per_series() -> None:
     def fetcher(url: str) -> str:
         if "BAD" in url:
