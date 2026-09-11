@@ -141,7 +141,7 @@ describe("console control panel", () => {
   it("shows leverage read-only: the virtual account cannot change it", async () => {
     stubApi("RUNNING", [virtualAccount])
 
-    render(<ConsolePage view="overview" />)
+    render(<ConsolePage view="settings" />)
 
     expect(await screen.findByLabelText("杠杆")).toHaveAttribute("readonly")
     expect(screen.getByLabelText("杠杆")).toHaveValue("20x")
@@ -152,7 +152,7 @@ describe("console control panel", () => {
       { ...virtualAccount, risk_limits: { max_position_notional_pct: 0.05 } },
     ])
 
-    render(<ConsolePage view="overview" />)
+    render(<ConsolePage view="settings" />)
 
     // 0.05 存的是小数，输入框要显示 5
     expect(await screen.findByLabelText("仓位上限 (%)")).toHaveValue(5)
@@ -161,7 +161,7 @@ describe("console control panel", () => {
   it("falls back to the platform limit when no preference is stored", async () => {
     stubApi("RUNNING", [virtualAccount])
 
-    render(<ConsolePage view="overview" />)
+    render(<ConsolePage view="settings" />)
 
     expect(await screen.findByLabelText("仓位上限 (%)")).toHaveValue(20)
   })
@@ -178,6 +178,16 @@ describe("console control panel", () => {
       )
       expect(put).toBeTruthy()
     })
+  })
+
+  it("keeps configuration off the overview", async () => {
+    stubApi("RUNNING", [virtualAccount])
+
+    render(<ConsolePage view="overview" />)
+
+    await screen.findByText("AI 智囊团值守中。")
+    expect(screen.queryByText("WEEX 虚拟账户")).toBeNull()
+    expect(screen.queryByText("最近快照")).toBeNull()
   })
 
   it("renders the account card on the settings view", async () => {
@@ -258,7 +268,7 @@ describe("console control panel", () => {
   it("masks stored credentials until the user reveals them", async () => {
     stubApi("RUNNING", [virtualAccount])
 
-    render(<ConsolePage view="overview" />)
+    render(<ConsolePage view="settings" />)
 
     const secret = "test-secret-abcdefghijklmnopqrstuvwxyz0123456789"
     // 默认脱敏：明文绝不出现在页面上，只露首尾
