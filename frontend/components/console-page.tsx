@@ -13,6 +13,10 @@ import type { Analysis, DashboardView, Decision, ItemsResponse, MarketSnapshot, 
 
 type DashboardData = {
   market: MarketSnapshot[]
+  //: 采集周期与新鲜度门由后端配置下发，市场页的「数据时效规则」据此渲染，
+  //: 不在前端硬编码（曾写死 5m/1h/4h，而配置早已是 12h/1d）。
+  marketTimeframes: string[]
+  marketMaxAge: number
   decisions: Decision[]
   decisionsTotal: number
   //: 决策历史里出现过的品种，筛选项由它生成（不硬编码品种列表）。
@@ -33,7 +37,7 @@ function maskCredential(value: string) {
   return `${value.slice(0, 6)}${"•".repeat(8)}${value.slice(-4)}`
 }
 
-const emptyData: DashboardData = { market: [], decisions: [], decisionsTotal: 0, decisionSymbols: [], events: [], eventsTotal: 0, positions: [], accounts: [], control: "RUNNING" }
+const emptyData: DashboardData = { market: [], marketTimeframes: [], marketMaxAge: 90, decisions: [], decisionsTotal: 0, decisionSymbols: [], events: [], eventsTotal: 0, positions: [], accounts: [], control: "RUNNING" }
 
 function useDashboardData({
   decisionsPage = 1,
@@ -51,14 +55,14 @@ function useDashboardData({
     if (!isLoaded || !isSignedIn) return
     try {
       const [market, decisions, portfolio, events, accounts, control] = await Promise.all([
-        apiRequest<ItemsResponse<MarketSnapshot>>("/market", getToken),
+        apiRequest<ItemsResponse<MarketSnapshot> & { timeframes?: string[]; max_age_seconds?: number }>("/market", getToken),
         apiRequest<PaginatedResponse<Decision>>(`/decisions?page=${decisionsPage}&page_size=${PAGE_SIZE}${symbol ? `&symbol=${encodeURIComponent(symbol)}` : ""}${action ? `&action=${action}` : ""}`, getToken),
         apiRequest<ItemsResponse<Position>>("/portfolio", getToken),
         apiRequest<PaginatedResponse<RiskEvent>>(`/events?page=${eventsPage}&page_size=${PAGE_SIZE}`, getToken),
         apiRequest<ItemsResponse<TradingAccount>>("/accounts", getToken),
         apiRequest<{ status: string }>("/control/status", getToken),
       ])
-      setData({ market: market.items, decisions: decisions.items, decisionsTotal: decisions.total, decisionSymbols: decisions.symbols ?? [], events: events.items, eventsTotal: events.total, positions: portfolio.items, accounts: accounts.items, control: control.status })
+      setData({ market: market.items, marketTimeframes: market.timeframes ?? [], marketMaxAge: market.max_age_seconds ?? 90, decisions: decisions.items, decisionsTotal: decisions.total, decisionSymbols: decisions.symbols ?? [], events: events.items, eventsTotal: events.total, positions: portfolio.items, accounts: accounts.items, control: control.status })
       setError(null)
       setUpdatedAt(new Date())
     } catch (cause) {
@@ -492,14 +496,14 @@ export function ConsolePage({ view }: { view: DashboardView }) {
     {/* 只显示「—」会让用户以为界面坏了：说明为什么没有数据，以及该做什么 */}
     {dataHint ? <p className="data-hint" role="status"><CircleAlert size={15} /><span>{t(dataHint)}</span></p> : null}
     <ControlPanel status={controlStatus} onToggle={() => void changeControl()} busy={controlBusy} />
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.atAGlance")}</span><h2>{t("overview.systemReadout")}</h2></div><span className="section-index">01 / 04</span></div><div className="metrics-grid"><Metric label={t("overview.openPositions")} value={String(openPositions.length)} detail={openPositions.length ? t("overview.positionActive", { symbol: openPositions[0].symbol }) : t("overview.flatBook")} /><Metric label={t("overview.unrealizedPnl")} value={formatSignedPnl(pnl)} detail={t("overview.syncedPositions")} tone={pnl >= 0 ? "positive" : "negative"} /><Metric label={t("overview.lastAction")} value={latest ? labelText(actionLabel(latest.action), t) : "—"} detail={latest ? formatDate(latest.created_at, locale) : t("overview.awaitingCycle")} tone="signal" /><Metric label={t("overview.riskEvents")} value={String(data.events.length)} detail={t("overview.hardGateHistory")} /></div></section>
+    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.atAGlance")}</span><h2>{t("overview.systemReadout")}</h2></div><span className="section-index">01 / 04</span></div><div className="metrics-grid"><Metric label={t("overview.openPositions")} value={String(openPositions.length)} detail={openPositions.length ? t("overview.positionActive", { symbol: openPositions[0].symbol }) : t("overview.flatBook")} /><Metric label={t("overview.unrealizedPnl")} value={formatSignedPnl(pnl)} detail={t("overview.syncedPositions")} tone={pnl >= 0 ? "positive" : "negative"} /><Metric label={t("overview.lastAction")} value={latest ? labelText(actionLabel(latest.action), t) : "—"} detail={latest ? formatDate(latest.created_at, locale) : t("overview.awaitingCycle")} tone="signal" /><Metric label={t("overview.riskEvents")} value={String(data.eventsTotal)} detail={t("overview.hardGateHistory")} /></div></section>
     <div className="two-column"><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.decisionTrace")}</span><h2>{t("overview.whatDecided")}</h2></div><a href="/committee">{t("overview.viewCommittee")} <span>↗</span></a></div>{latest ? <DecisionCard decision={latest} /> : <EmptyState title={t("overview.noDecision")} body={t("overview.noDecisionBody")} />}</section><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.bookState")}</span><h2>{t("overview.virtualPortfolio")}</h2></div><a href="/trades">{t("overview.openLedger")} <span>↗</span></a></div><PortfolioTable positions={data.positions.slice(0, 3)} /></section></div>
   </>
 
   if (view === "market") return <>
     <PageHeader title={t("market.title")} description={t("market.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("market.snapshots")}</span><h2>{t("market.context")}</h2></div><button className="icon-button" onClick={() => void refresh()} aria-label={t("market.refresh")}><RefreshCw size={16} /></button></div><MarketStrip snapshots={data.market} /><div className="metrics-grid metrics-grid--three"><Metric label={t("overview.lastPrice")} value={latestMarket ? `$${formatNumber(latestMarket.last_price)}` : "—"} detail={latestMarket?.symbol ?? t("common.waiting")} tone="signal" /><Metric label={t("market.bidAsk")} value={latestMarket ? `${formatNumber(latestMarket.bid)} / ${formatNumber(latestMarket.ask)}` : "—"} detail={t("market.topOfBook")} /><Metric label={t("overview.funding")} value={latestMarket?.funding_rate == null ? "—" : formatPercent(latestMarket.funding_rate)} detail={t("market.fromExchange")} /></div></section>
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("market.contract")}</span><h2>{t("market.freshness")}</h2></div></div><div className="rule-grid"><div><b>5m / 1h / 4h</b><span>{t("market.candles")}</span></div><div><b>≤ 90 sec</b><span>{t("market.maxAge")}</span></div><div><b>WEEX V3</b><span>{t("market.endpoint")}</span></div></div></section>
+    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("market.contract")}</span><h2>{t("market.freshness")}</h2></div></div><div className="rule-grid"><div><b>{data.marketTimeframes.join(" / ") || "—"}</b><span>{t("market.candles")}</span></div><div><b>≤ {data.marketMaxAge} sec</b><span>{t("market.maxAge")}</span></div><div><b>WEEX V3</b><span>{t("market.endpoint")}</span></div></div></section>
   </>
 
   if (view === "committee") return <>
