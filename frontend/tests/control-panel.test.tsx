@@ -237,9 +237,55 @@ describe("console control panel", () => {
     expect(screen.getByText("提案")).toBeVisible()
     expect(screen.getByText("风控")).toBeVisible()
     expect(screen.getByText("执行")).toBeVisible()
-    // 杠杆显示账户实际值 20×，不是提案占位的 1×
-    expect(screen.getByText("20×")).toBeVisible()
+  })
+
+  it("shows order fields on an entry but not on a hold", async () => {
+    // 观望单没有仓位、杠杆、止损止盈可言 —— 显示出来只会是「0.0% / 20×」噪声。
+    const entry = {
+      ...decisionRecord,
+      id: "d-entry",
+      action: "SHORT",
+      leverage: 20,
+      proposal: {
+        ...decisionRecord.proposal,
+        action: "SHORT",
+        position_size_pct: 0.2,
+        leverage: 1, // 提案占位值，界面该显示账户实际杠杆
+        confidence: 0.6,
+        stop_loss: 77800,
+        take_profit: 76300,
+      },
+    }
+    stubApi("RUNNING", [virtualAccount], [], [entry])
+    render(<ConsolePage view="trades" />)
+    fireEvent.click(await screen.findByRole("button", { name: /BTC-USDT/ }))
+
+    expect(await screen.findByText("77800")).toBeVisible()
+    expect(screen.getByText("20×")).toBeVisible() // 账户实际杠杆，不是提案的 1×
     expect(screen.queryByText("1×")).toBeNull()
+
+    cleanup()
+
+    stubApi("RUNNING", [virtualAccount], [], [decisionRecord]) // 这条是 HOLD
+    render(<ConsolePage view="trades" />)
+    fireEvent.click(await screen.findByRole("button", { name: /BTC-USDT/ }))
+
+    expect(await screen.findByText("智能体分析")).toBeVisible()
+    expect(screen.queryByText("20×")).toBeNull()
+    expect(screen.queryByText("仓位")).toBeNull()
+  })
+
+  it("localizes backend reason codes instead of showing them raw", async () => {
+    // 后端存的是稳定的英文机器码；界面按语言翻译，选中文就该是中文。
+    stubApi("RUNNING", [virtualAccount], [], [decisionRecord])
+    render(<ConsolePage view="trades" />)
+    fireEvent.click(await screen.findByRole("button", { name: /BTC-USDT/ }))
+
+    // fixture 的 risk reason 是 hold_no_order，模型版本是 committee-agent-v1
+    expect(await screen.findByText("规则信号未达开仓条件，未下单")).toBeVisible()
+    expect(screen.getByText("旧版委员会（已停用）")).toBeVisible()
+    expect(screen.queryByText("hold_no_order")).toBeNull()
+    expect(screen.queryByText("committee-agent-v1")).toBeNull()
   })
 
   it("shows a resume toast and auto-dismisses it after 5 seconds", async () => {
@@ -390,5 +436,59 @@ describe("closed round detail", () => {
     expect(await screen.findByText("本回合盈亏")).toBeVisible()
     expect(screen.getByText("-12.34")).toBeVisible()
     expect(screen.getByText("成交均价")).toBeVisible()
+  })
+})
+
+
+describe("decision filters", () => {
+  beforeEach(() => { vi.unstubAllGlobals() })
+  afterEach(() => { cleanup() })
+
+  function stubFiltered() {
+    const seen: string[] = []
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const parsed = new URL(url)
+      const path = parsed.pathname.replace(/^\/api/, "")
+      if (path === "/decisions") seen.push(parsed.search)
+      const payloads: Record<string, unknown> = {
+        "/market": { items: [] },
+        "/decisions": { items: [decisionRecord], total: 1, page: 1, page_size: 20, symbols: ["BTC-USDT", "ETH-USDT"] },
+        "/portfolio": { items: [] },
+        "/events": { items: [], total: 0, page: 1, page_size: 20 },
+        "/accounts": { items: [] },
+        "/control/status": { status: "RUNNING" },
+      }
+      return new Response(JSON.stringify(payloads[path] ?? {}), { status: 200 })
+    }))
+    return seen
+  }
+
+  it("offers the symbols present in the history, and passes the filter to the API", async () => {
+    const seen = stubFiltered()
+    render(<ConsolePage view="trades" />)
+
+    const select = await screen.findByLabelText("品种")
+    // 选项来自后端回传的 symbols，不是硬编码的品种表
+    expect(screen.getByRole("option", { name: "ETH-USDT" })).toBeVisible()
+
+    fireEvent.change(select, { target: { value: "ETH-USDT" } })
+
+    await vi.waitFor(() => {
+      expect(seen.some((query) => query.includes("symbol=ETH-USDT"))).toBe(true)
+    })
+  })
+
+  it("returns to the first page when a filter changes", async () => {
+    // 换了筛选还停在第 3 页会显示空白 —— 过滤后的结果没有那么多页。
+    const seen = stubFiltered()
+    render(<ConsolePage view="trades" />)
+
+    fireEvent.change(await screen.findByLabelText("动作"), { target: { value: "SHORT" } })
+
+    await vi.waitFor(() => {
+      const filtered = seen.filter((query) => query.includes("action=SHORT"))
+      expect(filtered.length).toBeGreaterThan(0)
+      expect(filtered.every((query) => query.includes("page=1"))).toBe(true)
+    })
   })
 })

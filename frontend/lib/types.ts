@@ -131,4 +131,6 @@ export type PaginatedResponse<T> = {
   total: number
   page: number
   page_size: number
+  //: 该用户历史上出现过的品种，供前端做数据驱动的筛选项（决策列表专用）。
+  symbols?: string[]
 }

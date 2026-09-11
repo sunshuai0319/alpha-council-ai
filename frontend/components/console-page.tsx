@@ -5,6 +5,7 @@ import { ChevronRight, CircleAlert, CirclePause, CirclePlay, RefreshCw, ShieldAl
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, Pagination, PortfolioTable, RiskBadge, VirtualBadge } from "@/components/console-primitives"
+import { modelLabel, reasonLabel, render } from "@/lib/labels"
 import { ApiError, apiRequest } from "@/lib/api"
 import { emptyOverviewHint } from "@/lib/console-hints"
 import { useI18n } from "@/lib/i18n"
@@ -14,6 +15,8 @@ type DashboardData = {
   market: MarketSnapshot[]
   decisions: Decision[]
   decisionsTotal: number
+  //: 决策历史里出现过的品种，筛选项由它生成（不硬编码品种列表）。
+  decisionSymbols: string[]
   events: RiskEvent[]
   eventsTotal: number
   positions: Position[]
@@ -30,9 +33,14 @@ function maskCredential(value: string) {
   return `${value.slice(0, 6)}${"•".repeat(8)}${value.slice(-4)}`
 }
 
-const emptyData: DashboardData = { market: [], decisions: [], decisionsTotal: 0, events: [], eventsTotal: 0, positions: [], accounts: [], control: "RUNNING" }
+const emptyData: DashboardData = { market: [], decisions: [], decisionsTotal: 0, decisionSymbols: [], events: [], eventsTotal: 0, positions: [], accounts: [], control: "RUNNING" }
 
-function useDashboardData({ decisionsPage = 1, eventsPage = 1 }: { decisionsPage?: number; eventsPage?: number } = {}) {
+function useDashboardData({
+  decisionsPage = 1,
+  eventsPage = 1,
+  symbol = "",
+  action = "",
+}: { decisionsPage?: number; eventsPage?: number; symbol?: string; action?: string } = {}) {
   const { getToken, isLoaded, isSignedIn } = useAuth()
   const { t } = useI18n()
   const [data, setData] = useState<DashboardData>(emptyData)
@@ -44,13 +52,13 @@ function useDashboardData({ decisionsPage = 1, eventsPage = 1 }: { decisionsPage
     try {
       const [market, decisions, portfolio, events, accounts, control] = await Promise.all([
         apiRequest<ItemsResponse<MarketSnapshot>>("/market", getToken),
-        apiRequest<PaginatedResponse<Decision>>(`/decisions?page=${decisionsPage}&page_size=${PAGE_SIZE}`, getToken),
+        apiRequest<PaginatedResponse<Decision>>(`/decisions?page=${decisionsPage}&page_size=${PAGE_SIZE}${symbol ? `&symbol=${encodeURIComponent(symbol)}` : ""}${action ? `&action=${action}` : ""}`, getToken),
         apiRequest<ItemsResponse<Position>>("/portfolio", getToken),
         apiRequest<PaginatedResponse<RiskEvent>>(`/events?page=${eventsPage}&page_size=${PAGE_SIZE}`, getToken),
         apiRequest<ItemsResponse<TradingAccount>>("/accounts", getToken),
         apiRequest<{ status: string }>("/control/status", getToken),
       ])
-      setData({ market: market.items, decisions: decisions.items, decisionsTotal: decisions.total, events: events.items, eventsTotal: events.total, positions: portfolio.items, accounts: accounts.items, control: control.status })
+      setData({ market: market.items, decisions: decisions.items, decisionsTotal: decisions.total, decisionSymbols: decisions.symbols ?? [], events: events.items, eventsTotal: events.total, positions: portfolio.items, accounts: accounts.items, control: control.status })
       setError(null)
       setUpdatedAt(new Date())
     } catch (cause) {
@@ -62,7 +70,7 @@ function useDashboardData({ decisionsPage = 1, eventsPage = 1 }: { decisionsPage
         setError(`${t("console.apiUnavailable")} ${t("console.reconnect")}`)
       }
     }
-  }, [getToken, isLoaded, isSignedIn, t, decisionsPage, eventsPage])
+  }, [getToken, isLoaded, isSignedIn, t, decisionsPage, eventsPage, symbol, action])
 
   useEffect(() => {
     void refresh()
@@ -312,6 +320,14 @@ function DecisionRow({ decision }: { decision: Decision }) {
   const risk = decision.risk_decision
   const execution = decision.execution_result
   const analyses = decision.analyses
+  // 机器码 → 界面文案。后端存的是稳定的英文码（审计要用的标识），
+  // 在这里按当前语言翻译，见 lib/labels.ts。
+  const reasonLabelText = (code: string) => render(reasonLabel(code), t)
+  const separator = t("common.listSeparator")
+  const isEntry = proposal != null && proposal.action !== "HOLD"
+  const reasoningText = proposal?.reasoning_summary ? reasonLabelText(proposal.reasoning_summary) : ""
+  const invalidationText = (proposal?.invalidation_conditions ?? []).map(reasonLabelText).join(separator)
+
   const agents: Array<[string, Analysis]> = []
   if (analyses?.market) agents.push(["committee.agentMarket", analyses.market])
   if (analyses?.quant) agents.push(["committee.agentQuant", analyses.quant])
@@ -331,16 +347,22 @@ function DecisionRow({ decision }: { decision: Decision }) {
         <h4>{t("trades.detailProposal")}</h4>
         <div className="decision-detail-grid">
           <span>{t("common.confidence")} <b>{formatPercent(proposal.confidence)}</b></span>
-          <span>{t("common.size")} <b>{formatPercent(proposal.position_size_pct)}</b></span>
-          <span title={t("console.leverageFixed")}>{t("common.leverage")} <b>{decision.leverage ?? proposal.leverage ?? 1}×</b></span>
-          {proposal.stop_loss != null ? <span>{t("trades.stopLoss")} <b>{proposal.stop_loss}</b></span> : null}
-          {proposal.take_profit != null ? <span>{t("trades.takeProfit")} <b>{proposal.take_profit}</b></span> : null}
-          {proposal.valid_until ? <span>{t("trades.validUntil")} <b>{formatDate(proposal.valid_until, locale)}</b></span> : null}
-          {proposal.model_version ? <span>{t("trades.modelVersion")} <b>{proposal.model_version}</b></span> : null}
+          {proposal.model_version ? <span>{t("trades.modelVersion")} <b>{render(modelLabel(proposal.model_version), t)}</b></span> : null}
+          {/* 观望单没有仓位、杠杆、止损止盈、有效期可言。把它们显示出来只会是
+              「仓位 0.0% / 杠杆 20×」这种噪声，反而掩盖了真正的原因。 */}
+          {isEntry ? <>
+            <span>{t("common.size")} <b>{formatPercent(proposal.position_size_pct)}</b></span>
+            <span title={t("console.leverageFixed")}>{t("common.leverage")} <b>{decision.leverage ?? proposal.leverage ?? 1}×</b></span>
+            {proposal.stop_loss != null ? <span>{t("trades.stopLoss")} <b>{proposal.stop_loss}</b></span> : null}
+            {proposal.take_profit != null ? <span>{t("trades.takeProfit")} <b>{proposal.take_profit}</b></span> : null}
+            {proposal.valid_until ? <span>{t("trades.validUntil")} <b>{formatDate(proposal.valid_until, locale)}</b></span> : null}
+          </> : null}
         </div>
-        {proposal.invalidation_conditions?.length ? <p className="decision-detail-line">{t("trades.invalidation")}: {proposal.invalidation_conditions.join("; ")}</p> : null}
-        {proposal.evidence_refs?.length ? <p className="decision-detail-line">{t("trades.evidence")}: {proposal.evidence_refs.join(", ")}</p> : null}
-        <p className="decision-detail-reasoning">{proposal.reasoning_summary}</p>
+        {/* 规则信号器把同一句话同时写进 reasoning_summary 和 invalidation_conditions，
+            照原样渲染会一字不差地重复两遍。 */}
+        {invalidationText && invalidationText !== reasoningText ? <p className="decision-detail-line">{t("trades.invalidation")}: {invalidationText}</p> : null}
+        {proposal.evidence_refs?.length ? <p className="decision-detail-line">{t("trades.evidence")}: {proposal.evidence_refs.join(separator)}</p> : null}
+        {reasoningText ? <p className="decision-detail-reasoning">{reasoningText}</p> : null}
       </section> : null}
       {agents.length ? <section>
         <h4>{t("trades.detailAnalyses")}</h4>
@@ -348,7 +370,7 @@ function DecisionRow({ decision }: { decision: Decision }) {
           {agents.map(([labelKey, analysis]) => <article className="agent-card" key={labelKey}>
             <div className="agent-card-top"><span className="agent-glyph"><Sparkles size={14} /></span><span className="eyebrow">{t(labelKey)}</span><b>{formatPercent(analysis.confidence)}</b></div>
             <p>{analysis.reasoning_summary ?? "—"}</p>
-            <footer>{analysis.model_version ?? t("committee.noModelTrace")}</footer>
+            <footer>{analysis.model_version ? render(modelLabel(analysis.model_version), t) : t("committee.noModelTrace")}</footer>
           </article>)}
         </div>
       </section> : null}
@@ -356,7 +378,7 @@ function DecisionRow({ decision }: { decision: Decision }) {
         <h4>{t("trades.detailRisk")}</h4>
         <div className="decision-detail-grid">
           <span>{t("trades.execStatus")} <b><RiskBadge status={risk.status ?? "UNKNOWN"} /></b></span>
-          {risk.reasons?.length ? <span>{t("trades.reasons")} <b>{risk.reasons.join("; ")}</b></span> : null}
+          {risk.reasons?.length ? <span>{t("trades.reasons")} <b>{risk.reasons.map((reason) => render(reasonLabel(reason), t)).join(separator)}</b></span> : null}
           {risk.adjusted_position_size_pct != null ? <span>{t("trades.adjustedSize")} <b>{formatPercent(risk.adjusted_position_size_pct)}</b></span> : null}
         </div>
       </section> : null}
@@ -373,7 +395,8 @@ function DecisionRow({ decision }: { decision: Decision }) {
           {execution.message ? <span>{t("trades.message")} <b>{execution.message}</b></span> : null}
         </div>
       </section> : null}
-      <div className="decision-detail-footer"><code>{decision.cycle_id}</code></div>
+      {/* 裸 UUID 对交易者没有意义，但排查时要用 —— 给个标签，完整值放 title。 */}
+      <div className="decision-detail-footer">{t("trades.cycleId")} <code title={decision.cycle_id}>{decision.cycle_id?.slice(0, 8)}</code></div>
     </div> : null}
   </div>
 }
@@ -384,9 +407,19 @@ export function ConsolePage({ view }: { view: DashboardView }) {
   // 各列表分页只在对应视图生效；其他视图固定第 1 页（要「最近」数据）。
   const [decisionsPage, setDecisionsPage] = useState(1)
   const [eventsPage, setEventsPage] = useState(1)
+  // 品种多起来之后不筛就看不过来。换筛选要回到第 1 页 —— 否则会停在
+  // 一个过滤后不存在的页码上，显示空白。
+  const [symbolFilter, setSymbolFilter] = useState("")
+  const [actionFilter, setActionFilter] = useState("")
+  const changeFilter = (apply: () => void) => {
+    apply()
+    setDecisionsPage(1)
+  }
   const { data, error, updatedAt, refresh } = useDashboardData({
     decisionsPage: view === "trades" ? decisionsPage : 1,
     eventsPage: view === "events" ? eventsPage : 1,
+    symbol: view === "trades" ? symbolFilter : "",
+    action: view === "trades" ? actionFilter : "",
   })
   const [controlBusy, setControlBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
@@ -484,7 +517,21 @@ export function ConsolePage({ view }: { view: DashboardView }) {
   if (view === "trades") return <>
     <PageHeader title={t("trades.title")} description={t("trades.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.openBook")}</span><h2>{t("trades.positions")}</h2></div><RiskBadge status="VIRTUAL" /></div><PortfolioTable positions={data.positions} />{openPositions.length ? <div className="close-actions">{openPositions.map((position) => <button className="button button--danger" key={position.id} onClick={() => void closePosition(position.symbol)}>{t("trades.close", { symbol: position.symbol })}</button>)}</div> : null}</section>
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.history")}</span><h2>{t("trades.calls")}</h2></div><span className="section-index">{t("trades.records", { count: data.decisionsTotal })}</span></div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <DecisionRow key={decision.id} decision={decision} />)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}<Pagination page={decisionsPage} total={data.decisionsTotal} pageSize={PAGE_SIZE} onChange={setDecisionsPage} /></section>
+    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.history")}</span><h2>{t("trades.calls")}</h2></div><span className="section-index">{t("trades.records", { count: data.decisionsTotal })}</span></div><div className="filter-row">
+      <label>{t("trades.filterSymbol")}
+        <select value={symbolFilter} onChange={(event) => changeFilter(() => setSymbolFilter(event.target.value))}>
+          <option value="">{t("trades.filterAll")}</option>
+          {data.decisionSymbols.map((item) => <option key={item} value={item}>{item}</option>)}
+        </select>
+      </label>
+      <label>{t("trades.filterAction")}
+        <select value={actionFilter} onChange={(event) => changeFilter(() => setActionFilter(event.target.value))}>
+          <option value="">{t("trades.filterAll")}</option>
+          {["HOLD", "LONG", "SHORT", "CLOSE"].map((item) => <option key={item} value={item}>{item}</option>)}
+        </select>
+      </label>
+      {symbolFilter || actionFilter ? <button type="button" className="button" onClick={() => changeFilter(() => { setSymbolFilter(""); setActionFilter("") })}>{t("trades.filterReset")}</button> : null}
+    </div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <DecisionRow key={decision.id} decision={decision} />)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}<Pagination page={decisionsPage} total={data.decisionsTotal} pageSize={PAGE_SIZE} onChange={setDecisionsPage} /></section>
   </>
 
   return <>
