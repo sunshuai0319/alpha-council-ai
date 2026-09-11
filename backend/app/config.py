@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     ark_model: str = "deepseek-v4-pro-ga-260813"
     ark_timeout_seconds: float = 60
+    #: 瞬时故障（读超时 / 网络抖动 / 5xx）的重试次数。LLM 生成幂等无副作用，
+    #: 重发一次通常就成功 —— 实测三个 agent 并行时偶发 ReadTimeout，整个分析
+    #: 却因此退化。4xx / 解析失败不属于瞬时故障，不重试。
+    ark_retry_attempts: int = 2
+    ark_retry_backoff_seconds: float = 1.0
 
     weex_base_url: str = "https://api-contract.weex.com"
     weex_virtual_only: bool = True
