@@ -1,7 +1,8 @@
+import time
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.enums import Action, RiskStatus
 
@@ -51,16 +52,37 @@ class TradeProposal(AnalysisResult):
     symbol: str
     side: str | None = None
     position_size_pct: float = Field(ge=0, le=1)
-    leverage: int = Field(ge=1)
+    leverage: int = Field(default=1, ge=0)
     stop_loss: float | None = None
     take_profit: float | None = None
-    valid_until: int
+    valid_until: int | None = None
     invalidation_conditions: list[str] = Field(default_factory=list)
 
     @field_validator("side")
     @classmethod
     def normalize_side(cls, value: str | None) -> str | None:
         return value.upper() if value is not None else None
+
+    @model_validator(mode="after")
+    def enforce_signal_fields(self) -> "TradeProposal":
+        """HOLD 不下单，放行 LLM 的 leverage=0 / valid_until=null 并归一化。
+
+        实测 LLM 对 HOLD 常返回这两个"无操作"值，严格 schema 会把整个提案拒掉、
+        fallback 成 safe-hold，真实的观望判断永远到不了风控。非 HOLD（真实信号）
+        仍然强制杠杆 >= 1 且有效期必填。
+        """
+
+        if self.action is Action.HOLD:
+            if self.leverage < 1:
+                self.leverage = 1
+            if self.valid_until is None:
+                self.valid_until = int(time.time() * 1000)
+            return self
+        if self.leverage < 1:
+            raise ValueError("non-HOLD proposal requires leverage >= 1")
+        if self.valid_until is None:
+            raise ValueError("non-HOLD proposal requires valid_until")
+        return self
 
 
 class RiskDecision(BaseModel):
