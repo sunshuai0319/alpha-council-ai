@@ -367,7 +367,7 @@ describe("console control panel", () => {
     render(<ConsolePage view="trades" />)
     await screen.findByText("BTC-USDT")
 
-    expect(screen.queryByText(zhT("trades.closePosition"))).toBeNull()
+    expect(screen.queryByRole("button", { name: zhT("trades.closePosition") })).toBeNull()
   })
 
   it("still offers the close button for an open position", async () => {
@@ -384,7 +384,7 @@ describe("console control panel", () => {
     ])
     render(<ConsolePage view="trades" />)
 
-    expect(await screen.findByText(zhT("trades.closePosition"))).toBeVisible()
+    expect(await screen.findByRole("button", { name: zhT("trades.closePosition") })).toBeVisible()
   })
 })
 

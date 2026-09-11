@@ -1,4 +1,4 @@
-import { Check, CircleAlert, Minus, TrendingDown, TrendingUp } from "lucide-react"
+import { Check, CircleAlert, Minus, TrendingDown, TrendingUp, X } from "lucide-react"
 
 import { translate, useI18n, type Locale } from "@/lib/i18n"
 import { labelText, modelLabel, eventTypeLabel, reasonLabel, reasonParts } from "@/lib/labels"
@@ -58,10 +58,12 @@ export function RiskBadge({ status }: { status: string }) {
 }
 
 export function ActionMark({ action }: { action: string }) {
+  const { t } = useI18n()
   const normalized = action.toUpperCase()
-  if (normalized === "LONG") return <span className="action-mark action-mark--long"><TrendingUp size={15} />LONG</span>
-  if (normalized === "SHORT") return <span className="action-mark action-mark--short"><TrendingDown size={15} />SHORT</span>
-  return <span className="action-mark action-mark--hold"><Minus size={15} />HOLD</span>
+  if (normalized === "LONG") return <span className="action-mark action-mark--long"><TrendingUp size={15} />{t("action.long")}</span>
+  if (normalized === "SHORT") return <span className="action-mark action-mark--short"><TrendingDown size={15} />{t("action.short")}</span>
+  if (normalized === "CLOSE") return <span className="action-mark action-mark--close"><X size={15} />{t("action.close")}</span>
+  return <span className="action-mark action-mark--hold"><Minus size={15} />{t("action.hold")}</span>
 }
 
 export function EmptyState({ title, body }: { title: string; body: string }) {

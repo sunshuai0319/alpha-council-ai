@@ -161,6 +161,7 @@ h1 { font: 500 clamp(37px, 5vw, 64px)/.99 var(--serif); letter-spacing: -.045em;
 .action-mark--long { color: var(--lime); }
 .action-mark--short { color: var(--coral); }
 .action-mark--hold { color: var(--muted); }
+.action-mark--close { color: var(--ink); }
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); }
 table { width: 100%; border-collapse: collapse; min-width: 540px; }
 th, td { padding: 13px 14px; text-align: left; border-bottom: 1px solid var(--line); font-size: 11px; }

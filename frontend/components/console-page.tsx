@@ -527,7 +527,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
       <label>{t("trades.filterAction")}
         <select value={actionFilter} onChange={(event) => changeFilter(() => setActionFilter(event.target.value))}>
           <option value="">{t("trades.filterAll")}</option>
-          {["HOLD", "LONG", "SHORT", "CLOSE"].map((item) => <option key={item} value={item}>{item}</option>)}
+          {["HOLD", "LONG", "SHORT", "CLOSE"].map((item) => <option key={item} value={item}>{t(`action.${item.toLowerCase()}`)}</option>)}
         </select>
       </label>
       {symbolFilter || actionFilter ? <button type="button" className="button button--quiet" onClick={() => changeFilter(() => { setSymbolFilter(""); setActionFilter("") })}>{t("trades.filterReset")}</button> : null}

@@ -36,7 +36,7 @@ describe("console primitives", () => {
 
   it("shows risk status and action on a decision card", () => {
     render(<DecisionCard decision={holdDecision} />)
-    expect(screen.getByText("HOLD")).toBeVisible()
+    expect(screen.getByText(zhT("action.hold"))).toBeVisible()
     expect(screen.getByText("ALLOWED")).toBeVisible()
     expect(screen.getByText(/Signals disagree/)).toBeVisible()
   })
@@ -49,7 +49,7 @@ describe("console primitives", () => {
 
   it("maps long and rejected states to readable labels", () => {
     render(<><ActionMark action="LONG" /><RiskBadge status="REJECTED" /></>)
-    expect(screen.getByText("LONG")).toBeVisible()
+    expect(screen.getByText(zhT("action.long"))).toBeVisible()
     expect(screen.getByText("REJECTED")).toBeVisible()
   })
 })
