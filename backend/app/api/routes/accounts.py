@@ -35,7 +35,7 @@ class AccountCreate(BaseModel):
     def reject_environment_references(cls, value: str, info: ValidationInfo) -> str:
         if value.startswith("env:"):
             raise ValueError("environment references are not supported")
-        prefix = _WEEX_ENV_PREFIXES.get(info.field_name)
+        prefix = _WEEX_ENV_PREFIXES.get(info.field_name or "")
         if prefix and value.startswith(prefix):
             value = value[len(prefix):]
         return value.strip()
