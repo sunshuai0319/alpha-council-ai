@@ -356,3 +356,38 @@ def test_weex_real_order_path_includes_reduce_only() -> None:
 
     assert captured["symbol"] == "BTCUSDT"
     assert captured["reduceOnly"] is True
+
+
+def test_ticker_range_and_basis_fields_are_kept() -> None:
+    """24h ticker 返回 11 个字段，早期实现只读了 lastPrice 和 volume。
+
+    丢掉 openPrice/highPrice/lowPrice 让 market agent 无法判断价格在日内区间
+    的位置；丢掉 markPrice/indexPrice 让它看不到基差。
+    """
+    ticker = {
+        **TICKER_RESPONSE,
+        "openPrice": "78181.4",
+        "highPrice": "78496.1",
+        "lowPrice": "76414.5",
+        "priceChangePercent": "-0.012630",
+        "quoteVolume": "1817917050.88401",
+        "markPrice": "77199.2",
+        "indexPrice": "77237.45275",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/capi/v3/market/ticker/24hr":
+            return httpx.Response(200, json=[ticker])
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    with _client_for(handler) as client:
+        snapshot = client.get_market_snapshot("BTC-USDT")
+
+    assert snapshot.last_price == 1.5
+    assert snapshot.open_24h == 78181.4
+    assert snapshot.high_24h == 78496.1
+    assert snapshot.low_24h == 76414.5
+    assert snapshot.price_change_pct == -0.012630
+    assert snapshot.quote_volume_24h == 1817917050.88401
+    assert snapshot.mark_price == 77199.2
+    assert snapshot.index_price == 77237.45275

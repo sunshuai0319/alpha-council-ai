@@ -256,19 +256,27 @@ class WeexClient(ExchangeClient):
         # market_data_max_age_seconds(默认 90s) 永远判定过期，整个系统一笔都不下。
         # 所以 captured_at 取本地观测时刻 —— 行情就是此刻从交易所取回的。
         captured_at = self._clock_ms()
+
+        def optional(name: str) -> float | None:
+            """缺字段与「字段存在但为空」要区分开，所以只对存在且有值的做转换。"""
+
+            raw_value = ticker.get(name)
+            return float(_decimal(raw_value)) if raw_value is not None else None
+
         return MarketSnapshot(
             symbol=normalize_symbol(ticker.get("symbol", symbol)),
             captured_at=captured_at,
             last_price=float(_decimal(ticker.get("lastPrice", ticker.get("last")))),
-            bid=float(_decimal(ticker.get("bidPrice", ticker.get("best_bid"))))
-            if ticker.get("bidPrice", ticker.get("best_bid")) is not None
-            else None,
-            ask=float(_decimal(ticker.get("askPrice", ticker.get("best_ask"))))
-            if ticker.get("askPrice", ticker.get("best_ask")) is not None
-            else None,
-            volume_24h=float(_decimal(ticker.get("volume", ticker.get("volume_24h"))))
-            if ticker.get("volume", ticker.get("volume_24h")) is not None
-            else None,
+            bid=optional("bidPrice") or optional("best_bid"),
+            ask=optional("askPrice") or optional("best_ask"),
+            volume_24h=optional("volume") or optional("volume_24h"),
+            open_24h=optional("openPrice"),
+            high_24h=optional("highPrice"),
+            low_24h=optional("lowPrice"),
+            price_change_pct=optional("priceChangePercent"),
+            quote_volume_24h=optional("quoteVolume"),
+            mark_price=optional("markPrice"),
+            index_price=optional("indexPrice"),
         )
 
     def get_contracts(self) -> list[ContractInfo]:

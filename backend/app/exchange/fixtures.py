@@ -31,12 +31,21 @@ CONTRACT_INFO_RESPONSE = {
 
 KLINES_RESPONSE = [[1700000000000, "1", "2", "0.5", "1.5", "10", 1700000299999, "15", 3, "5", "7.5"]]
 
+#: 字段对齐实测的真实响应（见 docs/weex-virtual-api.md §1.2），
+#: 别只保留用到的那几个 —— fixture 失真会让采集层的缺失一直测不出来。
 TICKER_RESPONSE = {
     "symbol": "BTCUSDT",
     "lastPrice": "1.5",
     "bidPrice": "1.4",
     "askPrice": "1.6",
     "volume": "100",
+    "quoteVolume": "150",
+    "openPrice": "1.4",
+    "highPrice": "1.7",
+    "lowPrice": "1.3",
+    "priceChangePercent": "0.0714",
+    "markPrice": "1.5",
+    "indexPrice": "1.51",
     "closeTime": 1700000299999,
 }
 

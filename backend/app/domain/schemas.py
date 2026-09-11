@@ -30,6 +30,15 @@ class MarketSnapshot(BaseModel):
     symbol: str
     captured_at: int
     last_price: float
+    #: 24h 区间与量能。WEEX 的 ticker 全部返回，早期实现丢掉了。
+    open_24h: float | None = None
+    high_24h: float | None = None
+    low_24h: float | None = None
+    price_change_pct: float | None = None
+    quote_volume_24h: float | None = None
+    #: 标记价与指数价，用来算基差。
+    mark_price: float | None = None
+    index_price: float | None = None
     bid: float | None = None
     ask: float | None = None
     funding_rate: float | None = None
