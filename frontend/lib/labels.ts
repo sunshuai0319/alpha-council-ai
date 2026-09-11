@@ -142,6 +142,29 @@ export function reasonLabel(code: string): Label {
 }
 
 /** 风控事件类型。 */
+/** 动作与持仓状态的枚举码表。后端仍存英文码，只在界面翻译。 */
+const ACTION_KEYS: Record<string, string> = {
+  HOLD: "action.hold",
+  LONG: "action.long",
+  SHORT: "action.short",
+  CLOSE: "action.close",
+};
+
+const POSITION_STATUS_KEYS: Record<string, string> = {
+  OPEN: "position.open",
+  CLOSED: "position.closed",
+};
+
+/** 交易动作（HOLD/LONG/SHORT/CLOSE）→ 文案。 */
+export function actionLabel(code: string): Label {
+  return labelFor(code.toUpperCase(), ACTION_KEYS, []);
+}
+
+/** 持仓状态（OPEN/CLOSED）→ 文案。 */
+export function positionStatusLabel(code: string): Label {
+  return labelFor(code.toUpperCase(), POSITION_STATUS_KEYS, []);
+}
+
 export function eventTypeLabel(code: string): Label {
   return labelFor(code, EVENT_KEYS, []);
 }

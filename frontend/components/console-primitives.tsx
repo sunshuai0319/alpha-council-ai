@@ -1,7 +1,7 @@
 import { Check, CircleAlert, Minus, TrendingDown, TrendingUp, X } from "lucide-react"
 
 import { translate, useI18n, type Locale } from "@/lib/i18n"
-import { labelText, modelLabel, eventTypeLabel, reasonLabel, reasonParts } from "@/lib/labels"
+import { labelText, modelLabel, eventTypeLabel, reasonLabel, reasonParts, actionLabel, positionStatusLabel } from "@/lib/labels"
 import type { Decision, MarketSnapshot, Position, RiskEvent } from "@/lib/types"
 
 /**
@@ -60,10 +60,11 @@ export function RiskBadge({ status }: { status: string }) {
 export function ActionMark({ action }: { action: string }) {
   const { t } = useI18n()
   const normalized = action.toUpperCase()
-  if (normalized === "LONG") return <span className="action-mark action-mark--long"><TrendingUp size={15} />{t("action.long")}</span>
-  if (normalized === "SHORT") return <span className="action-mark action-mark--short"><TrendingDown size={15} />{t("action.short")}</span>
-  if (normalized === "CLOSE") return <span className="action-mark action-mark--close"><X size={15} />{t("action.close")}</span>
-  return <span className="action-mark action-mark--hold"><Minus size={15} />{t("action.hold")}</span>
+  const text = labelText(actionLabel(action), t)
+  if (normalized === "LONG") return <span className="action-mark action-mark--long"><TrendingUp size={15} />{text}</span>
+  if (normalized === "SHORT") return <span className="action-mark action-mark--short"><TrendingDown size={15} />{text}</span>
+  if (normalized === "CLOSE") return <span className="action-mark action-mark--close"><X size={15} />{text}</span>
+  return <span className="action-mark action-mark--hold"><Minus size={15} />{text}</span>
 }
 
 export function EmptyState({ title, body }: { title: string; body: string }) {
@@ -129,13 +130,15 @@ export function DecisionCard({ decision }: { decision: Decision }) {
 
 export function PortfolioTable({ positions, onClose }: { positions: Position[]; onClose?: (symbol: string) => void }) {
   const { t } = useI18n()
+  // 状态是后端码（OPEN/CLOSED），显示前本地化；认不出的码原样返回，避免露出空 key。
+  const statusText = (status: string) => labelText(positionStatusLabel(status), t)
   if (!positions.length) return <EmptyState title={t("common.noPositions")} body={t("common.noPositionsBody")} />
   return (
     <div className="table-wrap">
       <table>
         <thead><tr><th>{t("common.contract")}</th><th>{t("common.side")}</th><th>{t("common.quantity")}</th><th>{t("common.entry")}</th><th>{t("common.mark")}</th><th title={t("trades.upnlHint")}>{t("common.upnl")}</th>{onClose ? <th>{t("common.action")}</th> : null}</tr></thead>
         <tbody>{positions.map((position) => <tr key={position.id}>
-          <td><strong>{position.symbol}</strong><small>{position.status}</small></td>
+          <td><strong>{position.symbol}</strong><small>{statusText(position.status)}</small></td>
           <td><ActionMark action={position.side} /></td>
           <td className="mono">{formatNumber(position.quantity, 5)}</td>
           <td className="mono">{formatNumber(position.entry_price, 2)}</td>

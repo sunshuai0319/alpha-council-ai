@@ -290,6 +290,8 @@ export const messages: Record<Locale, MessageTree> = {
     "action.short": "空",
     "action.hold": "观望",
     "action.close": "平仓",
+    "position.open": "持仓中",
+    "position.closed": "已平仓",
   },
   "en-US": {
     "auth.signIn": "Sign in",
@@ -573,6 +575,8 @@ export const messages: Record<Locale, MessageTree> = {
     "action.short": "Short",
     "action.hold": "Hold",
     "action.close": "Close",
+    "position.open": "Open",
+    "position.closed": "Closed",
   },
 }
 

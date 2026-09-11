@@ -5,7 +5,7 @@ import { ChevronRight, CircleAlert, CirclePause, CirclePlay, RefreshCw, ShieldAl
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, ModelText, Pagination, PortfolioTable, ReasonText, RiskBadge, VirtualBadge } from "@/components/console-primitives"
-import { labelText, modelLabel, reasonLabel } from "@/lib/labels"
+import { labelText, modelLabel, reasonLabel, actionLabel } from "@/lib/labels"
 import { ApiError, apiRequest } from "@/lib/api"
 import { emptyOverviewHint } from "@/lib/console-hints"
 import { useI18n } from "@/lib/i18n"
@@ -492,7 +492,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
     {/* 只显示「—」会让用户以为界面坏了：说明为什么没有数据，以及该做什么 */}
     {dataHint ? <p className="data-hint" role="status"><CircleAlert size={15} /><span>{t(dataHint)}</span></p> : null}
     <ControlPanel status={controlStatus} onToggle={() => void changeControl()} busy={controlBusy} />
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.atAGlance")}</span><h2>{t("overview.systemReadout")}</h2></div><span className="section-index">01 / 04</span></div><div className="metrics-grid"><Metric label={t("overview.openPositions")} value={String(openPositions.length)} detail={openPositions.length ? t("overview.positionActive", { symbol: openPositions[0].symbol }) : t("overview.flatBook")} /><Metric label={t("overview.unrealizedPnl")} value={formatSignedPnl(pnl)} detail={t("overview.syncedPositions")} tone={pnl >= 0 ? "positive" : "negative"} /><Metric label={t("overview.lastAction")} value={latest ? latest.action : "—"} detail={latest ? formatDate(latest.created_at, locale) : t("overview.awaitingCycle")} tone="signal" /><Metric label={t("overview.riskEvents")} value={String(data.events.length)} detail={t("overview.hardGateHistory")} /></div></section>
+    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.atAGlance")}</span><h2>{t("overview.systemReadout")}</h2></div><span className="section-index">01 / 04</span></div><div className="metrics-grid"><Metric label={t("overview.openPositions")} value={String(openPositions.length)} detail={openPositions.length ? t("overview.positionActive", { symbol: openPositions[0].symbol }) : t("overview.flatBook")} /><Metric label={t("overview.unrealizedPnl")} value={formatSignedPnl(pnl)} detail={t("overview.syncedPositions")} tone={pnl >= 0 ? "positive" : "negative"} /><Metric label={t("overview.lastAction")} value={latest ? labelText(actionLabel(latest.action), t) : "—"} detail={latest ? formatDate(latest.created_at, locale) : t("overview.awaitingCycle")} tone="signal" /><Metric label={t("overview.riskEvents")} value={String(data.events.length)} detail={t("overview.hardGateHistory")} /></div></section>
     <div className="two-column"><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.decisionTrace")}</span><h2>{t("overview.whatDecided")}</h2></div><a href="/committee">{t("overview.viewCommittee")} <span>↗</span></a></div>{latest ? <DecisionCard decision={latest} /> : <EmptyState title={t("overview.noDecision")} body={t("overview.noDecisionBody")} />}</section><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.bookState")}</span><h2>{t("overview.virtualPortfolio")}</h2></div><a href="/trades">{t("overview.openLedger")} <span>↗</span></a></div><PortfolioTable positions={data.positions.slice(0, 3)} /></section></div>
   </>
 
@@ -527,7 +527,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
       <label>{t("trades.filterAction")}
         <select value={actionFilter} onChange={(event) => changeFilter(() => setActionFilter(event.target.value))}>
           <option value="">{t("trades.filterAll")}</option>
-          {["HOLD", "LONG", "SHORT", "CLOSE"].map((item) => <option key={item} value={item}>{t(`action.${item.toLowerCase()}`)}</option>)}
+          {["HOLD", "LONG", "SHORT", "CLOSE"].map((item) => <option key={item} value={item}>{labelText(actionLabel(item), t)}</option>)}
         </select>
       </label>
       {symbolFilter || actionFilter ? <button type="button" className="button button--quiet" onClick={() => changeFilter(() => { setSymbolFilter(""); setActionFilter("") })}>{t("trades.filterReset")}</button> : null}
