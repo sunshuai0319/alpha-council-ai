@@ -29,6 +29,9 @@ def _order_request_for(
         reduce_only = True
     else:
         raise ValueError("HOLD proposals do not create orders")
+    # 交易所挂的是宽灾难止损（3×），不是软件层那条紧的 —— 交易所的触发单改不了
+    # 也撤不掉，挂紧就没机会执行移动止损了。没给灾难止损时退回 stop_loss。
+    exchange_stop = proposal.disaster_stop if proposal.disaster_stop is not None else proposal.stop_loss
     return OrderRequest(
         symbol=proposal.symbol,
         side=side,
@@ -37,7 +40,7 @@ def _order_request_for(
         quantity=quantity,
         client_order_id=stable_client_order_id(proposal.proposal_id),
         price=entry_price,
-        stop_loss=Decimal(str(proposal.stop_loss)) if proposal.stop_loss is not None else None,
+        stop_loss=Decimal(str(exchange_stop)) if exchange_stop is not None else None,
         take_profit=Decimal(str(proposal.take_profit)) if proposal.take_profit is not None else None,
         reduce_only=reduce_only,
     )

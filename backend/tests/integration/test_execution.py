@@ -83,3 +83,58 @@ def test_rejected_risk_never_calls_exchange() -> None:
         FailingExchange(), proposal, RiskDecision(status="REJECTED", reasons=["max_notional"]), quantity=Decimal("0.01")
     )
     assert result.status == "REJECTED"
+
+
+class CapturingExchange:
+    """记下下单请求，回报 FILLED。"""
+
+    def __init__(self) -> None:
+        self.request = None
+
+    def place_order(self, request):
+        self.request = request
+        return _order(request.client_order_id)
+
+
+def _entry_proposal(**overrides) -> TradeProposal:
+    base = {
+        "proposal_id": "p-4",
+        "action": Action.SHORT,
+        "symbol": "BTC-USDT",
+        "side": "SHORT",
+        "position_size_pct": 0.1,
+        "leverage": 1,
+        "stop_loss": 103,  # 软件层的紧止损 = 1R
+        "take_profit": 94,
+        "valid_until": 9_999_999_999_999,
+        "confidence": 0.6,
+        "reasoning_summary": "test",
+        "evidence_refs": ["e1"],
+        "model_version": "test",
+        "trace_id": "t1",
+    }
+    return TradeProposal(**{**base, **overrides})
+
+
+def test_exchange_stop_uses_the_wide_disaster_level_not_the_software_stop() -> None:
+    """交易所挂的是 3× 灾难止损，不是软件层的 1× —— 那条改不了也撤不掉，
+    挂紧的话移动止损根本没机会执行（实测无 cancel/modify 端点）。"""
+    exchange = CapturingExchange()
+    proposal = _entry_proposal(disaster_stop=109)
+
+    ExecutionService().execute(
+        exchange, proposal, RiskDecision(status="ALLOWED"), quantity=Decimal("0.01")
+    )
+
+    assert exchange.request.stop_loss == Decimal("109")
+
+
+def test_falls_back_to_the_software_stop_when_no_disaster_level_is_given() -> None:
+    exchange = CapturingExchange()
+    proposal = _entry_proposal()  # 没带 disaster_stop
+
+    ExecutionService().execute(
+        exchange, proposal, RiskDecision(status="ALLOWED"), quantity=Decimal("0.01")
+    )
+
+    assert exchange.request.stop_loss == Decimal("103")
