@@ -204,11 +204,14 @@ class TradingCycleService:
                 timeframe: [candle for candle in candle_result.items if candle.timeframe == timeframe]
                 for timeframe in timeframes
             },
+            # 传 now_ms：只用已收盘的 bar。最后一根还在形成 —— 拿半根的量比整根，
+            # 量能分会结构性为负，把打分卡整体压到阈值下方（见 closed_candles）。
             technical_indicators=calculate_indicators(
                 {
                     timeframe: [candle for candle in candle_result.items if candle.timeframe == timeframe]
                     for timeframe in timeframes
-                }
+                },
+                now_ms=started_at,
             ),
             # 进决策记录（并最终渲染到界面）的是**稳定码**，不是原始异常：
             # 原文走日志与 collector_errors 表，界面只显示「哪个品种/周期没抓到」。

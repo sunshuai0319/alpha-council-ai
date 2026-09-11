@@ -1,11 +1,44 @@
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from itertools import pairwise
 from typing import Any
 
 from app.domain.schemas import Candle
 
 INDICATOR_VERSION = "technical-v1"
+
+_TIMEFRAME_MS = {"m": 60_000, "h": 3_600_000, "d": 86_400_000, "w": 604_800_000}
+
+
+def timeframe_ms(timeframe: str) -> int:
+    """`12h` → 43_200_000。
+
+    认不出的周期直接抛：静默返回 0 会让每根 bar 都满足「已收盘」，
+    那正是这个换算要防的错。
+    """
+
+    unit = timeframe[-1:].lower()
+    digits = timeframe[:-1]
+    if unit not in _TIMEFRAME_MS or not digits.isdigit():
+        raise ValueError(f"unsupported timeframe: {timeframe!r}")
+    return int(digits) * _TIMEFRAME_MS[unit]
+
+
+def closed_candles(candles: Iterable[Candle], timeframe: str, now_ms: int) -> list[Candle]:
+    """只留下在 `now_ms` 之前**已经收盘**的 bar。
+
+    最后一根 K 线是正在形成的：收盘价、最高最低、成交量都还在变。拿它算指标会
+    带来两个后果，2026-09-11 线上实测都发生了：
+
+    - **量能恒为负**：`volume_change_1` 拿半根的量比上一根完整的量，结构性偏低。
+      十个品种里九个拿满 -1，量能项固定扣掉 0.15；而趋势分封顶 +0.40，于是
+      所有品种都停在 0.25 附近、够不到 0.35 的入场阈值。
+    - **回测对不上**：回测的决策时刻是「bar i 收盘」，它能拿到的 bar i 是完整的。
+      线上用未完成 bar，两边算的根本不是同一组数。
+    """
+
+    duration = timeframe_ms(timeframe)
+    return [candle for candle in candles if candle.open_time + duration <= now_ms]
 
 
 def _ema(values: list[float], period: int) -> float | None:
@@ -107,5 +140,23 @@ def _timeframe_indicators(candles: Iterable[Candle]) -> dict[str, Any]:
     }
 
 
-def calculate_indicators(candles_by_timeframe: dict[str, Iterable[Candle]]) -> dict[str, dict[str, Any]]:
-    return {timeframe: _timeframe_indicators(candles) for timeframe, candles in candles_by_timeframe.items()}
+def calculate_indicators(
+    candles_by_timeframe: Mapping[str, Iterable[Candle]],
+    *,
+    now_ms: int | None = None,
+) -> dict[str, dict[str, Any]]:
+    """按周期算指标。
+
+    `now_ms` 给了就只用**已收盘**的 bar（见 `closed_candles`）—— 这是决策路径上
+    的正确用法，交易周期与回测都该传。不传的只有纯计算场景（单测、离线分析）。
+
+    参数刻意保留为可选而不是必填：回测里「决策时刻」不是当前时间，硬塞一个默认值
+    只会让两边悄悄用上不同的时钟。
+    """
+
+    if now_ms is None:
+        return {timeframe: _timeframe_indicators(candles) for timeframe, candles in candles_by_timeframe.items()}
+    return {
+        timeframe: _timeframe_indicators(closed_candles(candles, timeframe, now_ms))
+        for timeframe, candles in candles_by_timeframe.items()
+    }

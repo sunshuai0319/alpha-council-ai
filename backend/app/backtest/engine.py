@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from app.analytics.indicators import calculate_indicators
+from app.analytics.indicators import calculate_indicators, timeframe_ms
 from app.domain.schemas import Candle
 from app.positions.manager import CLOSE as POSITION_CLOSE
 from app.positions.manager import manage as manage_position
@@ -127,19 +127,21 @@ def _indicators_at(
     entry_timeframe: str,
     index: int,
 ) -> dict[str, Any]:
-    """只用截至 index 的数据 —— 用未来 K 线是回测最常见的前视偏差。
+    """只用**决策时刻已经收盘**的 bar —— 用未来 K 线是回测最常见的前视偏差。
+
+    决策时刻 = 入场周期第 index 根的收盘。所以：
+
+    - 入场周期：第 index 根本身算（它刚好收盘）；
+    - 更长的周期：只算在那之前就收盘的那些。原来的实现按 `open_time <= cutoff`
+      切片，会把**当天那根还没走完的日线**拉进来 —— 而库里存的是它最终的成交量，
+      等于站在中午就看到了收盘的量。
 
     只算打分卡真正会读的两个周期，不做无用的全量计算。
     """
 
     entry = candles_by_timeframe[entry_timeframe]
-    cutoff = entry[index].open_time
-    return calculate_indicators(
-        {
-            timeframe: [candle for candle in candles if candle.open_time <= cutoff]
-            for timeframe, candles in candles_by_timeframe.items()
-        }
-    )
+    decided_at = entry[index].open_time + timeframe_ms(entry_timeframe)
+    return calculate_indicators(candles_by_timeframe, now_ms=decided_at)
 
 
 def _intrabar_exit(position: _OpenPosition, bar: Candle) -> tuple[Decimal, str] | None:
