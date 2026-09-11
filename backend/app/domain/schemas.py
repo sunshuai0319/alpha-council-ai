@@ -137,7 +137,8 @@ class TradeProposal(AnalysisResult):
             if text.isdigit():
                 return int(text)
             try:
-                return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+                # fromisoformat 自 3.11 起直接接受尾部的 "Z"，不必再手工替换。
+                return int(datetime.fromisoformat(text).timestamp() * 1000)
             except ValueError:
                 return None
         return None
@@ -153,8 +154,7 @@ class TradeProposal(AnalysisResult):
         """
 
         if self.action is Action.HOLD:
-            if self.leverage < 1:
-                self.leverage = 1
+            self.leverage = max(self.leverage, 1)
             # HOLD 不下单，valid_until 无实际意义：不信任 LLM 的 null / ISO / 编造日期。
             self.valid_until = int(time.time() * 1000)
             return self
