@@ -203,11 +203,17 @@ def run_backtest(
     fee_pct: Decimal = Decimal("0.0008"),
     entry_fee_pct: Decimal | None = None,
     exit_fee_pct: Decimal | None = None,
+    entry_order: str = "market",
+    limit_ttl_bars: int = 6,
 ) -> BacktestResult:
     """跑一遍历史，返回逐笔交易与汇总指标。
 
     `fee_pct` 是两边同价的简写；要分开算（例如入场挂 maker 单）就传
     `entry_fee_pct` / `exit_fee_pct`。
+
+    `entry_order="limit"` 模拟挂单入场：挂在**信号那根的收盘价**上，之后
+    `limit_ttl_bars` 根内价格碰到才成交，且成交价就是挂单价（maker 拿自己的价）。
+    挂单不是许愿 —— 单边行情里挂在低处的买单永远碰不到，那就不该有这笔交易。
     """
 
     entry_fee = entry_fee_pct if entry_fee_pct is not None else fee_pct
@@ -295,9 +301,31 @@ def run_backtest(
         if atr is None or atr <= 0:
             continue
         next_bar = bars[index + 1]
-        entry_price = Decimal(str(next_bar.open))
+        entry_bar_index = index + 1
+        if entry_order == "limit":
+            # 挂在信号那根的收盘价；之后 TTL 根内触碰才成交，成交价 = 挂单价。
+            limit_price = Decimal(str(bar.close))
+            filled_at: int | None = None
+            for probe in range(index + 1, min(index + 1 + limit_ttl_bars, len(bars))):
+                candidate = bars[probe]
+                touched = (
+                    Decimal(str(candidate.low)) <= limit_price
+                    if direction == LONG
+                    else Decimal(str(candidate.high)) >= limit_price
+                )
+                if touched:
+                    filled_at = probe
+                    break
+            if filled_at is None:
+                continue  # 挂单没成交 = 没有这笔交易，不能当它成交了
+            entry_bar_index = filled_at
+            entry_price = limit_price
+        else:
+            entry_price = Decimal(str(next_bar.open))
         if entry_price <= 0:
             continue
+        # 入场之后才允许下单/管理，不能回头看成交之前的价格。
+        next_bar = bars[entry_bar_index]
         plan = size_position(
             equity=equity,
             entry=entry_price,
@@ -310,7 +338,7 @@ def run_backtest(
             continue
         position = _OpenPosition(
             side=LONG if direction == LONG else SHORT,
-            entry_time=next_bar.open_time,
+            entry_time=bars[entry_bar_index].open_time,
             entry_price=entry_price,
             quantity=quantity,
             initial_stop=plan.stop_loss,

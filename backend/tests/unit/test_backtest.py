@@ -262,3 +262,56 @@ def test_entry_and_exit_fees_are_separate() -> None:
 
     assert both_taker.trade_count == maker_entry.trade_count
     assert maker_entry.avg_r > both_taker.avg_r, "便宜的入场费率应当改善平均 R"
+
+
+def _gap_up_frame(count: int = 260) -> dict[str, list[Candle]]:
+    """只涨不回的 K 线：每根都开在前收之上，且 low 高于前收。
+
+    通用的 _candles 会在实体下方留 pad，导致 low 低于前收 —— 那样挂在前收的
+    买单永远「被触碰」，测不出「没碰到就不该成交」。
+    """
+
+    bars: list[Candle] = []
+    price = 100.0
+    for index in range(count):
+        open_ = price * 1.01
+        close = open_ * 1.01
+        bars.append(Candle(
+            symbol="BTC-USDT", timeframe="1h",
+            open_time=1_700_000_000_000 + index * HOUR_MS,
+            open=open_, high=close, low=open_, close=close, volume=1000.0,
+        ))
+        price = close
+    one_h = bars
+    four_h = [Candle(
+        symbol="BTC-USDT", timeframe="4h",
+        open_time=one_h[i].open_time, open=one_h[i].open,
+        high=max(c.high for c in one_h[i:i+4]), low=min(c.low for c in one_h[i:i+4]),
+        close=one_h[i+3].close, volume=sum(c.volume for c in one_h[i:i+4]),
+    ) for i in range(0, len(one_h) - 3, 4)]
+    return {"1h": one_h, "4h": four_h}
+
+
+def test_limit_entry_only_fills_when_price_trades_through_it() -> None:
+    """挂单不是许愿：价格没碰到我们的挂单价，就不该成交。
+
+    之前的回测一律假设「下一根开盘价必成交」，那对市价单成立，对挂单是白送。
+    """
+    frame = _gap_up_frame()
+
+    market = run_backtest(frame)
+    limit = run_backtest(frame, entry_order="limit")
+
+    assert market.trade_count >= 1, "市价单在这种行情下应当成交"
+    assert limit.trade_count == 0, "只涨不回时，挂在低处的买单碰不到，不该成交"
+
+
+def test_limit_entry_fills_when_price_comes_back() -> None:
+    """价格回踩到挂单价就成交，且成交价就是挂单价（maker 拿自己的价）。"""
+
+    closes = _uptrend(160) + [118.0 - index * 1.5 for index in range(1, 41)]
+    frame = _frame(closes)
+
+    limit = run_backtest(frame, entry_order="limit")
+
+    assert limit.trade_count >= 1
