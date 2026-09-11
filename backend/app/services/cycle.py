@@ -223,6 +223,12 @@ class TradingCycleService:
         )
         if halt_reason is None and not self.settings.trading_enabled:
             halt_reason = "trading_disabled"
+        # 持仓管理放在暂停判断**之前**：暂停只阻止新决策产生，不阻止给已有仓位降险。
+        # 熔断恰恰由日亏损/连亏触发 —— 那时正持着亏损仓，放弃管理会让亏损一路走到
+        # 交易所那条 3× 的宽灾难止损，而不是软件层的 1R。
+        # 没有 state.signal_score 时结构失效不会触发（暂停期没有新信号），
+        # 但止损触及、保本、移动、时间止损照常。
+        self._manage_positions(exchange, state)
         if halt_reason is not None:
             logger.info(
                 "cycle halted: user=%s symbol=%s reason=%s (no committee, no order)",
@@ -269,8 +275,6 @@ class TradingCycleService:
                 state.quant_analysis.status if state.quant_analysis else None,
                 state.macro_analysis.status if state.macro_analysis else None,
             )
-            # 先管已有仓位：触及止损/失效的会被平掉，同时释放「单品种一仓」的名额。
-            self._manage_positions(exchange, state)
             risk_decision = self._evaluate_proposal(exchange, state)
             if risk_decision.halt:
                 self._halt(state.user_id, risk_decision)
@@ -291,18 +295,20 @@ class TradingCycleService:
                 execution.message if execution else None,
             )
             state = state.model_copy(update={"risk_assessment": risk_decision, "execution_result": execution})
-            account = self._account_for_user(user_id)
-            if account is not None:
-                self.reconciliation.reconcile(
-                    exchange,
-                    user_id=user_id,
-                    trading_account_id=account.id,
-                    order_ids=[execution.exchange_order_id] if execution and execution.exchange_order_id else [],
-                    symbol=symbol,
-                )
-                # 必须在 reconcile 之后：行是它建的。把管理所需的元数据登记上去，
-                # 否则下一轮 PositionManager 无从知道成本与止损在哪。
-                self._register_position_metadata(user_id, account.id, symbol, state, execution)
+        # 对账同样与暂停无关：它是纯观测，也是「交易所自动止损后本地行怎么跟上」的
+        # 唯一机制。放在暂停分支之外，暂停期间才不会留下幽灵持仓。
+        account = self._account_for_user(user_id)
+        if account is not None:
+            self.reconciliation.reconcile(
+                exchange,
+                user_id=user_id,
+                trading_account_id=account.id,
+                order_ids=[execution.exchange_order_id] if execution and execution.exchange_order_id else [],
+                symbol=symbol,
+            )
+            # 必须在 reconcile 之后：行是它建的。把管理所需的元数据登记上去，
+            # 否则下一轮 PositionManager 无从知道成本与止损在哪。
+            self._register_position_metadata(user_id, account.id, symbol, state, execution)
         persisted = self._persist(result_state=state, risk=risk_decision, execution=execution)
         result = CycleResult(state, risk_decision, execution, persisted)
         logger.info(

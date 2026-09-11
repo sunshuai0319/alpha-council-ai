@@ -1047,3 +1047,74 @@ def test_position_management_leaves_other_symbols_alone(tmp_path) -> None:
 
     assert exchange.requests == []
     assert db.get(Position, "pos-1").status == "OPEN"
+
+
+class PausedMarketExchange(FakeExchange):
+    """行情可用，并按需返回一个持仓。用来测暂停期间的行为。"""
+
+    #: 虚拟盘没有成交流水 —— 对账靠余额差推已实现盈亏，不走 fill。
+    supports_trade_fills = False
+
+    def __init__(self, *, price: float = 100.0, hold_position: bool = True) -> None:
+        self.requests: list[OrderRequest] = []
+        self._price = price
+        self._hold = hold_position
+
+    def get_market_snapshot(self, symbol: str) -> MarketSnapshot:
+        return MarketSnapshot(
+            symbol=symbol,
+            captured_at=int(datetime.now(UTC).timestamp() * 1000),
+            last_price=self._price,
+        )
+
+    def get_positions(self) -> list[ExchangePosition]:
+        if not self._hold:
+            return []  # 交易所已经平掉了（例如自动止损）
+        return [
+            ExchangePosition(
+                position_id="p-1", symbol="BTC-USDT", side="LONG",
+                quantity=Decimal(1), entry_value=Decimal(100), margin=Decimal(1),
+                leverage=1, unrealized_pnl=Decimal(0), liquidation_price=None,
+            )
+        ]
+
+    def place_order(self, request: OrderRequest) -> ExchangeOrder:
+        self.requests.append(request)
+        # 成交之后仓位就没了 —— 桩件必须反映这一点，否则对账会把刚平掉的仓位
+        # 又读回来、把本地行翻回 OPEN，测出一个现实中不存在的竞态。
+        self._hold = False
+        return ExchangeOrder(
+            order_id="order-pm", client_order_id=request.client_order_id,
+            symbol=request.symbol, side=request.side, position_side=request.position_side,
+            status="FILLED", order_type=request.order_type, quantity=request.quantity,
+            executed_quantity=request.quantity, price=Decimal(100), average_price=Decimal(100),
+            time_in_force=None, created_at=None, updated_at=None,
+        )
+
+
+def test_paused_account_still_reconciles_the_phantom_row_away(tmp_path) -> None:
+    """暂停只阻止新决策，不阻止观测。
+
+    熔断恰恰发生在持亏损仓时；那时不对账，交易所自动止损后本地行会永远停在
+    OPEN（就是第 1 层修过的那类幽灵持仓，从暂停这条路又能走到）。
+    """
+    exchange = PausedMarketExchange(hold_position=False)  # 交易所已无仓位
+    db, service = _service_with_position(tmp_path, exchange)
+    service.pause("u-1")
+
+    service.run(user_id="u-1", llm=FailingLLM())
+
+    assert db.get(Position, "pos-1").status == "CLOSED"
+
+
+def test_paused_account_still_manages_an_open_position(tmp_path) -> None:
+    """暂停期间持仓管理照跑 —— 放弃管理会让亏损走到 3× 的宽灾难止损。"""
+    exchange = PausedMarketExchange(price=96.0)  # 现价 96 < 有效止损 97
+    db, service = _service_with_position(tmp_path, exchange)
+    service.pause("u-1")
+
+    service.run(user_id="u-1", llm=FailingLLM())
+
+    assert len(exchange.requests) == 1, "暂停期间止损仍应执行"
+    assert exchange.requests[0].side == "SELL"
+    assert db.get(Position, "pos-1").status == "CLOSED"
