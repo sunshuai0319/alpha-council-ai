@@ -406,7 +406,10 @@ export function ConsolePage({ view }: { view: DashboardView }) {
   const latestMarket = data.market[0]
   const dataHint = emptyOverviewHint(data.accounts, data.market)
   const latestAnalysis = latest?.analyses
-  const pnl = useMemo(() => data.positions.reduce((total, item) => total + item.unrealized_pnl, 0), [data.positions])
+  // 平仓按钮只属于真正 OPEN 的仓位。后端已过滤掉已平仓的行，这里再挡一道：
+  // 拿着一个已平仓的 symbol 去下平仓单，平的是不存在的仓位。
+  const openPositions = useMemo(() => data.positions.filter((item) => item.status === "OPEN"), [data.positions])
+  const pnl = useMemo(() => openPositions.reduce((total, item) => total + item.unrealized_pnl, 0), [openPositions])
 
   const changeControl = async () => {
     const next = controlStatus === "PAUSED" ? "RUNNING" : "PAUSED"
@@ -452,7 +455,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
     {/* 只显示「—」会让用户以为界面坏了：说明为什么没有数据，以及该做什么 */}
     {dataHint ? <p className="data-hint" role="status"><CircleAlert size={15} /><span>{t(dataHint)}</span></p> : null}
     <ControlPanel status={controlStatus} onToggle={() => void changeControl()} busy={controlBusy} />
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.atAGlance")}</span><h2>{t("overview.systemReadout")}</h2></div><span className="section-index">01 / 04</span></div><div className="metrics-grid"><Metric label={t("overview.openPositions")} value={String(data.positions.length)} detail={data.positions.length ? t("overview.positionActive", { symbol: data.positions[0].symbol }) : t("overview.flatBook")} /><Metric label={t("overview.unrealizedPnl")} value={formatSignedPnl(pnl)} detail={t("overview.syncedPositions")} tone={pnl >= 0 ? "positive" : "negative"} /><Metric label={t("overview.lastAction")} value={latest ? latest.action : "—"} detail={latest ? formatDate(latest.created_at, locale) : t("overview.awaitingCycle")} tone="signal" /><Metric label={t("overview.riskEvents")} value={String(data.events.length)} detail={t("overview.hardGateHistory")} /></div></section>
+    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.atAGlance")}</span><h2>{t("overview.systemReadout")}</h2></div><span className="section-index">01 / 04</span></div><div className="metrics-grid"><Metric label={t("overview.openPositions")} value={String(openPositions.length)} detail={openPositions.length ? t("overview.positionActive", { symbol: openPositions[0].symbol }) : t("overview.flatBook")} /><Metric label={t("overview.unrealizedPnl")} value={formatSignedPnl(pnl)} detail={t("overview.syncedPositions")} tone={pnl >= 0 ? "positive" : "negative"} /><Metric label={t("overview.lastAction")} value={latest ? latest.action : "—"} detail={latest ? formatDate(latest.created_at, locale) : t("overview.awaitingCycle")} tone="signal" /><Metric label={t("overview.riskEvents")} value={String(data.events.length)} detail={t("overview.hardGateHistory")} /></div></section>
     <div className="two-column"><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.decisionTrace")}</span><h2>{t("overview.whatDecided")}</h2></div><a href="/committee">{t("overview.viewCommittee")} <span>↗</span></a></div>{latest ? <DecisionCard decision={latest} /> : <EmptyState title={t("overview.noDecision")} body={t("overview.noDecisionBody")} />}</section><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.bookState")}</span><h2>{t("overview.virtualPortfolio")}</h2></div><a href="/trades">{t("overview.openLedger")} <span>↗</span></a></div><PortfolioTable positions={data.positions.slice(0, 3)} /></section></div>
   </>
 
@@ -476,7 +479,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
 
   if (view === "trades") return <>
     <PageHeader title={t("trades.title")} description={t("trades.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.openBook")}</span><h2>{t("trades.positions")}</h2></div><RiskBadge status="VIRTUAL" /></div><PortfolioTable positions={data.positions} />{data.positions.length ? <div className="close-actions">{data.positions.map((position) => <button className="button button--danger" key={position.id} onClick={() => void closePosition(position.symbol)}>{t("trades.close", { symbol: position.symbol })}</button>)}</div> : null}</section>
+    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.openBook")}</span><h2>{t("trades.positions")}</h2></div><RiskBadge status="VIRTUAL" /></div><PortfolioTable positions={data.positions} />{openPositions.length ? <div className="close-actions">{openPositions.map((position) => <button className="button button--danger" key={position.id} onClick={() => void closePosition(position.symbol)}>{t("trades.close", { symbol: position.symbol })}</button>)}</div> : null}</section>
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.history")}</span><h2>{t("trades.calls")}</h2></div><span className="section-index">{t("trades.records", { count: data.decisionsTotal })}</span></div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <DecisionRow key={decision.id} decision={decision} />)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}<Pagination page={decisionsPage} total={data.decisionsTotal} pageSize={PAGE_SIZE} onChange={setDecisionsPage} /></section>
   </>
 

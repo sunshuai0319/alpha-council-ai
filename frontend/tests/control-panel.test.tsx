@@ -67,11 +67,12 @@ function stubApi(
   market: unknown[] = [],
   decisions: unknown[] = [],
   decisionsTotal: number = decisions.length,
+  positions: unknown[] = [],
 ) {
   const payloads: Record<string, unknown> = {
     "/market": { items: market },
     "/decisions": { items: decisions, total: decisionsTotal, page: 1, page_size: 20 },
-    "/portfolio": { items: [] },
+    "/portfolio": { items: positions },
     "/events": { items: [], total: 0, page: 1, page_size: 20 },
     "/accounts": { items: accounts },
     "/control/status": { status: controlStatus },
@@ -292,5 +293,73 @@ describe("console control panel", () => {
 
     expect(await screen.findByText(/登录凭证正在自动更新/)).toBeVisible()
     expect(screen.queryByText(/启动 API 并刷新/)).toBeNull()
+  })
+
+  it("offers no close button for a position that is already closed", async () => {
+    // 实测踩到：后端把已平仓的行也当持仓返回，页面就给一个不存在的仓位配了
+    // 「关闭 BTC-USDT」按钮。按钮必须只属于真正 OPEN 的仓位。
+    stubApi("RUNNING", [], [], [], undefined, [
+      {
+        id: "p-closed",
+        symbol: "BTC-USDT",
+        side: "SHORT",
+        quantity: 0,
+        entry_price: 77381.1,
+        unrealized_pnl: 0,
+        status: "CLOSED",
+      },
+    ])
+    render(<ConsolePage view="trades" />)
+    await screen.findByText("BTC-USDT")
+
+    expect(screen.queryByText(/关闭 BTC-USDT/)).toBeNull()
+  })
+
+  it("still offers the close button for an open position", async () => {
+    stubApi("RUNNING", [], [], [], undefined, [
+      {
+        id: "p-open",
+        symbol: "ETH-USDT",
+        side: "LONG",
+        quantity: 0.5,
+        entry_price: 2400,
+        unrealized_pnl: 12.5,
+        status: "OPEN",
+      },
+    ])
+    render(<ConsolePage view="trades" />)
+
+    expect(await screen.findByText(/关闭 ETH-USDT/)).toBeVisible()
+  })
+})
+
+
+describe("positions ledger", () => {
+  beforeEach(() => { vi.unstubAllGlobals() })
+  afterEach(() => { cleanup() })
+
+  const openPosition = {
+    id: "p-1", symbol: "BTC-USDT", side: "LONG", quantity: 0.5,
+    entry_price: 77000, mark_price: 77100, unrealized_pnl: 50, status: "OPEN",
+  }
+  const closedPosition = { ...openPosition, id: "p-2", symbol: "ETH-USDT", quantity: 0, status: "CLOSED" }
+
+  it("offers a close button only for positions that are still open", async () => {
+    // 实测踩到：已平仓的仓位下面仍然显示「关闭 XX」按钮，点下去平的是不存在的仓位。
+    stubApi("RUNNING", [], [], [], 0, [openPosition, closedPosition])
+    render(<ConsolePage view="trades" />)
+
+    expect(await screen.findByText(/关闭 BTC-USDT/)).toBeVisible()
+    expect(screen.queryByText(/关闭 ETH-USDT/)).toBeNull()
+  })
+
+  it("counts only open positions in the overview", async () => {
+    // 概览的「持仓数」原来把所有行都算上，已平仓的也会被计数。
+    stubApi("RUNNING", [], [], [], 0, [openPosition, closedPosition])
+    render(<ConsolePage view="overview" />)
+
+    // 文案是 "虚拟持仓"（overview.openPositions）
+    const metric = await screen.findByText("虚拟持仓")
+    expect(metric.parentElement).toHaveTextContent("1")
   })
 })

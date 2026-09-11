@@ -1133,3 +1133,23 @@ def test_a_second_symbol_can_be_held_within_the_total_cap() -> None:
 
     assert "max_notional" not in decision.reasons, f"实际被拒: {decision.reasons}"
     assert "max_position_notional" not in decision.reasons
+
+
+def test_portfolio_returns_only_open_positions(tmp_path) -> None:
+    """`/api/portfolio` 语义是「当前持仓」，不能把已平仓的行也返回。
+
+    实测踩到：本地只剩一行 status=CLOSED 的 BTC-USDT，接口照样返回它，
+    于是 1) 持仓表显示一条已平仓的仓位；2) 概览的「持仓数」显示 1，而实际是 0。
+
+    positions 表是「当前状态」表（同一 symbol 复用一行），已平仓的行不该出现在
+    持仓里 —— 审计走决策历史。
+    """
+    db, service = _service_with_position(tmp_path, OnePositionExchange())
+    service.db.commit()
+    assert len(service.portfolio("u-1")["items"]) == 1
+
+    # 平掉之后，接口不应再返回它
+    db.get(Position, "pos-1").status = "CLOSED"
+    service.db.commit()
+
+    assert service.portfolio("u-1")["items"] == []

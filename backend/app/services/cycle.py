@@ -1054,8 +1054,20 @@ class TradingCycleService:
         return limits.max_leverage
 
     def portfolio(self, user_id: str) -> dict[str, Any]:
+        """当前持仓 —— **只含 OPEN**。
+
+        positions 表是「当前状态」表（同一 symbol 复用一行），已平仓的行留在里面
+        只为审计。把它们一起返回会让调用方把「已平仓」当成「持有中」：持仓表多出
+        一行已平的仓位，概览的持仓数也会算错。审计走决策历史。
+        """
+
         if self.db is not None:
-            rows = self.db.scalars(select(Position).where(Position.user_id == user_id)).all()
+            rows = self.db.scalars(
+                select(Position).where(
+                    Position.user_id == user_id,
+                    Position.status == "OPEN",
+                )
+            ).all()
             return {"items": [self._position_dict(row) for row in rows]}
         return {"items": []}
 
