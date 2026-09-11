@@ -121,3 +121,10 @@ export type TradingAccount = {
 export type ItemsResponse<T> = {
   items: T[]
 }
+
+export type PaginatedResponse<T> = {
+  items: T[]
+  total: number
+  page: number
+  page_size: number
+}

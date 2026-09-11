@@ -49,7 +49,8 @@ def test_dashboard_routes_use_authenticated_user_scope() -> None:
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="user-a")
     app.dependency_overrides[get_cycle_service] = lambda: service
     try:
-        assert TestClient(app).get("/api/decisions").json() == {"items": []}
+        decisions = TestClient(app).get("/api/decisions").json()
+        assert decisions == {"items": [], "total": 0, "page": 1, "page_size": 20}
         assert TestClient(app).get("/api/portfolio").json() == {"items": []}
     finally:
         app.dependency_overrides.clear()

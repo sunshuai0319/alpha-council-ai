@@ -66,10 +66,11 @@ function stubApi(
   accounts: unknown[] = [],
   market: unknown[] = [],
   decisions: unknown[] = [],
+  decisionsTotal: number = decisions.length,
 ) {
   const payloads: Record<string, unknown> = {
     "/market": { items: market },
-    "/decisions": { items: decisions },
+    "/decisions": { items: decisions, total: decisionsTotal, page: 1, page_size: 20 },
     "/portfolio": { items: [] },
     "/events": { items: [] },
     "/accounts": { items: accounts },
@@ -176,6 +177,20 @@ describe("console control panel", () => {
         ([url, init]) => String(url).includes("/preferences/locale") && init?.method === "PUT",
       )
       expect(put).toBeTruthy()
+    })
+  })
+
+  it("paginates the trade ledger", async () => {
+    // 25 条、每页 20 → 两页
+    stubApi("RUNNING", [virtualAccount], [], [decisionRecord], 25)
+
+    render(<ConsolePage view="trades" />)
+
+    expect(await screen.findByText("第 1 / 2 页")).toBeVisible()
+    fireEvent.click(screen.getByText("下一页"))
+    await vi.waitFor(() => {
+      const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+      expect(calls.some(([url]) => String(url).includes("/decisions?page=2"))).toBe(true)
     })
   })
 

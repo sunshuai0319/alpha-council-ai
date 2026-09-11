@@ -165,6 +165,39 @@ def test_persisting_a_filled_order_stores_json_safe_values(tmp_path) -> None:
         assert row.execution_result["average_price"] == "100.5"
 
 
+def test_decisions_are_paginated_newest_first(tmp_path) -> None:
+    """决策列表要分页，否则账本增长后一次全拉回来。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'paging.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.commit()
+        base = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
+        for index in range(5):
+            db.add(
+                TradingDecision(
+                    id=f"d-{index}",
+                    user_id="u-1",
+                    cycle_id=f"c-{index}",
+                    trace_id="t",
+                    symbol="BTC-USDT",
+                    action="HOLD",
+                    status="ALLOWED",
+                    created_at=base.replace(minute=index),
+                )
+            )
+        db.commit()
+        service = TradingCycleService(db=db)
+
+        first = service.decisions("u-1", page=1, page_size=2)
+        assert first["total"] == 5
+        assert [item["id"] for item in first["items"]] == ["d-4", "d-3"]
+
+        last = service.decisions("u-1", page=3, page_size=2)
+        assert [item["id"] for item in last["items"]] == ["d-0"]
+
+
 def test_set_locale_persists_the_user_language(tmp_path) -> None:
     """界面语言偏好要落库，worker 才会按它生成对应语言的分析文本。"""
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'locale.db'}")

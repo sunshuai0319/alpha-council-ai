@@ -8,16 +8,20 @@ import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumb
 import { ApiError, apiRequest } from "@/lib/api"
 import { emptyOverviewHint } from "@/lib/console-hints"
 import { useI18n } from "@/lib/i18n"
-import type { Analysis, DashboardView, Decision, ItemsResponse, MarketSnapshot, Position, RiskEvent, RiskLimits, TradingAccount } from "@/lib/types"
+import type { Analysis, DashboardView, Decision, ItemsResponse, MarketSnapshot, PaginatedResponse, Position, RiskEvent, RiskLimits, TradingAccount } from "@/lib/types"
 
 type DashboardData = {
   market: MarketSnapshot[]
   decisions: Decision[]
+  decisionsTotal: number
   positions: Position[]
   events: RiskEvent[]
   accounts: TradingAccount[]
   control: string
 }
+
+//: 与后端 /decisions 默认每页条数一致；分页控件按它算总页数。
+const DECISIONS_PAGE_SIZE = 20
 
 // 凭证默认脱敏：只露首尾，中间打点。短值（如 passphrase）整串打点。
 function maskCredential(value: string) {
@@ -25,9 +29,9 @@ function maskCredential(value: string) {
   return `${value.slice(0, 6)}${"•".repeat(8)}${value.slice(-4)}`
 }
 
-const emptyData: DashboardData = { market: [], decisions: [], positions: [], events: [], accounts: [], control: "RUNNING" }
+const emptyData: DashboardData = { market: [], decisions: [], decisionsTotal: 0, positions: [], events: [], accounts: [], control: "RUNNING" }
 
-function useDashboardData() {
+function useDashboardData(decisionsPage = 1) {
   const { getToken, isLoaded, isSignedIn } = useAuth()
   const { t } = useI18n()
   const [data, setData] = useState<DashboardData>(emptyData)
@@ -39,19 +43,19 @@ function useDashboardData() {
     try {
       const [market, decisions, portfolio, events, accounts, control] = await Promise.all([
         apiRequest<ItemsResponse<MarketSnapshot>>("/market", getToken),
-        apiRequest<ItemsResponse<Decision>>("/decisions", getToken),
+        apiRequest<PaginatedResponse<Decision>>(`/decisions?page=${decisionsPage}&page_size=${DECISIONS_PAGE_SIZE}`, getToken),
         apiRequest<ItemsResponse<Position>>("/portfolio", getToken),
         apiRequest<ItemsResponse<RiskEvent>>("/events", getToken),
         apiRequest<ItemsResponse<TradingAccount>>("/accounts", getToken),
         apiRequest<{ status: string }>("/control/status", getToken),
       ])
-      setData({ market: market.items, decisions: decisions.items, positions: portfolio.items, events: events.items, accounts: accounts.items, control: control.status })
+      setData({ market: market.items, decisions: decisions.items, decisionsTotal: decisions.total, positions: portfolio.items, events: events.items, accounts: accounts.items, control: control.status })
       setError(null)
       setUpdatedAt(new Date())
     } catch (cause) {
       setError(cause instanceof ApiError ? t("console.apiError", { status: cause.status, message: cause.message }) : t("console.apiUnavailable"))
     }
-  }, [getToken, isLoaded, isSignedIn, t])
+  }, [getToken, isLoaded, isSignedIn, t, decisionsPage])
 
   useEffect(() => {
     void refresh()
@@ -366,7 +370,9 @@ function DecisionRow({ decision }: { decision: Decision }) {
 export function ConsolePage({ view }: { view: DashboardView }) {
   const { getToken } = useAuth()
   const { t, locale } = useI18n()
-  const { data, error, updatedAt, refresh } = useDashboardData()
+  // 账本分页只在 trades 视图生效；其他视图固定第 1 页（要「最近决策」）。
+  const [decisionsPage, setDecisionsPage] = useState(1)
+  const { data, error, updatedAt, refresh } = useDashboardData(view === "trades" ? decisionsPage : 1)
   const [controlBusy, setControlBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   // 状态来自服务端：熔断会自动暂停账户，本地默认值会让用户误以为还在交易。
@@ -456,7 +462,11 @@ export function ConsolePage({ view }: { view: DashboardView }) {
   if (view === "trades") return <>
     <PageHeader title={t("trades.title")} description={t("trades.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.openBook")}</span><h2>{t("trades.positions")}</h2></div><RiskBadge status="VIRTUAL" /></div><PortfolioTable positions={data.positions} />{data.positions.length ? <div className="close-actions">{data.positions.map((position) => <button className="button button--danger" key={position.id} onClick={() => void closePosition(position.symbol)}>{t("trades.close", { symbol: position.symbol })}</button>)}</div> : null}</section>
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.history")}</span><h2>{t("trades.calls")}</h2></div><span className="section-index">{t("trades.records", { count: data.decisions.length })}</span></div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <DecisionRow key={decision.id} decision={decision} />)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}</section>
+    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.history")}</span><h2>{t("trades.calls")}</h2></div><span className="section-index">{t("trades.records", { count: data.decisionsTotal })}</span></div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <DecisionRow key={decision.id} decision={decision} />)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}{data.decisionsTotal > DECISIONS_PAGE_SIZE ? <div className="pagination">
+      <button type="button" className="button button--quiet" disabled={decisionsPage <= 1} onClick={() => setDecisionsPage((page) => Math.max(1, page - 1))}>{t("common.prevPage")}</button>
+      <span>{t("common.pageOf", { page: decisionsPage, total: Math.ceil(data.decisionsTotal / DECISIONS_PAGE_SIZE) })}</span>
+      <button type="button" className="button button--quiet" disabled={decisionsPage >= Math.ceil(data.decisionsTotal / DECISIONS_PAGE_SIZE)} onClick={() => setDecisionsPage((page) => page + 1)}>{t("common.nextPage")}</button>
+    </div> : null}</section>
   </>
 
   return <>

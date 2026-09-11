@@ -743,17 +743,34 @@ class TradingCycleService:
             return {"items": [self._market_dict(row) for row in rows]}
         return {"items": list(reversed(self._memory_market[-50:]))}
 
-    def decisions(self, user_id: str) -> dict[str, Any]:
+    def decisions(self, user_id: str, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
         if self.db is not None:
+            total = self.db.scalar(
+                select(func.count())
+                .select_from(TradingDecision)
+                .where(TradingDecision.user_id == user_id)
+            ) or 0
             rows = self.db.scalars(
                 select(TradingDecision)
                 .where(TradingDecision.user_id == user_id)
                 .order_by(TradingDecision.created_at.desc())
-                .limit(100)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
             ).all()
             leverage = self._effective_leverage(user_id)
-            return {"items": [self._decision_dict(row, leverage=leverage) for row in rows]}
-        return {"items": [result.as_dict() for result in reversed(self._memory_results.get(user_id, []))]}
+            return {
+                "items": [self._decision_dict(row, leverage=leverage) for row in rows],
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+            }
+        items = [result.as_dict() for result in reversed(self._memory_results.get(user_id, []))]
+        return {
+            "items": items[(page - 1) * page_size : page * page_size],
+            "total": len(items),
+            "page": page,
+            "page_size": page_size,
+        }
 
     def _effective_leverage(self, user_id: str) -> int | None:
         """账户实际生效的杠杆上限。

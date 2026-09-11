@@ -208,6 +208,9 @@ td small { margin-top: 4px; color: var(--muted); font-size: 10px; }
 .decision-detail-line { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .decision-detail-reasoning { margin-top: 10px; color: #bdc9c4; font-size: 12px; line-height: 1.6; }
 .decision-detail-footer { margin-top: 14px; color: #708080; font: 10px var(--mono); }
+.pagination { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 16px; color: var(--muted); font-size: 12px; }
+.pagination .button { padding: 7px 13px; font-size: 11px; }
+.pagination .button:disabled { opacity: .4; cursor: not-allowed; }
 .close-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 13px; }
 .event-list { border-top: 1px solid var(--line); }
 .event-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto 150px; align-items: center; gap: 14px; padding: 15px 4px; border-bottom: 1px solid var(--line); }

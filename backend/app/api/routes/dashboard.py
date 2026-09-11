@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from app.api.dependencies import get_cycle_service
@@ -35,10 +35,12 @@ def market(
 
 @router.get("/decisions")
 def decisions(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
     user=Depends(get_current_user),
     service: TradingCycleService = Depends(get_cycle_service),
 ) -> dict[str, Any]:
-    return service.decisions(user.id)
+    return service.decisions(user.id, page=page, page_size=page_size)
 
 
 @router.get("/portfolio")
