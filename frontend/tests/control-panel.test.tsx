@@ -14,8 +14,8 @@ const virtualAccount = {
   enabled: true,
   configured: true,
   credentials: {
-    api_key: "test-api-key",
-    api_secret: "test-secret-redacted",
+    api_key: "test-api-key-not-a-real-credential",
+    api_secret: "test-secret-abcdefghijklmnopqrstuvwxyz0123456789",
     passphrase: "test-passphrase",
   },
   risk_limits: null,
@@ -165,6 +165,20 @@ describe("console control panel", () => {
     expect(await screen.findByLabelText("仓位上限 (%)")).toHaveValue(20)
   })
 
+  it("syncs the interface language to the server", async () => {
+    stubApi("RUNNING")
+
+    render(<ConsolePage view="overview" />)
+
+    await vi.waitFor(() => {
+      const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+      const put = calls.find(
+        ([url, init]) => String(url).includes("/preferences/locale") && init?.method === "PUT",
+      )
+      expect(put).toBeTruthy()
+    })
+  })
+
   it("expands a trade row to reveal the full decision data", async () => {
     stubApi("RUNNING", [virtualAccount], [], [decisionRecord])
 
@@ -211,7 +225,7 @@ describe("console control panel", () => {
 
     render(<ConsolePage view="overview" />)
 
-    const secret = "test-secret-redacted"
+    const secret = "test-secret-abcdefghijklmnopqrstuvwxyz0123456789"
     // 默认脱敏：明文绝不出现在页面上，只露首尾
     expect(await screen.findByText("test-s••••••••6789")).toBeVisible()
     expect(screen.queryByText(secret)).toBeNull()

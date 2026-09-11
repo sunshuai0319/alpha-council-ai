@@ -39,6 +39,8 @@ class User(TimestampMixin, Base):
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     display_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
+    #: 界面语言（zh-CN / en-US）：worker 按它决定 LLM 分析文本的语言。
+    locale: Mapped[str] = mapped_column(String(16), default="zh-CN", nullable=False, server_default="zh-CN")
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

@@ -64,6 +64,21 @@ def _complete(llm: CompletionClient | Any, prompt: str) -> str | dict[str, Any]:
     raise TypeError("configured agent LLM has no completion method")
 
 
+def _language_instruction(locale: str) -> str:
+    """让 LLM 用与用户界面一致的语言写人类可读文本。
+
+    JSON 字段名和枚举值（HOLD/LONG/BEARISH 等）保持英文，程序照常解析。
+    """
+
+    if locale.lower().startswith("zh"):
+        return (
+            " Write every human-readable text field (reasoning_summary, invalidation_conditions, "
+            "evidence descriptions) in Simplified Chinese (简体中文). Keep JSON keys and enum "
+            "values in English."
+        )
+    return ""
+
+
 def _hold_proposal(state: TradingCycleState, reason: str, now_ms: int) -> TradeProposal:
     return TradeProposal(
         proposal_id=f"hold-{state.cycle_id}",
@@ -104,7 +119,9 @@ def _analysis(
     prompt = (
         f"Role: {role}. Analyze symbol {state.symbol} at {now_ms}. "
         "Return JSON with status, confidence, reasoning_summary, evidence_refs, model_version, trace_id. "
-        "Do not output orders or call tools.\n\nContext:\n" + context
+        "Do not output orders or call tools."
+        + _language_instruction(state.locale)
+        + "\n\nContext:\n" + context
     )
     try:
         result = AnalysisResult.model_validate(parse_json_response(_complete(llm, prompt)))
@@ -191,7 +208,9 @@ def run_committee(state: TradingCycleState, llm: CompletionClient | Any) -> Trad
         "position_size_pct, leverage, stop_loss, take_profit, valid_until, invalidation_conditions, "
         "confidence, reasoning_summary, evidence_refs, model_version, trace_id. "
         "HOLD if evidence is missing, conflicting, stale, or insufficient. "
-        "Real-time price and account values are not retrieved from RAG. Never call a trading tool.\n\n"
+        "Real-time price and account values are not retrieved from RAG. Never call a trading tool."
+        + _language_instruction(current.locale)
+        + "\n\n"
         + json.dumps(
             {
                 "symbol": current.symbol,

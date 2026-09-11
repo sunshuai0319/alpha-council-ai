@@ -377,6 +377,13 @@ export function ConsolePage({ view }: { view: DashboardView }) {
     const timer = setTimeout(() => setMessage(null), 5000)
     return () => clearTimeout(timer)
   }, [message])
+  // 语言偏好同步到后端：worker 按它决定 LLM 生成的分析文本用中文还是英文。
+  useEffect(() => {
+    void apiRequest("/preferences/locale", getToken, {
+      method: "PUT",
+      body: JSON.stringify({ locale }),
+    }).catch(() => undefined)
+  }, [locale, getToken])
 
   const latest = data.decisions[0]
   const latestMarket = data.market[0]

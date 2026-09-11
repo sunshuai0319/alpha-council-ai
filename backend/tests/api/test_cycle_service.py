@@ -165,6 +165,20 @@ def test_persisting_a_filled_order_stores_json_safe_values(tmp_path) -> None:
         assert row.execution_result["average_price"] == "100.5"
 
 
+def test_set_locale_persists_the_user_language(tmp_path) -> None:
+    """界面语言偏好要落库，worker 才会按它生成对应语言的分析文本。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'locale.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-loc", clerk_user_id="clerk-loc"))
+        db.commit()
+        service = TradingCycleService(db=db)
+
+        assert service.set_locale("u-loc", "en-US") == "en-US"
+        assert db.get(User, "u-loc").locale == "en-US"
+        assert service._user_locale("u-loc") == "en-US"
+
+
 def test_decisions_return_analyses_and_account_leverage(tmp_path) -> None:
     """决策详情要能展示：agent 分析和账户实际杠杆（而非提案占位的 1x）。"""
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'decisions.db'}")

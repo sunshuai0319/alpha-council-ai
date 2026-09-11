@@ -38,6 +38,35 @@ def _settings() -> Settings:
     )
 
 
+class CapturingLLM:
+    def __init__(self, response: str | dict[str, Any]) -> None:
+        self.response = response
+        self.prompts: list[str] = []
+
+    def complete_json(self, prompt: str) -> str | dict[str, Any]:
+        self.prompts.append(prompt)
+        return self.response
+
+
+_VALID_HOLD = (
+    '{"proposal_id":"p","action":"HOLD","symbol":"BTC-USDT","position_size_pct":0,'
+    '"confidence":0.1,"reasoning_summary":"x","evidence_refs":[],"model_version":"m","trace_id":"t"}'
+)
+
+
+def test_committee_prompt_asks_for_chinese_when_locale_is_zh() -> None:
+    """中文界面的用户，LLM 分析文本要输出简体中文。"""
+    llm = CapturingLLM(_VALID_HOLD)
+    run_committee(_state().model_copy(update={"locale": "zh-CN"}), llm)
+    assert "简体中文" in llm.prompts[0]
+
+
+def test_committee_prompt_stays_english_for_en_locale() -> None:
+    llm = CapturingLLM(_VALID_HOLD)
+    run_committee(_state().model_copy(update={"locale": "en-US"}), llm)
+    assert "简体中文" not in llm.prompts[0]
+
+
 def test_invalid_committee_json_becomes_hold() -> None:
     result = run_committee(_state(), FakeLLM("not-json"))
     assert result.action == Action.HOLD

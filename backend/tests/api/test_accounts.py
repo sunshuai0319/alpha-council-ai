@@ -186,16 +186,16 @@ def test_account_create_strips_pasted_weex_env_var_prefixes(tmp_path) -> None:
         response = client.post(
             "/api/accounts",
             json={
-                "api_key_ref": "WEEX_API_KEY=weex_key_123",
-                "api_secret_ref": "WEEX_API_SECRET=test-secret-redacted\n",
+                "api_key_ref": "WEEX_API_KEY=test-api-key",
+                "api_secret_ref": "WEEX_API_SECRET=test-secret-0123456789abcdef0123456789abcdef\n",
                 "passphrase_ref": "WEEX_PASSPHRASE=test-passphrase",
                 "environment": "virtual",
             },
         )
         assert response.status_code == 201
         account = db.scalar(select(TradingAccount).order_by(TradingAccount.created_at.desc()))
-        assert account.api_key_ref == "weex_key_123"
-        assert account.api_secret_ref == "test-secret-redacted"
+        assert account.api_key_ref == "test-api-key"
+        assert account.api_secret_ref == "test-secret-0123456789abcdef0123456789abcdef"
         assert account.passphrase_ref == "test-passphrase"
     finally:
         app.dependency_overrides.clear()

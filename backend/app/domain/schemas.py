@@ -145,6 +145,8 @@ class TradingCycleState(BaseModel):
     cycle_id: str
     started_at: int
     symbol: str
+    #: 用户界面语言：LLM 生成的分析文本按它选择语言（见 graph._language_instruction）。
+    locale: str = "zh-CN"
     market_snapshot: MarketSnapshot | None = None
     candles_by_timeframe: dict[str, list[Candle]] = Field(default_factory=dict)
     technical_indicators: dict[str, Any] = Field(default_factory=dict)

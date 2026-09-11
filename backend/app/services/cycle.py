@@ -22,6 +22,7 @@ from app.db.models import (
     RiskEvent,
     TradingAccount,
     TradingDecision,
+    User,
 )
 from app.db.models import MarketSnapshot as MarketSnapshotModel
 from app.domain.enums import Action, RiskStatus
@@ -159,6 +160,7 @@ class TradingCycleService:
             cycle_id=cycle_id,
             started_at=started_at,
             symbol=symbol,
+            locale=self._user_locale(user_id),
             market_snapshot=snapshot,
             candles_by_timeframe={
                 timeframe: [candle for candle in candle_result.items if candle.timeframe == timeframe]
@@ -479,6 +481,25 @@ class TradingCycleService:
                 )
         ).all()
         )
+
+    def _user_locale(self, user_id: str) -> str:
+        """用户界面语言；worker 按它让 LLM 生成对应语言的分析文本。"""
+
+        if self.db is None:
+            return "zh-CN"
+        user = self.db.get(User, user_id)
+        return user.locale or "zh-CN" if user else "zh-CN"
+
+    def set_locale(self, user_id: str, locale: str) -> str:
+        """持久化界面语言偏好，供 worker 生成对应语言的分析文本。"""
+
+        if self.db is None:
+            return locale
+        user = self.db.get(User, user_id)
+        if user is not None:
+            user.locale = locale
+            self.db.commit()
+        return locale
 
     def _account_for_user(self, user_id: str) -> TradingAccount | None:
         if self.db is None:
