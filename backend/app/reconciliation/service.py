@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import AccountSnapshot, Fill, Order, PnlSnapshot, Position
+from app.db.models import AccountSnapshot, Fill, MarketSnapshot, Order, PnlSnapshot, Position
 from app.exchange.base import (
     ExchangeBalance,
     ExchangeClient,
@@ -179,7 +179,13 @@ class ReconciliationService:
             # entry_price 必须每次刷新，不能只在建行时写：平仓后重开会复用同一行
             # （唯一键是 user+account+symbol），不刷新就会一直记着上一个仓位的成本。
             position_row.entry_price = entry_price
-            position_row.mark_price = entry_price
+            # mark_price 语义是「当前标记价格」，不能拿开仓均价顶替：WEEX position
+            # 接口不返回价格字段（见 docs/weex-virtual-api.md），唯一价格源是行情快照
+            # 的 markPrice / lastPrice。每轮对账用最近一次行情刷新，前端持仓表的
+            # Mark 列才会随行情走，而不是永远停在开仓价。
+            mark_price = self._latest_mark_price(db, item_position.symbol)
+            if mark_price is not None:
+                position_row.mark_price = mark_price
             position_row.leverage = item_position.leverage
             position_row.unrealized_pnl = item_position.unrealized_pnl
             # 同一 symbol 平仓后重开会复用这行（唯一键是 user+account+symbol），
@@ -230,6 +236,23 @@ class ReconciliationService:
                 )
             )
         db.commit()
+
+    def _latest_mark_price(self, db: Session, symbol: str) -> Decimal | None:
+        """该 symbol 最近一次行情快照的标记价格。
+
+        market_snapshots 是全局行情表（与用户无关）；最近一条就是当前观测价。
+        缺 markPrice 时回退 lastPrice；完全没有行情时返回 None（不编造现价）。
+        """
+
+        row = db.scalar(
+            select(MarketSnapshot)
+            .where(MarketSnapshot.symbol == symbol)
+            .order_by(MarketSnapshot.captured_at.desc())
+            .limit(1)
+        )
+        if row is None:
+            return None
+        return row.mark_price if row.mark_price is not None else row.last_price
 
     def _realized_pnl(
         self,

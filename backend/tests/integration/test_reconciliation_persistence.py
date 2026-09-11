@@ -9,6 +9,7 @@ from app.db.models import (
     AccountSnapshot,
     Base,
     Fill,
+    MarketSnapshot,
     Order,
     PnlSnapshot,
     Position,
@@ -277,3 +278,59 @@ def test_reopening_the_same_symbol_marks_the_row_open_again(tmp_path) -> None:
     assert len(rows) == 1, "同一 symbol 不该产生第二行"
     assert rows[0].status == "OPEN"
     assert rows[0].quantity == Decimal("0.01")
+
+
+def test_reconciliation_mark_price_uses_latest_market_snapshot(tmp_path) -> None:
+    """持仓行的 mark_price 必须用最近行情快照，而不是开仓均价。
+
+    实测踩到：ETH 持仓 entry=2491.82、实时价 2613，而本地 mark_price 一直是
+    2491.82 —— WEEX position 接口不返回价格字段，对账层却拿 entry_price 顶替，
+    前端持仓表的 Mark 列就永远停在开仓价，跟交易所对不上。
+    """
+    db = _scoped_db(tmp_path)
+    db.add(
+        MarketSnapshot(
+            symbol="BTC-USDT",
+            captured_at=datetime.now(UTC),
+            last_price=Decimal(148),
+            mark_price=Decimal(150),
+        )
+    )
+    db.commit()
+    service = ReconciliationService(db=db)
+
+    _reconcile(service, NoTradeFeedFixture("1000"))
+
+    row = db.scalars(select(Position)).all()[0]
+    assert row.mark_price == Decimal(150), f"mark_price 应为行情快照 150，实际是 {row.mark_price}"
+
+
+def test_reconciliation_mark_price_falls_back_to_last_price(tmp_path) -> None:
+    """行情快照缺 mark_price 时，用 last_price 兜底，仍是行情价而不是开仓价。"""
+    db = _scoped_db(tmp_path)
+    db.add(
+        MarketSnapshot(
+            symbol="BTC-USDT",
+            captured_at=datetime.now(UTC),
+            last_price=Decimal(148),
+            mark_price=None,
+        )
+    )
+    db.commit()
+    service = ReconciliationService(db=db)
+
+    _reconcile(service, NoTradeFeedFixture("1000"))
+
+    row = db.scalars(select(Position)).all()[0]
+    assert row.mark_price == Decimal(148), f"应回退到 last_price 148，实际是 {row.mark_price}"
+
+
+def test_reconciliation_mark_price_is_none_without_market_data(tmp_path) -> None:
+    """没有行情快照时 mark_price 保持空，而不是拿开仓均价编造一个『现价』。"""
+    db = _scoped_db(tmp_path)
+    service = ReconciliationService(db=db)
+
+    _reconcile(service, NoTradeFeedFixture("1000"))
+
+    row = db.scalars(select(Position)).all()[0]
+    assert row.mark_price is None, f"无行情时不应伪造现价，实际是 {row.mark_price}"
