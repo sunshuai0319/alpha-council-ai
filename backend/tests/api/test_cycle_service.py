@@ -165,6 +165,36 @@ def test_persisting_a_filled_order_stores_json_safe_values(tmp_path) -> None:
         assert row.execution_result["average_price"] == "100.5"
 
 
+def test_events_are_paginated_newest_first(tmp_path) -> None:
+    """风控事件列表要分页，否则事件多了会一次全拉回来。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'events-paging.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.commit()
+        base = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
+        for index in range(5):
+            db.add(
+                RiskEvent(
+                    id=f"e-{index}",
+                    user_id="u-1",
+                    event_type="RISK_GATE",
+                    status=RiskStatus.ALLOWED,
+                    reason=f"r-{index}",
+                    created_at=base.replace(minute=index),
+                )
+            )
+        db.commit()
+        service = TradingCycleService(db=db)
+
+        first = service.events("u-1", page=1, page_size=2)
+        assert first["total"] == 5
+        assert [item["id"] for item in first["items"]] == ["e-4", "e-3"]
+
+        last = service.events("u-1", page=3, page_size=2)
+        assert [item["id"] for item in last["items"]] == ["e-0"]
+
+
 def test_decisions_are_paginated_newest_first(tmp_path) -> None:
     """决策列表要分页，否则账本增长后一次全拉回来。"""
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'paging.db'}")

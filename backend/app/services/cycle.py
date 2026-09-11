@@ -791,13 +791,19 @@ class TradingCycleService:
             return {"items": [self._position_dict(row) for row in rows]}
         return {"items": []}
 
-    def events(self, user_id: str) -> dict[str, Any]:
+    def events(self, user_id: str, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
         if self.db is not None:
+            total = self.db.scalar(
+                select(func.count())
+                .select_from(RiskEvent)
+                .where(RiskEvent.user_id == user_id)
+            ) or 0
             rows = self.db.scalars(
                 select(RiskEvent)
                 .where(RiskEvent.user_id == user_id)
                 .order_by(RiskEvent.created_at.desc())
-                .limit(100)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
             ).all()
             return {
                 "items": [
@@ -809,9 +815,12 @@ class TradingCycleService:
                         "created_at": row.created_at,
                     }
                     for row in rows
-                ]
+                ],
+                "total": total,
+                "page": page,
+                "page_size": page_size,
             }
-        return {"items": []}
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
     def close_position(self, user_id: str, symbol: str) -> dict[str, Any]:
         exchange = self._exchange_for_user(user_id)

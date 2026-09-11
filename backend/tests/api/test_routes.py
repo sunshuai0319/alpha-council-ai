@@ -52,5 +52,7 @@ def test_dashboard_routes_use_authenticated_user_scope() -> None:
         decisions = TestClient(app).get("/api/decisions").json()
         assert decisions == {"items": [], "total": 0, "page": 1, "page_size": 20}
         assert TestClient(app).get("/api/portfolio").json() == {"items": []}
+        events = TestClient(app).get("/api/events").json()
+        assert events == {"items": [], "total": 0, "page": 1, "page_size": 20}
     finally:
         app.dependency_overrides.clear()

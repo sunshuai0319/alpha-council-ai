@@ -53,7 +53,9 @@ def portfolio(
 
 @router.get("/events")
 def events(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
     user=Depends(get_current_user),
     service: TradingCycleService = Depends(get_cycle_service),
 ) -> dict[str, Any]:
-    return service.events(user.id)
+    return service.events(user.id, page=page, page_size=page_size)
