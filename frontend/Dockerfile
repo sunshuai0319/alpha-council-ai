@@ -1,4 +1,4 @@
-FROM node:22-alpine
+FROM registry.cn-hongkong.aliyuncs.com/jac0625/node:22-alpine-arm64
 
 WORKDIR /app
 

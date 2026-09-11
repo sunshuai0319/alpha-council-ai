@@ -88,7 +88,7 @@ services:
         condition: service_healthy
 
   gateway:
-    image: nginx:1.27-alpine
+    image: registry.cn-hongkong.aliyuncs.com/jac0625/nginx:latest-arm64
     restart: unless-stopped
     ports:
       - "${GATEWAY_PORT:-8888}:80"

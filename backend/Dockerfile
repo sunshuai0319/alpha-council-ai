@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM registry.cn-hongkong.aliyuncs.com/jac0625/python:3.13-slim-arm64
 
 WORKDIR /app
 COPY pyproject.toml uv.lock* ./
