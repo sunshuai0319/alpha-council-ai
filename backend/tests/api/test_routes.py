@@ -50,7 +50,13 @@ def test_dashboard_routes_use_authenticated_user_scope() -> None:
     app.dependency_overrides[get_cycle_service] = lambda: service
     try:
         decisions = TestClient(app).get("/api/decisions").json()
-        assert decisions == {"items": [], "total": 0, "page": 1, "page_size": 20}
+        assert decisions == {
+            "items": [],
+            "total": 0,
+            "page": 1,
+            "page_size": 20,
+            "symbols": [],
+        }
         assert TestClient(app).get("/api/portfolio").json() == {"items": []}
         events = TestClient(app).get("/api/events").json()
         assert events == {"items": [], "total": 0, "page": 1, "page_size": 20}

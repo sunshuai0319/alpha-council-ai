@@ -1153,3 +1153,64 @@ def test_portfolio_returns_only_open_positions(tmp_path) -> None:
     service.db.commit()
 
     assert service.portfolio("u-1")["items"] == []
+
+
+def _decision_rows(tmp_path, name: str):
+    """建一个带若干决策的库，品种与动作混合。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / name}")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+    db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+    db.commit()
+    base = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
+    rows = [
+        ("BTC-USDT", "HOLD", 0),
+        ("ETH-USDT", "HOLD", 1),
+        ("BTC-USDT", "SHORT", 2),
+        ("SOL-USDT", "HOLD", 3),
+        ("BTC-USDT", "HOLD", 4),
+    ]
+    for index, (symbol, action, minute) in enumerate(rows):
+        db.add(TradingDecision(
+            id=f"d-{index}", user_id="u-1", cycle_id=f"c-{index}", trace_id="t",
+            symbol=symbol, action=action, status="ALLOWED", created_at=base.replace(minute=minute),
+        ))
+    db.commit()
+    return db, TradingCycleService(db=db)
+
+
+def test_decisions_can_be_filtered_by_symbol(tmp_path) -> None:
+    """决策列表按品种筛选 —— 十个品种之后不筛就没法看。"""
+    _, service = _decision_rows(tmp_path, "filter-symbol.db")
+
+    result = service.decisions("u-1", symbol="BTC-USDT")
+
+    assert [item["symbol"] for item in result["items"]] == ["BTC-USDT"] * 3
+    assert result["total"] == 3, "total 必须是过滤后的数量，否则分页页数会错"
+
+
+def test_decisions_can_be_filtered_by_action(tmp_path) -> None:
+    _, service = _decision_rows(tmp_path, "filter-action.db")
+
+    result = service.decisions("u-1", action="SHORT")
+
+    assert result["total"] == 1
+    assert result["items"][0]["symbol"] == "BTC-USDT"
+
+
+def test_decision_filters_combine(tmp_path) -> None:
+    _, service = _decision_rows(tmp_path, "filter-both.db")
+
+    result = service.decisions("u-1", symbol="BTC-USDT", action="HOLD")
+
+    assert result["total"] == 2
+
+
+def test_decisions_report_the_symbols_available_for_filtering(tmp_path) -> None:
+    """筛选项要由数据驱动 —— 只列出真的出现过决策的品种。"""
+    _, service = _decision_rows(tmp_path, "filter-list.db")
+
+    result = service.decisions("u-1")
+
+    assert result["symbols"] == ["BTC-USDT", "ETH-USDT", "SOL-USDT"]

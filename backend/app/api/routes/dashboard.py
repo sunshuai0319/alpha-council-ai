@@ -37,10 +37,16 @@ def market(
 def decisions(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    symbol: str | None = Query(None, max_length=32),
+    action: str | None = Query(None, max_length=16),
     user=Depends(get_current_user),
     service: TradingCycleService = Depends(get_cycle_service),
 ) -> dict[str, Any]:
-    return service.decisions(user.id, page=page, page_size=page_size)
+    """决策历史。品种多起来之后不筛就看不过来。"""
+
+    return service.decisions(
+        user.id, page=page, page_size=page_size, symbol=symbol, action=action
+    )
 
 
 @router.get("/portfolio")

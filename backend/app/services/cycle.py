@@ -1011,19 +1011,42 @@ class TradingCycleService:
             return {"items": [self._market_dict(row) for row in rows]}
         return {"items": list(reversed(self._memory_market[-50:]))}
 
-    def decisions(self, user_id: str, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+    def decisions(
+        self,
+        user_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        symbol: str | None = None,
+        action: str | None = None,
+    ) -> dict[str, Any]:
+        """决策历史。可按品种 / 动作过滤。
+
+        `total` 必须是**过滤后**的数量 —— 否则前端按它算页数会多出空白页。
+        `symbols` 回传该用户实际出现过的品种，供前端做数据驱动的筛选项。
+        """
+
         if self.db is not None:
+            filters = [TradingDecision.user_id == user_id]
+            if symbol:
+                filters.append(TradingDecision.symbol == symbol)
+            if action:
+                filters.append(TradingDecision.action == action)
             total = self.db.scalar(
-                select(func.count())
-                .select_from(TradingDecision)
-                .where(TradingDecision.user_id == user_id)
+                select(func.count()).select_from(TradingDecision).where(*filters)
             ) or 0
             rows = self.db.scalars(
                 select(TradingDecision)
-                .where(TradingDecision.user_id == user_id)
+                .where(*filters)
                 .order_by(TradingDecision.created_at.desc())
                 .offset((page - 1) * page_size)
                 .limit(page_size)
+            ).all()
+            available = self.db.scalars(
+                select(TradingDecision.symbol)
+                .where(TradingDecision.user_id == user_id)
+                .distinct()
+                .order_by(TradingDecision.symbol)
             ).all()
             leverage = self._effective_leverage(user_id)
             return {
@@ -1031,13 +1054,19 @@ class TradingCycleService:
                 "total": total,
                 "page": page,
                 "page_size": page_size,
+                "symbols": list(available),
             }
         items = [result.as_dict() for result in reversed(self._memory_results.get(user_id, []))]
+        if symbol:
+            items = [item for item in items if item.get("symbol") == symbol]
+        if action:
+            items = [item for item in items if item.get("action") == action]
         return {
             "items": items[(page - 1) * page_size : page * page_size],
             "total": len(items),
             "page": page,
             "page_size": page_size,
+            "symbols": sorted({str(item.get("symbol")) for item in items}),
         }
 
     def _effective_leverage(self, user_id: str) -> int | None:
