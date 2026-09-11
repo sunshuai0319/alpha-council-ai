@@ -500,6 +500,19 @@ describe("decision filters", () => {
       expect(filtered.every((query) => query.includes("page=1"))).toBe(true)
     })
   })
+
+  it("gives the reset button a themed modifier, or it renders as a white box", async () => {
+    // `.button` 基类不设 background/color（颜色全在 --signal / --quiet / --danger 里），
+    // 而 `button { color: inherit }` 会继承近白色的正文色。少一个修饰类就掉回浏览器
+    // 默认的浅色按钮：白底 + 近白字，深色主题上就是一个看不见字的白框。
+    stubFiltered()
+    render(<ConsolePage view="trades" />)
+
+    fireEvent.change(await screen.findByLabelText("动作"), { target: { value: "SHORT" } })
+
+    const reset = await screen.findByRole("button", { name: "清除筛选" })
+    expect(reset.className).toMatch(/button--(quiet|signal|danger)/)
+  })
 })
 
 

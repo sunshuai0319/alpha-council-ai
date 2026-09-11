@@ -530,7 +530,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
           {["HOLD", "LONG", "SHORT", "CLOSE"].map((item) => <option key={item} value={item}>{item}</option>)}
         </select>
       </label>
-      {symbolFilter || actionFilter ? <button type="button" className="button" onClick={() => changeFilter(() => { setSymbolFilter(""); setActionFilter("") })}>{t("trades.filterReset")}</button> : null}
+      {symbolFilter || actionFilter ? <button type="button" className="button button--quiet" onClick={() => changeFilter(() => { setSymbolFilter(""); setActionFilter("") })}>{t("trades.filterReset")}</button> : null}
     </div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <DecisionRow key={decision.id} decision={decision} />)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}<Pagination page={decisionsPage} total={data.decisionsTotal} pageSize={PAGE_SIZE} onChange={setDecisionsPage} /></section>
   </>
 
