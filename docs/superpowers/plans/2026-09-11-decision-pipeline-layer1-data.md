@@ -209,28 +209,30 @@ def test_republishing_a_macro_observation_updates_the_stored_value(tmp_path):
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'macro.db'}")
     Base.metadata.create_all(engine)
     macro = MutableMacro()
-    settings = Settings(database_url=f"sqlite+pysqlite:///{tmp_path / 'macro.db'}")
 
     with Session(engine) as db:
+        # 参数名照该文件既有的 test_document_pipeline_marks_empty_content_as_skipped_not_indexed
         pipeline = DocumentPipeline(
-            db=db, settings=settings, rss=FakeRSS(), macro=macro,
-            summarizer=FakeSummary(), indexer=FakeIndexer(),
+            db=db,
+            rss=FakeEmptyRSS(),
+            macro=macro,
+            summary_client=FakeSummary(),
+            embedder=FakeEmbedder(),
+            indexer=FakeIndexer(),
         )
-        pipeline.run_once()
-        db.commit()
 
+        pipeline.run_once()
         macro.value = 5.25
         pipeline.run_once()
-        db.commit()
 
+        # 断言必须在 with 内：出去之后会话关闭，访问属性会 DetachedInstanceError
         rows = db.scalars(select(MacroObservationRecord)).all()
-
-    assert len(rows) == 1, "同一 (series_id, observation_date) 不应重复插入"
-    assert rows[0].value == 5.25, "修订后的值必须覆盖旧值"
+        assert len(rows) == 1, "同一 (series_id, observation_date) 不应重复插入"
+        assert rows[0].value == 5.25, "修订后的值必须覆盖旧值"
 ```
 
-> `DocumentPipeline.__init__` 的真实参数名以 `app/workers/pipeline.py` 为准；该文件既有的测试
-> 已经在构造它，照抄那里的关键字参数即可。**不要为了迁就测试去改生产签名。**
+> 两个细节：`FakeEmptyRSS` 的内容为空，会在摘要前被跳过，所以不会真的调 Ark / Milvus；
+> `MutableMacro` 无视 `series_ids` 恒返回同一条观测，因此不需要操控 `clock`。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -1326,12 +1328,11 @@ def test_cycle_persists_microstructure_without_affecting_the_decision(tmp_path) 
     with Session(engine) as db:
         service = TradingCycleService(db=db, exchange_factory=FakeExchange)
         service.run(user_id="u-1", llm=FailingLLM())
-        db.commit()
 
+        # 断言在 with 内：出去之后会话关闭，访问属性会 DetachedInstanceError
         rows = db.scalars(select(MarketMicrostructureRecord)).all()
-
-    assert len(rows) == 1
-    assert rows[0].symbol == "BTC-USDT"
+        assert len(rows) == 1
+        assert rows[0].symbol == "BTC-USDT"
 ```
 
 - [ ] **Step 9: 跑测试确认通过**
