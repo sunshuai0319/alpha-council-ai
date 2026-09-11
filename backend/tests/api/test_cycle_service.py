@@ -89,6 +89,27 @@ def test_cycle_failure_persists_hold_decision() -> None:
     assert result.persisted is True
 
 
+class RecordingCandleExchange(FakeExchange):
+    """记录每轮请求的 K 线深度，用来断言采集没有退回浅历史。"""
+
+    def __init__(self) -> None:
+        self.candle_limits: list[int] = []
+
+    def get_candles(self, symbol: str, timeframe: str, limit: int = 100) -> list[Candle]:
+        self.candle_limits.append(limit)
+        return super().get_candles(symbol, timeframe, limit)
+
+
+def test_cycle_collects_the_deepest_history_the_api_allows() -> None:
+    """历史深度直接决定能否回测。klines 无分页，单请求 1000 根就是上限。"""
+    exchange = RecordingCandleExchange()
+    service = TradingCycleService(exchange_factory=lambda: exchange)
+
+    service.run(user_id="u-1", symbol="BTC-USDT", llm=FailingLLM())
+
+    assert exchange.candle_limits == [1000, 1000, 1000], f"实际收到 {exchange.candle_limits}"
+
+
 def test_cycle_persists_microstructure_without_affecting_the_decision(tmp_path) -> None:
     """微观结构只存不用：它的存在不应改变决策结果。"""
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'micro.db'}")

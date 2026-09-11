@@ -13,7 +13,7 @@ class WeexCollector:
         self,
         symbols: tuple[str, ...] = ("BTC-USDT", "ETH-USDT"),
         timeframes: tuple[str, ...] = ("5m", "1h", "4h"),
-        limit: int = 100,
+        limit: int = 1000,
     ) -> CollectorResult[Candle]:
         result: CollectorResult[Candle] = CollectorResult(source="weex-candles")
         for symbol in symbols:
@@ -54,6 +54,6 @@ class WeexCollector:
         self,
         symbols: tuple[str, ...] = ("BTC-USDT", "ETH-USDT"),
         timeframes: tuple[str, ...] = ("5m", "1h", "4h"),
-        limit: int = 100,
+        limit: int = 1000,
     ) -> tuple[CollectorResult[Candle], CollectorResult[MarketSnapshot]]:
         return self.collect_candles(symbols, timeframes, limit), self.collect_snapshots(symbols)

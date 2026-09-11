@@ -146,7 +146,9 @@ class TradingCycleService:
         candle_result, snapshot_result = collector.collect(
             symbols=(symbol,),
             timeframes=("5m", "1h", "4h"),
-            limit=100,
+            # WEEX 的 klines 无分页且忽略 startTime/endTime，单请求 1000 根就是历史
+            # 天花板。1000 根 1h ≈ 41 天，是回测能拿到的最深样本。
+            limit=1000,
         )
         snapshot = snapshot_result.items[0] if snapshot_result.items else None
         # 微观结构采集失败的模式独立于 ticker，且虚拟盘上这些数值疑似合成 ——
