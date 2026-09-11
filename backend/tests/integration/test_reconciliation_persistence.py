@@ -227,6 +227,43 @@ def test_reconciliation_closes_local_rows_when_the_exchange_position_is_gone(tmp
     assert rows[0].quantity == Decimal(0), "已平仓位不该继续报告数量"
 
 
+def test_reopening_the_same_symbol_refreshes_the_entry_price(tmp_path) -> None:
+    """复用行时必须刷新 entry_price。
+
+    实测踩到：平仓后重开同一 symbol 会复用同一个 Position 行，而 entry_price 只在
+    建行时写一次，于是本地记着旧仓位的开仓价（77309.5）而实际是 77316.3 ——
+    盈亏与后续的持仓管理都会基于错误成本。
+    """
+    db = _scoped_db(tmp_path)
+    service = ReconciliationService(db=db)
+
+    _reconcile(service, NoTradeFeedFixture("1000"))
+    first = db.scalars(select(Position)).all()[0].entry_price
+
+    _reconcile(service, _FlatFixture("1000"))
+    # 用不同的入场价重开
+    moved = ExchangeFixture()
+    moved.get_positions = lambda: [  # type: ignore[method-assign]
+        ExchangePosition(
+            position_id="position-2",
+            symbol="BTC-USDT",
+            side="LONG",
+            quantity=Decimal("0.02"),
+            entry_value=Decimal(3),  # 3 / 0.02 = 150，与首个仓位的 100 不同
+            margin=Decimal(30),
+            leverage=10,
+            unrealized_pnl=Decimal(0),
+            liquidation_price=None,
+        )
+    ]
+    _reconcile(service, moved)
+
+    rows = db.scalars(select(Position)).all()
+    assert len(rows) == 1
+    assert rows[0].entry_price == Decimal(150), f"旧值 {first} 未被刷新"
+    assert rows[0].quantity == Decimal("0.02")
+
+
 def test_reopening_the_same_symbol_marks_the_row_open_again(tmp_path) -> None:
     """唯一键是 (user, account, symbol)，平仓后重开会复用同一行，状态要能回头。"""
     db = _scoped_db(tmp_path)

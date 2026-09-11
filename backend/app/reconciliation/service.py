@@ -169,9 +169,17 @@ class ReconciliationService:
                     entry_price=item_position.entry_value / item_position.quantity if item_position.quantity else 0,
                 )
                 db.add(position_row)
+            entry_price = (
+                item_position.entry_value / item_position.quantity
+                if item_position.quantity
+                else Decimal(0)
+            )
             position_row.side = item_position.side
             position_row.quantity = item_position.quantity
-            position_row.mark_price = item_position.entry_value / item_position.quantity if item_position.quantity else None
+            # entry_price 必须每次刷新，不能只在建行时写：平仓后重开会复用同一行
+            # （唯一键是 user+account+symbol），不刷新就会一直记着上一个仓位的成本。
+            position_row.entry_price = entry_price
+            position_row.mark_price = entry_price
             position_row.leverage = item_position.leverage
             position_row.unrealized_pnl = item_position.unrealized_pnl
             # 同一 symbol 平仓后重开会复用这行（唯一键是 user+account+symbol），
