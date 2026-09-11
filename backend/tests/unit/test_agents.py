@@ -73,9 +73,10 @@ def test_invalid_committee_json_becomes_hold() -> None:
     assert result.position_size_pct == 0
 
 
-def test_graph_contains_parallel_analysis_nodes() -> None:
+def test_graph_contains_rule_signal_and_veto_nodes() -> None:
+    """第 2 层拓扑：确定性信号器定方向，LLM 只可否决，不再跑三个 analyst。"""
     graph = build_trading_cycle_graph(settings=_settings(), clock_ms=lambda: 1_700_000_000_000)
-    assert {"market_node", "quant_node", "macro_node"}.issubset(graph.node_names)
+    assert {"signal_node", "veto_node", "proposal_validator"}.issubset(graph.node_names)
 
 
 def test_graph_routes_stale_market_data_to_safe_hold() -> None:
@@ -86,47 +87,102 @@ def test_graph_routes_stale_market_data_to_safe_hold() -> None:
     assert "market_snapshot_stale" in result.errors
 
 
-def test_graph_accepts_structured_committee_proposal_after_parallel_analysis() -> None:
-    class CommitteeLLM:
-        def complete_json(self, prompt: str) -> dict[str, Any]:
-            if "Committee Agent" in prompt:
-                return {
-                    "proposal_id": "proposal-1",
-                    "action": "LONG",
-                    "symbol": "BTC-USDT",
-                    "side": "BUY",
-                    "position_size_pct": 0.1,
-                    "leverage": 2,
-                    "stop_loss": 95,
-                    "take_profit": 110,
-                    "valid_until": 1_700_000_100_000,
-                    "invalidation_conditions": ["close below stop"],
-                    "confidence": 0.8,
-                    "reasoning_summary": "trend and event agree",
-                    "evidence_refs": ["evidence-1"],
-                    "model_version": "deepseek-v4-pro-ga-260813",
-                    "trace_id": "trace-1",
-                }
-            return {
-                "status": "PROPOSED",
-                "confidence": 0.7,
-                "reasoning_summary": "neutral test analysis",
-                "evidence_refs": ["evidence-1"],
-                "model_version": "deepseek-v4-pro-ga-260813",
-                "trace_id": "trace-analysis",
-            }
+def _bullish_state() -> TradingCycleState:
+    """对齐的多头技术结构，让规则信号器给出 LONG。"""
+    tf = {
+        "trend": "BULLISH",
+        "rsi_14": 58.0,
+        "volume_change_1": 0.1,
+        "ema_spread_pct": 0.001,
+        "atr_14": 2.0,
+    }
+    return _state().model_copy(update={
+        "technical_indicators": {
+            "1h": tf,
+            "4h": {**tf, "rsi_14": 60.0},
+            "5m": {**tf, "rsi_14": 62.0},
+        },
+    })
 
+
+class AllowLLM:
+    """否决节点：放行（veto=False）。"""
+
+    def complete_json(self, prompt: str) -> dict[str, Any]:
+        del prompt
+        return {
+            "veto": False,
+            "reasons": [],
+            "evidence_refs": [],
+            "reasoning_summary": "no objection",
+        }
+
+
+class VetoLLM:
+    """否决节点：以 NEWS_SHOCK 否决，引用证据。"""
+
+    def complete_json(self, prompt: str) -> dict[str, Any]:
+        del prompt
+        return {
+            "veto": True,
+            "reasons": ["NEWS_SHOCK"],
+            "evidence_refs": ["evidence-1"],
+            "reasoning_summary": "sharp news contradicts the long signal",
+        }
+
+
+def _retriever():
     class Retriever:
         def retrieve(self, query: str, *, asset: str | None = None, limit: int = 3) -> list[dict[str, Any]]:
             return [{"id": "evidence-1", "content": query, "asset": asset, "limit": limit}]
 
+    return Retriever()
+
+
+def test_rule_signal_flows_to_long_when_llm_does_not_veto() -> None:
+    """规则信号器给 LONG → LLM 放行 → 最终 LONG，且 signal_score 落库。"""
     graph = build_trading_cycle_graph(
         settings=_settings(),
-        llm=CommitteeLLM(),
-        retriever=Retriever(),
+        llm=AllowLLM(),
+        retriever=_retriever(),
         clock_ms=lambda: 1_700_000_000_000,
     )
-    result = graph.invoke(_state())
+    result = graph.invoke(_bullish_state())
     assert result.trade_proposal is not None
     assert result.trade_proposal.action == Action.LONG
+    assert result.signal_score is not None and result.signal_score > 0
+    assert result.veto_type == "veto_none"
     assert result.errors == []
+
+
+def test_rule_signal_is_blocked_when_llm_vetoes() -> None:
+    """规则信号器给 LONG → LLM 以 NEWS_SHOCK 否决 → 最终 HOLD。"""
+    graph = build_trading_cycle_graph(
+        settings=_settings(),
+        llm=VetoLLM(),
+        retriever=_retriever(),
+        clock_ms=lambda: 1_700_000_000_000,
+    )
+    result = graph.invoke(_bullish_state())
+    assert result.trade_proposal is not None
+    assert result.trade_proposal.action == Action.HOLD
+    assert result.veto_type == "veto_applied"
+
+
+def test_rule_signal_holds_when_indicators_conflict() -> None:
+    """指标冲突 → 规则信号器直接 HOLD，不调 LLM、不走 retrieve。
+
+    HOLD 走「signal_node → persist」短路，veto_node 根本没跑，所以 veto_type
+    保持 None —— 这正是零 LLM 调用那条路径。
+    """
+    conflicting = {
+        "1h": {"trend": "BULLISH", "rsi_14": 55.0, "atr_14": 2.0},
+        "4h": {"trend": "BEARISH", "rsi_14": 42.0, "atr_14": 2.0},
+        "5m": {"trend": "NEUTRAL", "rsi_14": 50.0, "atr_14": 2.0},
+    }
+    state = _state().model_copy(update={"technical_indicators": conflicting})
+    graph = build_trading_cycle_graph(settings=_settings(), clock_ms=lambda: 1_700_000_000_000)
+    result = graph.invoke(state)
+    assert result.trade_proposal is not None
+    assert result.trade_proposal.action == Action.HOLD
+    assert result.veto_type is None

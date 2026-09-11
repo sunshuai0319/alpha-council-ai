@@ -134,6 +134,17 @@ def test_market_snapshot_migration_is_repeatable(tmp_path) -> None:
     assert "high_24h" in _columns(url, "market_snapshots")
 
 
+def test_trading_decisions_gains_signal_tracking_columns(tmp_path) -> None:
+    """signal_score / veto_type 由增量迁移承载（spec 4.2 前向验证用）。"""
+    url = f"sqlite+pysqlite:///{tmp_path / 'signal.db'}"
+
+    _upgrade(url)
+
+    columns = _columns(url, "trading_decisions")
+    assert "signal_score" in columns
+    assert "veto_type" in columns
+
+
 def test_microstructure_table_reaches_databases_that_already_migrated(tmp_path) -> None:
     """已迁移的库不会重跑 001，新增的表必须靠后续迁移补上。
 

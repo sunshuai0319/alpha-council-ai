@@ -1,6 +1,7 @@
 import time
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -86,8 +87,10 @@ class AnalysisResult(BaseModel):
     confidence: float = Field(ge=0, le=1)
     reasoning_summary: str
     evidence_refs: list[str] = Field(default_factory=list)
-    model_version: str
-    trace_id: str
+    #: 默认值而不是必填：LLM 漏写这两个字段时，分析不该整条被 schema 拒掉
+    #: （19 条决策里有 4 条 quant 因此落到 deterministic-fallback）。
+    model_version: str = "deterministic-fallback"
+    trace_id: str = ""
 
     @field_validator("evidence_refs", mode="before")
     @classmethod
@@ -212,7 +215,52 @@ class TradingCycleState(BaseModel):
     risk_assessment: RiskDecision | None = None
     trade_proposal: TradeProposal | None = None
     execution_result: ExecutionResult | None = None
+    #: 规则信号器的 composite 分数（spec 4.2 前向验证用）。
+    signal_score: float | None = None
+    #: LLM 否决结局：veto_none / veto_applied / veto_invalid_ignored。
+    veto_type: str | None = None
+    #: 当前权益，cycle 注入给 signal_node 做仓位反推。
+    equity: Decimal | None = None
+    #: signal_node 决策的时刻（ms）。风控的 data_age 以它为基准，而不是采集时刻 ——
+    #: 否则 LLM 否决耗时（最坏 = 重试 3 次 × 60s 超时）会被误算成行情过期。
+    signal_decided_at: int | None = None
     errors: list[str] = Field(default_factory=list)
     data_versions: dict[str, str] = Field(default_factory=dict)
     model_versions: dict[str, str] = Field(default_factory=dict)
     trace_ids: list[str] = Field(default_factory=list)
+
+
+class VetoReason(StrEnum):
+    """LLM 否决的合法理由 —— 封闭枚举。
+
+    `证据不足` 不是其中之一：证据不足时规则信号器自己就 HOLD 了，LLM 再用这条
+    否决就是在重复信号器已经做过的事，只会让单子永远开不出来（spec 2.3）。
+    """
+
+    REGIME_CONFLICT = "REGIME_CONFLICT"
+    NEWS_SHOCK = "NEWS_SHOCK"
+    STRUCTURE_INVALIDATED = "STRUCTURE_INVALIDATED"
+    LIQUIDITY_ANOMALY = "LIQUIDITY_ANOMALY"
+    DATA_INTEGRITY = "DATA_INTEGRITY"
+
+
+class VetoVerdict(BaseModel):
+    """LLM 否决节点的输出。
+
+    三种结局（spec 2.3）：
+    - veto=False → 放行（veto_none）
+    - veto=True 且有证据 → 拦截（veto_applied）
+    - veto=True 但证据为空 / 理由不在枚举内 → 放行 + 计数（veto_invalid_ignored）
+      这个校验由 schema 承担：veto=True 无证据直接 ValidationError。
+    """
+
+    veto: bool
+    reasons: list[VetoReason] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    reasoning_summary: str = ""
+
+    @model_validator(mode="after")
+    def veto_requires_evidence(self) -> "VetoVerdict":
+        if self.veto and not self.evidence_refs:
+            raise ValueError("veto=True requires evidence_refs")
+        return self
