@@ -176,11 +176,11 @@ def test_cycle_persists_microstructure_without_affecting_the_decision(tmp_path) 
         assert rows[0].funding_rate == 0.0001
 
 
-def test_snapshot_borrows_funding_rate_from_microstructure(tmp_path) -> None:
-    """ticker 不返回资金费率/持仓量，快照行要从同一轮的微观结构补上。
+def test_snapshot_borrows_fields_the_ticker_omits_from_microstructure(tmp_path) -> None:
+    """ticker 不返回买卖一/资金费率/持仓量，快照行要从同一轮的微观结构补上。
 
-    否则 market_snapshots 这两列永远是空 —— 真实值一直躺在
-    market_microstructures 里，概览页的资金费率只能显示占位符。
+    否则 market_snapshots 这几列永远是空 —— 真值一直躺在
+    market_microstructures 里，市场页的买一/卖一与资金费率只能显示占位符。
     """
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'funding.db'}")
     Base.metadata.create_all(engine)
@@ -190,6 +190,8 @@ def test_snapshot_borrows_funding_rate_from_microstructure(tmp_path) -> None:
 
         rows = db.scalars(select(MarketSnapshotModel)).all()
         assert len(rows) == 1
+        assert rows[0].bid == Decimal("99.9")
+        assert rows[0].ask == Decimal("100.1")
         assert rows[0].funding_rate == 0.0001
         assert rows[0].open_interest == 1000.0
 
@@ -1387,3 +1389,19 @@ def test_account_sync_is_due_again_once_the_interval_passes(tmp_path) -> None:
         row.captured_at = datetime.now(UTC) - timedelta(seconds=service.settings.decision_interval_seconds + 1)
         db.commit()
         assert service._account_sync_due("a-1") is True, "过了窗口 → 该重新同步"
+
+
+def test_market_reports_the_freshness_rules_from_settings() -> None:
+    """市场页的「数据时效规则」跟配置走，不能硬编码在页面里。
+
+    页面曾写死 5m/1h/4h，而 MARKET_TIMEFRAMES 早已换成 12h/1d —— 前端拿不到
+    配置，所以由 /market 把周期与新鲜度门一起下发。
+    """
+    service = TradingCycleService(
+        settings=Settings(market_timeframes="12h,1d", market_data_max_age_seconds=90)
+    )
+
+    payload = service.market("u-1")
+
+    assert payload["timeframes"] == ["12h", "1d"]
+    assert payload["max_age_seconds"] == 90

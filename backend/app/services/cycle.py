@@ -939,12 +939,19 @@ class TradingCycleService:
                         captured_at=captured_at,
                     )
                 )
-        # ticker 不返回资金费率/持仓量，真实值在同一轮的微观结构采集里。快照行
-        # 从它补上 —— 否则 market_snapshots 这两列永远是空，概览页的资金费率
-        # 只能显示占位符，而真值一直躺在 market_microstructures 里没人用。
+        # ticker 不返回买卖一/资金费率/持仓量（见 docs/weex-virtual-api.md §1.2），
+        # 真实值在同一轮的微观结构采集里。快照行从它补上 —— 否则 market_snapshots
+        # 这几列永远是空，市场页的买一/卖一与资金费率只能显示占位符，而真值一直
+        # 躺在 market_microstructures 里没人用。
         micro_by_symbol = {micro.symbol: micro for micro in (microstructures or [])}
         for snapshot in snapshots:
             micro = micro_by_symbol.get(snapshot.symbol)
+            bid = snapshot.bid
+            if bid is None and micro is not None:
+                bid = micro.bid
+            ask = snapshot.ask
+            if ask is None and micro is not None:
+                ask = micro.ask
             funding_rate = snapshot.funding_rate
             if funding_rate is None and micro is not None:
                 funding_rate = micro.funding_rate
@@ -963,8 +970,8 @@ class TradingCycleService:
                     quote_volume_24h=snapshot.quote_volume_24h,
                     mark_price=snapshot.mark_price,
                     index_price=snapshot.index_price,
-                    bid=snapshot.bid,
-                    ask=snapshot.ask,
+                    bid=bid,
+                    ask=ask,
                     funding_rate=funding_rate,
                     open_interest=open_interest,
                     volume_24h=snapshot.volume_24h,
@@ -1098,12 +1105,19 @@ class TradingCycleService:
 
     def market(self, user_id: str) -> dict[str, Any]:
         del user_id
+        # 市场页的「数据时效规则」必须跟配置走：周期与新鲜度门都随
+        # MARKET_TIMEFRAMES / MARKET_DATA_MAX_AGE_SECONDS 变，硬编码在页面里
+        # 会立刻过时（页面曾写着 5m/1h/4h，而配置早已换成 12h/1d）。
+        meta = {
+            "timeframes": list(self.settings.timeframe_list),
+            "max_age_seconds": self.settings.market_data_max_age_seconds,
+        }
         if self.db is not None:
             rows = self.db.scalars(
                 select(MarketSnapshotModel).order_by(MarketSnapshotModel.captured_at.desc()).limit(50)
             ).all()
-            return {"items": [self._market_dict(row) for row in rows]}
-        return {"items": list(reversed(self._memory_market[-50:]))}
+            return {"items": [self._market_dict(row) for row in rows], **meta}
+        return {"items": list(reversed(self._memory_market[-50:])), **meta}
 
     def decisions(
         self,
