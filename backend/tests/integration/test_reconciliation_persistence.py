@@ -204,3 +204,39 @@ def test_reconciliation_persists_exchange_state_and_is_idempotent(tmp_path) -> N
         assert len(db.scalars(select(Position)).all()) == 1
         assert len(db.scalars(select(AccountSnapshot)).all()) == 2
         assert len(db.scalars(select(PnlSnapshot)).all()) == 2
+
+
+def test_reconciliation_closes_local_rows_when_the_exchange_position_is_gone(tmp_path) -> None:
+    """本地仓位的 status 必须跟着交易所走，否则会留下幽灵持仓。
+
+    实测触发：在交易所手工开了一笔 BTC 空头，worker 恰好在那个对账窗口里把它写成
+    OPEN；随后手工平掉，交易所返回空仓位，本地那行却一直停在 OPEN —— 账本页面把它
+    当活仓位显示，持仓管理也会对着不存在的仓位下单。
+    """
+    db = _scoped_db(tmp_path)
+    service = ReconciliationService(db=db)
+
+    _reconcile(service, NoTradeFeedFixture("1000"))
+    assert [row.status for row in db.scalars(select(Position)).all()] == ["OPEN"]
+
+    _reconcile(service, _FlatFixture("1000"))
+
+    rows = db.scalars(select(Position)).all()
+    assert rows != [], "行要保留供审计，只改状态"
+    assert [row.status for row in rows] == ["CLOSED"]
+    assert rows[0].quantity == Decimal(0), "已平仓位不该继续报告数量"
+
+
+def test_reopening_the_same_symbol_marks_the_row_open_again(tmp_path) -> None:
+    """唯一键是 (user, account, symbol)，平仓后重开会复用同一行，状态要能回头。"""
+    db = _scoped_db(tmp_path)
+    service = ReconciliationService(db=db)
+
+    _reconcile(service, NoTradeFeedFixture("1000"))
+    _reconcile(service, _FlatFixture("1000"))
+    _reconcile(service, NoTradeFeedFixture("1000"))
+
+    rows = db.scalars(select(Position)).all()
+    assert len(rows) == 1, "同一 symbol 不该产生第二行"
+    assert rows[0].status == "OPEN"
+    assert rows[0].quantity == Decimal("0.01")

@@ -8,6 +8,7 @@ from app.config import Settings
 from app.db.models import (
     AccountSnapshot,
     Base,
+    MarketMicrostructureRecord,
     RiskEvent,
     TradingAccount,
     TradingDecision,
@@ -18,12 +19,19 @@ from app.domain.schemas import (
     AnalysisResult,
     Candle,
     ExecutionResult,
+    MarketMicrostructure,
     MarketSnapshot,
     RiskDecision,
     TradeProposal,
     TradingCycleState,
 )
-from app.exchange.base import ExchangeBalance, ExchangeOrder, ExchangePosition, OrderRequest
+from app.exchange.base import (
+    ExchangeBalance,
+    ExchangeError,
+    ExchangeOrder,
+    ExchangePosition,
+    OrderRequest,
+)
 from app.risk.engine import RiskLimits
 from app.services.cycle import TradingCycleService
 
@@ -51,6 +59,19 @@ class FakeExchange:
             last_price=100,
         )
 
+    def get_microstructure(self, symbol: str) -> MarketMicrostructure:
+        return MarketMicrostructure(
+            symbol=symbol,
+            captured_at=int(datetime.now(UTC).timestamp() * 1000),
+            bid=99.9,
+            ask=100.1,
+            spread_bps=20.0,
+            depth_imbalance=0.1,
+            taker_buy_ratio=0.55,
+            funding_rate=0.0001,
+            open_interest=1000.0,
+        )
+
     def get_balances(self) -> list[ExchangeBalance]:
         return [ExchangeBalance("SUSDT", Decimal(10000), Decimal(10000), Decimal(0), Decimal(0))]
 
@@ -72,6 +93,76 @@ def test_cycle_failure_persists_hold_decision() -> None:
     result = service.run(user_id="u-1", llm=FailingLLM())
     assert result.action == "HOLD"
     assert result.persisted is True
+
+
+class RecordingCandleExchange(FakeExchange):
+    """记录每轮请求的 K 线深度，用来断言采集没有退回浅历史。"""
+
+    def __init__(self) -> None:
+        self.candle_limits: list[int] = []
+
+    def get_candles(self, symbol: str, timeframe: str, limit: int = 100) -> list[Candle]:
+        self.candle_limits.append(limit)
+        return super().get_candles(symbol, timeframe, limit)
+
+
+def _failure_service(tmp_path, name: str, **settings_kwargs) -> TradingCycleService:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / name}")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+    db.commit()
+    return TradingCycleService(db=db, settings=Settings(**settings_kwargs))
+
+
+def test_exchange_outage_does_not_pause_the_account(tmp_path) -> None:
+    """对端 503 不是策略失败，不该把账户熔断。
+
+    实测 WEEX 的 503 是间歇性的常规抖动（order/history 与 position/allPosition
+    都出现过）。把它算进连亏熔断，会让一次对端抖动把账户 PAUSED 到需要人工恢复。
+    """
+    service = _failure_service(tmp_path, "outage.db", max_consecutive_failures=2)
+
+    for _ in range(5):
+        service.record_failure("u-1", "BTC-USDT", ExchangeError("WEEX request failed: 503"))
+
+    assert service.control_status("u-1") == "RUNNING", "对端故障不应触发 pause"
+
+
+def test_strategy_failures_still_pause_the_account(tmp_path) -> None:
+    """外部故障豁免不能把真正的熔断也豁免掉。"""
+    service = _failure_service(tmp_path, "strategy.db", max_consecutive_failures=2)
+
+    for _ in range(3):
+        service.record_failure("u-1", "BTC-USDT", RuntimeError("committee output exploded"))
+
+    assert service.control_status("u-1") == "PAUSED"
+
+
+def test_cycle_collects_the_deepest_history_the_api_allows() -> None:
+    """历史深度直接决定能否回测。klines 无分页，单请求 1000 根就是上限。"""
+    exchange = RecordingCandleExchange()
+    service = TradingCycleService(exchange_factory=lambda: exchange)
+
+    service.run(user_id="u-1", symbol="BTC-USDT", llm=FailingLLM())
+
+    assert exchange.candle_limits == [1000, 1000, 1000], f"实际收到 {exchange.candle_limits}"
+
+
+def test_cycle_persists_microstructure_without_affecting_the_decision(tmp_path) -> None:
+    """微观结构只存不用：它的存在不应改变决策结果。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'micro.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        service = TradingCycleService(db=db, exchange_factory=FakeExchange)
+        result = service.run(user_id="u-1", llm=FailingLLM())
+
+        # 断言在 with 内：出去之后会话关闭，访问属性会 DetachedInstanceError
+        rows = db.scalars(select(MarketMicrostructureRecord)).all()
+        assert result.action == "HOLD"
+        assert len(rows) == 1
+        assert rows[0].symbol == "BTC-USDT"
+        assert rows[0].funding_rate == 0.0001
 
 
 class RecordingExchange:

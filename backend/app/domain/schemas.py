@@ -30,11 +30,43 @@ class MarketSnapshot(BaseModel):
     symbol: str
     captured_at: int
     last_price: float
+    #: 24h 区间与量能。WEEX 的 ticker 全部返回，早期实现丢掉了。
+    open_24h: float | None = None
+    high_24h: float | None = None
+    low_24h: float | None = None
+    price_change_pct: float | None = None
+    quote_volume_24h: float | None = None
+    #: 标记价与指数价，用来算基差。
+    mark_price: float | None = None
+    index_price: float | None = None
     bid: float | None = None
     ask: float | None = None
     funding_rate: float | None = None
     open_interest: float | None = None
     volume_24h: float | None = None
+    source: str = "weex"
+
+
+class MarketMicrostructure(BaseModel):
+    """一次观测的盘口 / 订单流 / 衍生品快照。
+
+    与 ``MarketSnapshot`` 分开建模，因为失败模式不同 —— ticker 成功而 depth 失败
+    是常态，合在一起就分不清「没采到」与「采到但是空」。
+
+    ⚠️ 虚拟盘的这些数值疑似合成数据（实测价差低到 0.00013%），只可作辅助确认项。
+    """
+
+    symbol: str
+    captured_at: int
+    bid: float | None = None
+    ask: float | None = None
+    spread_bps: float | None = None
+    #: (买量 - 卖量) / (买量 + 卖量)，取前 5 档。
+    depth_imbalance: float | None = None
+    #: 主动买量 / 总成交量。
+    taker_buy_ratio: float | None = None
+    funding_rate: float | None = None
+    open_interest: float | None = None
     source: str = "weex"
 
 
@@ -105,7 +137,8 @@ class TradeProposal(AnalysisResult):
             if text.isdigit():
                 return int(text)
             try:
-                return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+                # fromisoformat 自 3.11 起直接接受尾部的 "Z"，不必再手工替换。
+                return int(datetime.fromisoformat(text).timestamp() * 1000)
             except ValueError:
                 return None
         return None
@@ -121,8 +154,7 @@ class TradeProposal(AnalysisResult):
         """
 
         if self.action is Action.HOLD:
-            if self.leverage < 1:
-                self.leverage = 1
+            self.leverage = max(self.leverage, 1)
             # HOLD 不下单，valid_until 无实际意义：不信任 LLM 的 null / ISO / 编造日期。
             self.valid_until = int(time.time() * 1000)
             return self

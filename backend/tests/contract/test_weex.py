@@ -13,11 +13,15 @@ from app.exchange.fixtures import (
     CONTRACT_INFO_RESPONSE,
     DEMO_BALANCE_RESPONSE,
     DEMO_POSITION_RESPONSE,
+    DEPTH_RESPONSE,
+    FUNDING_RATE_RESPONSE,
     KLINES_RESPONSE,
+    OPEN_INTEREST_RESPONSE,
     ORDER_ACCEPTED_RESPONSE,
     ORDER_INFO_RESPONSE,
     TICKER_RESPONSE,
     TRADE_RESPONSE,
+    TRADES_RESPONSE,
 )
 from app.exchange.weex import WeexClient, WeexCredentials
 
@@ -356,3 +360,67 @@ def test_weex_real_order_path_includes_reduce_only() -> None:
 
     assert captured["symbol"] == "BTCUSDT"
     assert captured["reduceOnly"] is True
+
+
+def test_ticker_range_and_basis_fields_are_kept() -> None:
+    """24h ticker 返回 11 个字段，早期实现只读了 lastPrice 和 volume。
+
+    丢掉 openPrice/highPrice/lowPrice 让 market agent 无法判断价格在日内区间
+    的位置；丢掉 markPrice/indexPrice 让它看不到基差。
+    """
+    ticker = {
+        **TICKER_RESPONSE,
+        "openPrice": "78181.4",
+        "highPrice": "78496.1",
+        "lowPrice": "76414.5",
+        "priceChangePercent": "-0.012630",
+        "quoteVolume": "1817917050.88401",
+        "markPrice": "77199.2",
+        "indexPrice": "77237.45275",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/capi/v3/market/ticker/24hr":
+            return httpx.Response(200, json=[ticker])
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    with _client_for(handler) as client:
+        snapshot = client.get_market_snapshot("BTC-USDT")
+
+    assert snapshot.last_price == 1.5
+    assert snapshot.open_24h == 78181.4
+    assert snapshot.high_24h == 78496.1
+    assert snapshot.low_24h == 76414.5
+    assert snapshot.price_change_pct == -0.012630
+    assert snapshot.quote_volume_24h == 1817917050.88401
+    assert snapshot.mark_price == 77199.2
+    assert snapshot.index_price == 77237.45275
+
+
+def test_microstructure_derives_spread_imbalance_and_taker_ratio() -> None:
+    """盘口与成交流水要压成可比较的数，而不是把原始数组塞进状态。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        routes = {
+            "/capi/v3/market/depth": DEPTH_RESPONSE,
+            "/capi/v3/market/trades": TRADES_RESPONSE,
+            "/capi/v3/market/fundingRate": FUNDING_RATE_RESPONSE,
+            "/capi/v3/market/openInterest": OPEN_INTEREST_RESPONSE,
+        }
+        if request.url.path in routes:
+            return httpx.Response(200, json=routes[request.url.path])
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    with _client_for(handler) as client:
+        micro = client.get_microstructure("BTC-USDT")
+
+    assert micro.symbol == "BTC-USDT"
+    assert micro.bid == 77229.9
+    assert micro.ask == 77230.0
+    # (买量 4.0 - 卖量 2.0) / (4.0 + 2.0)
+    assert round(micro.depth_imbalance, 6) == round(2.0 / 6.0, 6)
+    # 主动买 3.0 / 总量 4.0
+    assert micro.taker_buy_ratio == 0.75
+    assert micro.funding_rate == 0.00003006
+    assert micro.open_interest == 140652.2160
+    assert round(micro.spread_bps, 4) == round((77230.0 - 77229.9) / 77229.9 * 10_000, 4)

@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 import httpx
 
 from app.config import Settings, get_settings
-from app.domain.schemas import Candle, MarketSnapshot
+from app.domain.schemas import Candle, MarketMicrostructure, MarketSnapshot
 from app.exchange.base import (
     ContractInfo,
     ExchangeBalance,
@@ -256,19 +256,66 @@ class WeexClient(ExchangeClient):
         # market_data_max_age_seconds(默认 90s) 永远判定过期，整个系统一笔都不下。
         # 所以 captured_at 取本地观测时刻 —— 行情就是此刻从交易所取回的。
         captured_at = self._clock_ms()
+
+        def optional(name: str) -> float | None:
+            """缺字段与「字段存在但为空」要区分开，所以只对存在且有值的做转换。"""
+
+            raw_value = ticker.get(name)
+            return float(_decimal(raw_value)) if raw_value is not None else None
+
         return MarketSnapshot(
             symbol=normalize_symbol(ticker.get("symbol", symbol)),
             captured_at=captured_at,
             last_price=float(_decimal(ticker.get("lastPrice", ticker.get("last")))),
-            bid=float(_decimal(ticker.get("bidPrice", ticker.get("best_bid"))))
-            if ticker.get("bidPrice", ticker.get("best_bid")) is not None
-            else None,
-            ask=float(_decimal(ticker.get("askPrice", ticker.get("best_ask"))))
-            if ticker.get("askPrice", ticker.get("best_ask")) is not None
-            else None,
-            volume_24h=float(_decimal(ticker.get("volume", ticker.get("volume_24h"))))
-            if ticker.get("volume", ticker.get("volume_24h")) is not None
-            else None,
+            bid=optional("bidPrice") or optional("best_bid"),
+            ask=optional("askPrice") or optional("best_ask"),
+            volume_24h=optional("volume") or optional("volume_24h"),
+            open_24h=optional("openPrice"),
+            high_24h=optional("highPrice"),
+            low_24h=optional("lowPrice"),
+            price_change_pct=optional("priceChangePercent"),
+            quote_volume_24h=optional("quoteVolume"),
+            mark_price=optional("markPrice"),
+            index_price=optional("indexPrice"),
+        )
+
+    def get_microstructure(self, symbol: str) -> MarketMicrostructure:
+        """盘口 / 成交流水 / 资金费率 / 持仓量。
+
+        虚拟盘上这四个端点都可用（见 docs/weex-virtual-api.md）。symbol 必须是不带
+        横杠的合约符号，否则返回 -1142。
+
+        注意：这些数值疑似合成（实测价差低到 0.00013%），只可作辅助确认项。
+        """
+
+        contract_symbol = _exchange_symbol(symbol)
+        depth = self._request("GET", "/capi/v3/market/depth", params={"symbol": contract_symbol})
+        trades = self._request("GET", "/capi/v3/market/trades", params={"symbol": contract_symbol})
+        funding = self._request("GET", "/capi/v3/market/fundingRate", params={"symbol": contract_symbol})
+        interest = self._request("GET", "/capi/v3/market/openInterest", params={"symbol": contract_symbol})
+
+        bids = [(float(price), float(size)) for price, size in (depth.get("bids") or [])[:5]]
+        asks = [(float(price), float(size)) for price, size in (depth.get("asks") or [])[:5]]
+        bid = bids[0][0] if bids else None
+        ask = asks[0][0] if asks else None
+        bid_volume = sum(size for _, size in bids)
+        ask_volume = sum(size for _, size in asks)
+        buy_volume = sum(float(item["qty"]) for item in trades if not item.get("isBuyerMaker"))
+        total_volume = sum(float(item["qty"]) for item in trades)
+        return MarketMicrostructure(
+            symbol=normalize_symbol(symbol),
+            captured_at=self._clock_ms(),
+            bid=bid,
+            ask=ask,
+            spread_bps=((ask - bid) / bid * 10_000) if bid and ask and bid > 0 else None,
+            depth_imbalance=(
+                (bid_volume - ask_volume) / (bid_volume + ask_volume)
+                if (bid_volume + ask_volume) > 0
+                else None
+            ),
+            taker_buy_ratio=(buy_volume / total_volume) if total_volume > 0 else None,
+            funding_rate=float(funding[0]["fundingRate"]) if funding else None,
+            open_interest=float(interest["openInterest"]) if interest else None,
         )
 
     def get_contracts(self) -> list[ContractInfo]:

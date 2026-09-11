@@ -100,3 +100,55 @@ def test_migrations_record_the_applied_revision(tmp_path) -> None:
 
     head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
     assert stamped == head
+
+
+def test_market_snapshots_gains_the_range_and_basis_columns(tmp_path) -> None:
+    """新增列必须由增量迁移承载 —— create_all 不会动已存在的表。
+
+    market_snapshots 在 001 里就已经建出来了，所以这几列只能走显式 op.add_column。
+    """
+    url = f"sqlite+pysqlite:///{tmp_path / 'range.db'}"
+
+    _upgrade(url)
+
+    columns = _columns(url, "market_snapshots")
+    for name in (
+        "open_24h",
+        "high_24h",
+        "low_24h",
+        "price_change_pct",
+        "quote_volume_24h",
+        "mark_price",
+        "index_price",
+    ):
+        assert name in columns, f"market_snapshots 缺少 {name}"
+
+
+def test_market_snapshot_migration_is_repeatable(tmp_path) -> None:
+    """迁移要能对已经加过列的库重复执行（照 002 的模式）。"""
+    url = f"sqlite+pysqlite:///{tmp_path / 'rerun.db'}"
+
+    _upgrade(url)
+    _upgrade(url)
+
+    assert "high_24h" in _columns(url, "market_snapshots")
+
+
+def test_microstructure_table_reaches_databases_that_already_migrated(tmp_path) -> None:
+    """已迁移的库不会重跑 001，新增的表必须靠后续迁移补上。
+
+    实测踩到：只加模型、不加 007 时，``alembic upgrade head`` 跑完
+    market_microstructures 依然不存在 —— 新库因为 001 用的是当前模型才碰巧建出来，
+    已迁移的库则要等 worker 撞上 "relation does not exist"。
+    """
+    url = f"sqlite+pysqlite:///{tmp_path / 'micro_table.db'}"
+    _upgrade(url, "006_market_snapshot_range_fields")
+
+    engine = create_engine(url)
+    with engine.begin() as connection:
+        connection.exec_driver_sql("DROP TABLE market_microstructures")  # 模拟该表尚未存在
+    engine.dispose()
+
+    _upgrade(url)
+
+    assert "market_microstructures" in inspect(create_engine(url)).get_table_names()

@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Protocol
 
-from app.domain.schemas import Candle, MarketSnapshot
+from app.domain.schemas import Candle, MarketMicrostructure, MarketSnapshot
 
 
 class ExchangeError(RuntimeError):
@@ -109,6 +109,8 @@ class ExchangeClient(Protocol):
     def get_candles(self, symbol: str, timeframe: str, limit: int = 100) -> list[Candle]: ...
 
     def get_market_snapshot(self, symbol: str) -> MarketSnapshot: ...
+
+    def get_microstructure(self, symbol: str) -> MarketMicrostructure: ...
 
     def get_contracts(self) -> list[ContractInfo]: ...
 

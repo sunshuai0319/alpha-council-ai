@@ -136,12 +136,42 @@ class MarketSnapshot(Base):
     symbol: Mapped[str] = mapped_column(String(32), index=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     last_price: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    open_24h: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    high_24h: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    low_24h: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    price_change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    quote_volume_24h: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mark_price: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    index_price: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
     bid: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
     ask: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
     funding_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
     open_interest: Mapped[float | None] = mapped_column(Float, nullable=True)
     volume_24h: Mapped[float | None] = mapped_column(Float, nullable=True)
     orderbook_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class MarketMicrostructureRecord(Base):
+    """盘口 / 订单流 / 衍生品的观测。
+
+    与 market_snapshots 分表：这类数据采集失败的模式与 ticker 不同（ticker 成功而
+    depth 失败是常态），合表就分不清「没采到」与「采到但是空」。
+    虚拟盘上这些数值疑似合成，目前只记录、不参与决策。
+    """
+
+    __tablename__ = "market_microstructures"
+    __table_args__ = (Index("ix_market_microstructures_lookup", "symbol", "captured_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    bid: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    ask: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    spread_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    depth_imbalance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    taker_buy_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    funding_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    open_interest: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class AccountSnapshot(Base):

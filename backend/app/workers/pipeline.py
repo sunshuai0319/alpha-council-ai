@@ -68,6 +68,7 @@ class DocumentPipeline:
             len(events.items),
         )
         new_observations = 0
+        updated_observations = 0
         for observation in observations.items:
             observation_date = datetime.combine(
                 observation.observation_date,
@@ -91,6 +92,11 @@ class DocumentPipeline:
                     )
                 )
                 new_observations += 1
+            elif existing.value != observation.value:
+                # FRED 会修订历史值；解析曾经写坏的 NULL 也靠这条自愈。
+                existing.value = observation.value
+                existing.fetched_at = observation.fetched_at
+                updated_observations += 1
         inputs = [
             DocumentInput(
                 url=item.canonical_url,
@@ -129,10 +135,11 @@ class DocumentPipeline:
         self._record_errors(news, observations, events)
         self.db.commit()
         logger.info(
-            "collection: news=%d macro_obs=%d(+%d new) fed_events=%d | docs processed=%d skipped=%d failed=%d | collector_errors=%d | %.2fs",
+            "collection: news=%d macro_obs=%d(+%d new/%d updated) fed_events=%d | docs processed=%d skipped=%d failed=%d | collector_errors=%d | %.2fs",
             len(news.items),
             len(observations.items),
             new_observations,
+            updated_observations,
             len(events.items),
             processed,
             skipped,

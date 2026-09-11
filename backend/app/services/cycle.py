@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any, ClassVar
 from uuid import uuid4
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -18,6 +19,7 @@ from app.db.models import (
     AccountSnapshot,
     ControlState,
     MarketCandle,
+    MarketMicrostructureRecord,
     Position,
     RiskEvent,
     TradingAccount,
@@ -32,7 +34,7 @@ from app.domain.schemas import (
     TradeProposal,
     TradingCycleState,
 )
-from app.exchange.base import ExchangeBalance, ExchangeClient, ExchangePosition
+from app.exchange.base import ExchangeBalance, ExchangeClient, ExchangeError, ExchangePosition
 from app.exchange.weex import WeexClient, WeexCredentials
 from app.execution.service import ExecutionService, stable_client_order_id
 from app.rag.embeddings import BGEEmbedder, BGEReranker
@@ -40,8 +42,20 @@ from app.rag.milvus import MilvusVectorStore
 from app.rag.retriever import Retriever
 from app.reconciliation.service import ReconciliationService
 from app.risk.engine import RiskEngine, daily_loss_pct
+from app.services.context import load_macro_context
 
 logger = logging.getLogger(__name__)
+
+#: 对端不可用（5xx / 超时 / 网络抖动）不是策略失败。把它算进连亏熔断，会让一次短暂
+#: 的对端抖动把账户 PAUSED 到需要人工恢复 —— 实测 WEEX 的 503 是常规抖动。
+EXTERNAL_FAILURE_TYPES = (ExchangeError, httpx.TimeoutException, httpx.TransportError)
+
+
+def is_external_failure(error: BaseException) -> bool:
+    """httpx 的异常常被包在 ExchangeError 里，所以也要看 __cause__。"""
+
+    candidates = (error, error.__cause__)
+    return any(isinstance(item, EXTERNAL_FAILURE_TYPES) for item in candidates if item is not None)
 
 
 def round_trip_pnl(position: ExchangePosition, exit_price: Decimal) -> Decimal | None:
@@ -144,9 +158,14 @@ class TradingCycleService:
         candle_result, snapshot_result = collector.collect(
             symbols=(symbol,),
             timeframes=("5m", "1h", "4h"),
-            limit=100,
+            # WEEX 的 klines 无分页且忽略 startTime/endTime，单请求 1000 根就是历史
+            # 天花板。1000 根 1h ≈ 41 天，是回测能拿到的最深样本。
+            limit=1000,
         )
         snapshot = snapshot_result.items[0] if snapshot_result.items else None
+        # 微观结构采集失败的模式独立于 ticker，且虚拟盘上这些数值疑似合成 ——
+        # 所以它只影响落库与错误列表，不参与本轮决策。
+        microstructure_result = collector.collect_microstructures(symbols=(symbol,))
         logger.info(
             "cycle market: user=%s symbol=%s price=%s candles=%d errors=%d",
             user_id,
@@ -172,10 +191,21 @@ class TradingCycleService:
                     for timeframe in ("5m", "1h", "4h")
                 }
             ),
-            errors=[*candle_result.errors, *snapshot_result.errors],
+            errors=[
+                *candle_result.errors,
+                *snapshot_result.errors,
+                *microstructure_result.errors,
+            ],
+            # 宏观事实只能从库里读（行情与账户事实不写进 RAG）。不传的话宏观 agent
+            # 的上下文恒为空数组，只会一直报 insufficient_data。
+            macro_events=load_macro_context(self.db, limit=20),
         )
         state = state.model_copy(update={"data_versions": {"technical_indicators": INDICATOR_VERSION}})
-        self._persist_market_data(candle_result.items, snapshot_result.items)
+        self._persist_market_data(
+            candle_result.items,
+            snapshot_result.items,
+            microstructure_result.items,
+        )
         halt_reason = (
             None
             if self.control_status(user_id) != "PAUSED"
@@ -589,7 +619,12 @@ class TradingCycleService:
         self.db.commit()
         return True
 
-    def _persist_market_data(self, candles: list[Any], snapshots: list[Any]) -> None:
+    def _persist_market_data(
+        self,
+        candles: list[Any],
+        snapshots: list[Any],
+        microstructures: list[Any] | None = None,
+    ) -> None:
         if self.db is None:
             return
         captured_at = datetime.now(UTC)
@@ -622,11 +657,32 @@ class TradingCycleService:
                     symbol=snapshot.symbol,
                     captured_at=datetime.fromtimestamp(snapshot.captured_at / 1000, tz=UTC),
                     last_price=snapshot.last_price,
+                    open_24h=snapshot.open_24h,
+                    high_24h=snapshot.high_24h,
+                    low_24h=snapshot.low_24h,
+                    price_change_pct=snapshot.price_change_pct,
+                    quote_volume_24h=snapshot.quote_volume_24h,
+                    mark_price=snapshot.mark_price,
+                    index_price=snapshot.index_price,
                     bid=snapshot.bid,
                     ask=snapshot.ask,
                     funding_rate=snapshot.funding_rate,
                     open_interest=snapshot.open_interest,
                     volume_24h=snapshot.volume_24h,
+                )
+            )
+        for micro in microstructures or []:
+            self.db.add(
+                MarketMicrostructureRecord(
+                    symbol=micro.symbol,
+                    captured_at=datetime.fromtimestamp(micro.captured_at / 1000, tz=UTC),
+                    bid=micro.bid,
+                    ask=micro.ask,
+                    spread_bps=micro.spread_bps,
+                    depth_imbalance=micro.depth_imbalance,
+                    taker_buy_ratio=micro.taker_buy_ratio,
+                    funding_rate=micro.funding_rate,
+                    open_interest=micro.open_interest,
                 )
             )
         self.db.flush()
@@ -692,17 +748,24 @@ class TradingCycleService:
     def record_failure(self, user_id: str, symbol: str, error: Exception) -> None:
         if self.db is None:
             return
+        external = is_external_failure(error)
         self.db.add(
             RiskEvent(
                 id=str(uuid4()),
                 user_id=user_id,
-                event_type="CYCLE_FAILURE",
+                # 事件类型就是熔断计数器的口径（见 _consecutive_failures），
+                # 所以外部故障必须用另一个类型，否则等于没豁免。
+                event_type="DATA_SOURCE_DEGRADED" if external else "CYCLE_FAILURE",
                 status=RiskStatus.REJECTED,
                 reason=str(error),
-                metadata_json={"symbol": symbol},
+                metadata_json={"symbol": symbol, "external": external},
             )
         )
         self.db.commit()
+        if external:
+            # 只留痕，不动账户状态：对端恢复后下一轮自动继续。
+            logger.warning("external data source failure, not counting toward the breaker: %s", error)
+            return
         if self._consecutive_failures(user_id) >= self.settings.max_consecutive_failures:
             self._halt(
                 user_id,
