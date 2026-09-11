@@ -5,7 +5,7 @@ os.environ.setdefault("MILVUS_URI", "http://localhost:19530")
 os.environ.setdefault("ARK_API_KEY", "test-key")
 os.environ.setdefault("APP_ENV", "test")
 
-from app.config import Settings  # noqa: E402
+from app.config import Settings
 
 # 测试不读开发者的 .env。
 #
