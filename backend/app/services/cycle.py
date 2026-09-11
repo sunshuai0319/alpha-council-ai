@@ -548,6 +548,10 @@ class TradingCycleService:
             model_versions=result_state.model_versions,
         )
         self.db.add(decision)
+        # SessionLocal 是 autoflush=False：RiskEvent 与 TradingDecision 之间只有
+        # 裸外键、没有 relationship()，不 flush 的话同一次 commit 里子表可能先
+        # 插入 → risk_events_decision_id_fkey 外键违例。父先落库即可解析子引用。
+        self.db.flush()
         event_reasons = [*result_state.errors, *risk.reasons]
         if event_reasons:
             self.db.add(

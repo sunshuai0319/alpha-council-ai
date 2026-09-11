@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -162,6 +162,39 @@ def test_persisting_a_filled_order_stores_json_safe_values(tmp_path) -> None:
         row = db.scalars(select(TradingDecision)).all()[0]
         assert row.execution_result["realized_pnl"] == "-1.25"
         assert row.execution_result["average_price"] == "100.5"
+
+
+def test_persist_inserts_parent_decision_before_child_risk_event(tmp_path) -> None:
+    """SessionLocal(autoflush=False) 下父子表同一次 commit 可能外键违例。
+
+    生产 `_persist` 先 add(TradingDecision) 再 add(RiskEvent) 后一次 commit，
+    两者之间没有 relationship() 时 SQLAlchemy 不保证插入顺序，risk_events
+    可能先插入 → decision_id 外键违例，worker 崩溃。测试必须用 autoflush=False
+    + PRAGMA foreign_keys=ON 模拟生产，默认的 Session(autoflush=True) 测不出。
+    """
+    engine = create_engine(
+        f"sqlite+pysqlite:///{tmp_path / 'fk-persist.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    event.listen(engine, "connect", lambda raw_conn, _: raw_conn.execute("PRAGMA foreign_keys=ON"))
+    Base.metadata.create_all(engine)
+    with Session(engine, autoflush=False) as db:
+        # FK 强制开启后 setup 也要先父后子分开提交，否则 TradingAccount 可能先插。
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.commit()
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.commit()
+        service = TradingCycleService(db=db)
+
+        service._persist(
+            result_state=_long_state(),
+            risk=RiskDecision(status=RiskStatus.ALLOWED, reasons=["hold_no_order"]),
+            execution=None,
+        )
+
+        decision = db.scalars(select(TradingDecision)).all()[0]
+        event_row = db.scalars(select(RiskEvent)).all()[0]
+        assert event_row.decision_id == decision.id
 
 
 def test_persisting_a_filled_order_round_trips_into_the_loss_streak(tmp_path) -> None:
