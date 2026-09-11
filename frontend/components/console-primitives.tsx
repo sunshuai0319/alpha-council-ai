@@ -1,6 +1,6 @@
 import { Check, CircleAlert, Minus, TrendingDown, TrendingUp } from "lucide-react"
 
-import { useI18n } from "@/lib/i18n"
+import { translate, useI18n, type Locale } from "@/lib/i18n"
 import type { Decision, MarketSnapshot, Position, RiskEvent } from "@/lib/types"
 
 export function VirtualBadge({ compact = false }: { compact?: boolean }) {
@@ -56,7 +56,7 @@ export function EmptyState({ title, body }: { title: string; body: string }) {
 }
 
 export function MarketStrip({ snapshots }: { snapshots: MarketSnapshot[] }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   if (!snapshots.length) {
     return <EmptyState title={t("common.waitingMarket")} body={t("common.waitingMarketBody")} />
   }
@@ -66,7 +66,7 @@ export function MarketStrip({ snapshots }: { snapshots: MarketSnapshot[] }) {
         <div className="market-strip-item" key={`${snapshot.symbol}-${snapshot.captured_at}`}>
           <span>{snapshot.symbol}</span>
           <strong>{formatNumber(snapshot.last_price, 2)}</strong>
-          <small>{formatRelativeTime(snapshot.captured_at)}</small>
+          <small>{formatRelativeTime(snapshot.captured_at, locale)}</small>
         </div>
       ))}
     </div>
@@ -74,7 +74,7 @@ export function MarketStrip({ snapshots }: { snapshots: MarketSnapshot[] }) {
 }
 
 export function DecisionCard({ decision }: { decision: Decision }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const proposal = decision.proposal
   const reasons = decision.risk_decision?.reasons ?? []
   return (
@@ -97,7 +97,7 @@ export function DecisionCard({ decision }: { decision: Decision }) {
       {reasons.length ? <div className="risk-reasons">{reasons.join(" · ")}</div> : null}
       <div className="decision-footer">
         <code>{decision.cycle_id.slice(0, 12)}</code>
-        <span>{formatDate(decision.created_at)}</span>
+        <span>{formatDate(decision.created_at, locale)}</span>
       </div>
     </article>
   )
@@ -124,13 +124,13 @@ export function PortfolioTable({ positions }: { positions: Position[] }) {
 }
 
 export function EventList({ events }: { events: RiskEvent[] }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   if (!events.length) return <EmptyState title={t("common.noRiskEvents")} body={t("common.noRiskEventsBody")} />
   return <div className="event-list">{events.map((event) => <div className="event-row" key={event.id}>
     <div className="event-icon"><CircleAlert size={16} /></div>
     <div><strong>{event.event_type}</strong><p>{event.reason}</p></div>
     <RiskBadge status={event.status} />
-    <time>{formatDate(event.created_at)}</time>
+    <time>{formatDate(event.created_at, locale)}</time>
   </div>)}</div>
 }
 
@@ -148,16 +148,16 @@ export function formatSigned(value: number, digits = 2) {
   return `${value >= 0 ? "+" : ""}${formatNumber(value, digits)}`
 }
 
-export function formatDate(value: string | number | null | undefined) {
-  if (!value) return "not recorded"
+export function formatDate(value: string | number | null | undefined, locale: Locale = "en-US") {
+  if (!value) return translate(locale, "common.notRecorded")
   const date = new Date(typeof value === "number" && value < 10_000_000_000 ? value * 1000 : value)
-  if (Number.isNaN(date.getTime())) return "not recorded"
-  return date.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+  if (Number.isNaN(date.getTime())) return translate(locale, "common.notRecorded")
+  return date.toLocaleString(locale, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
 }
 
-export function formatRelativeTime(value: string | number) {
-  if (typeof value === "string") return formatDate(value)
+export function formatRelativeTime(value: string | number, locale: Locale = "en-US") {
+  if (typeof value === "string") return formatDate(value, locale)
   const seconds = Math.max(0, Math.floor((Date.now() - (value < 10_000_000_000 ? value * 1000 : value)) / 1000))
-  if (seconds < 60) return `${seconds}s ago`
-  return `${Math.floor(seconds / 60)}m ago`
+  if (seconds < 60) return translate(locale, "common.secondsAgo", { n: seconds })
+  return translate(locale, "common.minutesAgo", { n: Math.floor(seconds / 60) })
 }

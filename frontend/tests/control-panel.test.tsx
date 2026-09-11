@@ -64,7 +64,7 @@ describe("console control panel", () => {
     render(<ConsolePage view="overview" />)
 
     // 状态曾经是本地 useState("RUNNING")，刷新后即使账户已被熔断暂停也显示"运行中"。
-    expect(await screen.findByText("委员会已暂停")).toBeVisible()
+    expect(await screen.findByText("智囊团已暂停")).toBeVisible()
   })
 
   it("shows the running state the server reports", async () => {
@@ -72,7 +72,7 @@ describe("console control panel", () => {
 
     render(<ConsolePage view="overview" />)
 
-    expect(await screen.findByText("委员会运行中")).toBeVisible()
+    expect(await screen.findByText("智囊团运行中")).toBeVisible()
   })
 
   it("explains why the overview is empty instead of only showing dashes", async () => {
@@ -96,7 +96,7 @@ describe("console control panel", () => {
 
     render(<ConsolePage view="overview" />)
 
-    await screen.findByText("委员会运行中")
+    await screen.findByText("智囊团运行中")
     expect(screen.queryByText(/还没有交易账户|交易账户尚未启用|账户已启用，但还没有交易周期数据/)).toBeNull()
   })
 

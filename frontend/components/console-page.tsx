@@ -76,8 +76,8 @@ function ControlPanel({ status, onToggle, busy }: { status: string; onToggle: ()
 }
 
 function SyncNote({ error, updatedAt }: { error: string | null; updatedAt: Date | null }) {
-  const { t } = useI18n()
-  return <div className="sync-note"><span className={error ? "sync-dot sync-dot--error" : "sync-dot"} />{error ? t("console.offline") : t("console.synced", { value: updatedAt ? formatDate(updatedAt.toISOString()) : "—" })}</div>
+  const { t, locale } = useI18n()
+  return <div className="sync-note"><span className={error ? "sync-dot sync-dot--error" : "sync-dot"} />{error ? t("console.offline") : t("console.synced", { value: updatedAt ? formatDate(updatedAt.toISOString(), locale) : "—" })}</div>
 }
 
 const PERCENT_FIELDS = [
@@ -240,8 +240,8 @@ function AccountCard({ accounts, refresh }: { accounts: TradingAccount[]; refres
 
   return <section className="section-block">
     <div className="section-heading">
-      <div><span className="eyebrow">trading account</span><h2>WEEX virtual account</h2></div>
-      <span className="section-index">per user</span>
+      <div><span className="eyebrow">{t("console.tradingAccount")}</span><h2>{t("console.weexVirtualAccount")}</h2></div>
+      <span className="section-index">{t("console.perUser")}</span>
     </div>
     {accounts.length ? (
       <div className="account-list">
@@ -279,7 +279,7 @@ function AccountCard({ accounts, refresh }: { accounts: TradingAccount[]; refres
 
 export function ConsolePage({ view }: { view: DashboardView }) {
   const { getToken } = useAuth()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const { data, error, updatedAt, refresh } = useDashboardData()
   const [controlBusy, setControlBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
@@ -337,7 +337,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
     {dataHint ? <p className="data-hint" role="status"><CircleAlert size={15} /><span>{t(dataHint)}</span></p> : null}
     <ControlPanel status={controlStatus} onToggle={() => void changeControl()} busy={controlBusy} />
     <AccountCard accounts={data.accounts} refresh={refresh} />
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.atAGlance")}</span><h2>{t("overview.systemReadout")}</h2></div><span className="section-index">01 / 04</span></div><div className="metrics-grid"><Metric label={t("overview.openPositions")} value={String(data.positions.length)} detail={data.positions.length ? `${data.positions[0].symbol} active` : t("overview.flatBook")} /><Metric label={t("overview.unrealizedPnl")} value={formatSignedPnl(pnl)} detail={t("overview.syncedPositions")} tone={pnl >= 0 ? "positive" : "negative"} /><Metric label={t("overview.lastAction")} value={latest ? latest.action : "—"} detail={latest ? formatDate(latest.created_at) : t("overview.awaitingCycle")} tone="signal" /><Metric label={t("overview.riskEvents")} value={String(data.events.length)} detail={t("overview.hardGateHistory")} /></div></section>
+    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.atAGlance")}</span><h2>{t("overview.systemReadout")}</h2></div><span className="section-index">01 / 04</span></div><div className="metrics-grid"><Metric label={t("overview.openPositions")} value={String(data.positions.length)} detail={data.positions.length ? t("overview.positionActive", { symbol: data.positions[0].symbol }) : t("overview.flatBook")} /><Metric label={t("overview.unrealizedPnl")} value={formatSignedPnl(pnl)} detail={t("overview.syncedPositions")} tone={pnl >= 0 ? "positive" : "negative"} /><Metric label={t("overview.lastAction")} value={latest ? latest.action : "—"} detail={latest ? formatDate(latest.created_at, locale) : t("overview.awaitingCycle")} tone="signal" /><Metric label={t("overview.riskEvents")} value={String(data.events.length)} detail={t("overview.hardGateHistory")} /></div></section>
     <div className="two-column"><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.decisionTrace")}</span><h2>{t("overview.whatDecided")}</h2></div><a href="/committee">{t("overview.viewCommittee")} <span>↗</span></a></div>{latest ? <DecisionCard decision={latest} /> : <EmptyState title={t("overview.noDecision")} body={t("overview.noDecisionBody")} />}</section><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.bookState")}</span><h2>{t("overview.virtualPortfolio")}</h2></div><a href="/trades">{t("overview.openLedger")} <span>↗</span></a></div><PortfolioTable positions={data.positions.slice(0, 3)} /></section></div>
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("overview.marketFeed")}</span><h2>{t("overview.recentSnapshots")}</h2></div><span className="section-index">{t("overview.refresh")}</span></div><MarketStrip snapshots={data.market} /></section>
   </>
@@ -351,13 +351,13 @@ export function ConsolePage({ view }: { view: DashboardView }) {
   if (view === "committee") return <>
     <PageHeader title={t("committee.title")} description={t("committee.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
     <section className="committee-banner"><Sparkles size={19} /><div><strong>{t("committee.modelRoute")}</strong><span>{t("committee.retrieval")}</span></div><RiskBadge status={latest?.status ?? "WAITING"} /></section>
-    {latest ? <><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("committee.lastProposal")}</span><h2><ActionMark action={latest.action} /> {latest.symbol}</h2></div><span className="mono">{latest.cycle_id}</span></div><DecisionCard decision={latest} /></section><section className="agent-grid">{([ ["market agent", latestAnalysis?.market], ["quant agent", latestAnalysis?.quant], ["macro agent", latestAnalysis?.macro] ] as const).map(([label, analysis]) => <article className="agent-card" key={label}><div className="agent-card-top"><span className="agent-glyph"><Sparkles size={14} /></span><span className="eyebrow">{label}</span><b>{analysis?.confidence == null ? "—" : formatPercent(analysis.confidence)}</b></div><p>{analysis?.reasoning_summary ?? t("committee.noMeetingBody")}</p><footer>{analysis?.model_version ?? "no model trace"}</footer></article>)}</section></> : <EmptyState title={t("committee.noMeeting")} body={t("committee.noMeetingBody")} />}
+    {latest ? <><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("committee.lastProposal")}</span><h2><ActionMark action={latest.action} /> {latest.symbol}</h2></div><span className="mono">{latest.cycle_id}</span></div><DecisionCard decision={latest} /></section><section className="agent-grid">{([ ["committee.agentMarket", latestAnalysis?.market], ["committee.agentQuant", latestAnalysis?.quant], ["committee.agentMacro", latestAnalysis?.macro] ] as const).map(([labelKey, analysis]) => <article className="agent-card" key={labelKey}><div className="agent-card-top"><span className="agent-glyph"><Sparkles size={14} /></span><span className="eyebrow">{t(labelKey)}</span><b>{analysis?.confidence == null ? "—" : formatPercent(analysis.confidence)}</b></div><p>{analysis?.reasoning_summary ?? t("committee.noMeetingBody")}</p><footer>{analysis?.model_version ?? t("committee.noModelTrace")}</footer></article>)}</section></> : <EmptyState title={t("committee.noMeeting")} body={t("committee.noMeetingBody")} />}
   </>
 
   if (view === "trades") return <>
     <PageHeader title={t("trades.title")} description={t("trades.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.openBook")}</span><h2>{t("trades.positions")}</h2></div><RiskBadge status="VIRTUAL" /></div><PortfolioTable positions={data.positions} />{data.positions.length ? <div className="close-actions">{data.positions.map((position) => <button className="button button--danger" key={position.id} onClick={() => void closePosition(position.symbol)}>{t("trades.close", { symbol: position.symbol })}</button>)}</div> : null}</section>
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.history")}</span><h2>{t("trades.calls")}</h2></div><span className="section-index">{t("trades.records", { count: data.decisions.length })}</span></div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <div className="decision-row" key={decision.id}><ActionMark action={decision.action} /><span className="decision-row-symbol">{decision.symbol}</span><RiskBadge status={decision.status} /><span className="decision-row-reason">{decision.proposal?.reasoning_summary ?? t("common.noProposal")}</span><time>{formatDate(decision.created_at)}</time></div>)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}</section>
+    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("trades.history")}</span><h2>{t("trades.calls")}</h2></div><span className="section-index">{t("trades.records", { count: data.decisions.length })}</span></div>{data.decisions.length ? <div className="decision-table">{data.decisions.map((decision) => <div className="decision-row" key={decision.id}><ActionMark action={decision.action} /><span className="decision-row-symbol">{decision.symbol}</span><RiskBadge status={decision.status} /><span className="decision-row-reason">{decision.proposal?.reasoning_summary ?? t("common.noProposal")}</span><time>{formatDate(decision.created_at, locale)}</time></div>)}</div> : <EmptyState title={t("trades.empty")} body={t("trades.emptyBody")} />}</section>
   </>
 
   return <>
