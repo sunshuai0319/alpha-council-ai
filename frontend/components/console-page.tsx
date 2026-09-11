@@ -19,6 +19,12 @@ type DashboardData = {
   control: string
 }
 
+// 凭证默认脱敏：只露首尾，中间打点。短值（如 passphrase）整串打点。
+function maskCredential(value: string) {
+  if (value.length <= 8) return "•".repeat(value.length)
+  return `${value.slice(0, 6)}${"•".repeat(8)}${value.slice(-4)}`
+}
+
 const emptyData: DashboardData = { market: [], decisions: [], positions: [], events: [], accounts: [], control: "RUNNING" }
 
 function useDashboardData() {
@@ -179,6 +185,7 @@ function AccountCard({ accounts, refresh }: { accounts: TradingAccount[]; refres
   const [apiKey, setApiKey] = useState("")
   const [apiSecret, setApiSecret] = useState("")
   const [passphrase, setPassphrase] = useState("")
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({})
 
   const createAccount = async () => {
     setBusy(true)
@@ -254,6 +261,16 @@ function AccountCard({ accounts, refresh }: { accounts: TradingAccount[]; refres
                 {account.enabled ? t("console.disable") : t("console.enable")}
               </button>
             </div>
+            {account.configured && account.credentials ? (
+              <div className="account-credentials">
+                <div className="credential-row"><span>{t("console.apiKey")}</span><code>{revealed[account.id] ? account.credentials.api_key : maskCredential(account.credentials.api_key)}</code></div>
+                <div className="credential-row"><span>{t("console.apiSecret")}</span><code>{revealed[account.id] ? account.credentials.api_secret : maskCredential(account.credentials.api_secret)}</code></div>
+                <div className="credential-row"><span>{t("console.passphrase")}</span><code>{revealed[account.id] ? account.credentials.passphrase : maskCredential(account.credentials.passphrase)}</code></div>
+                <button type="button" className="credential-toggle" onClick={() => setRevealed((prev) => ({ ...prev, [account.id]: !prev[account.id] }))}>
+                  {revealed[account.id] ? t("console.hideCredentials") : t("console.showCredentials")}
+                </button>
+              </div>
+            ) : null}
             <RiskLimitsForm
               account={account}
               busy={busy}

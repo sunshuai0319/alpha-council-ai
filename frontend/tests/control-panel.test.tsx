@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@clerk/nextjs", () => ({
@@ -13,6 +13,11 @@ const virtualAccount = {
   environment: "virtual",
   enabled: true,
   configured: true,
+  credentials: {
+    api_key: "test-api-key",
+    api_secret: "test-secret-redacted",
+    passphrase: "test-passphrase",
+  },
   risk_limits: null,
   effective_risk_limits: {
     max_leverage: 20,
@@ -126,5 +131,21 @@ describe("console control panel", () => {
     render(<ConsolePage view="overview" />)
 
     expect(await screen.findByLabelText("仓位上限 (%)")).toHaveValue(20)
+  })
+
+  it("masks stored credentials until the user reveals them", async () => {
+    stubApi("RUNNING", [virtualAccount])
+
+    render(<ConsolePage view="overview" />)
+
+    const secret = "test-secret-redacted"
+    // 默认脱敏：明文绝不出现在页面上，只露首尾
+    expect(await screen.findByText("test-s••••••••6789")).toBeVisible()
+    expect(screen.queryByText(secret)).toBeNull()
+
+    // 点「查看全部内容」→ 明文展示，这样粘错前缀时一眼能看出来
+    fireEvent.click(screen.getByText("查看全部内容"))
+    expect(await screen.findByText(secret)).toBeVisible()
+    expect(screen.queryByText("test-s••••••••6789")).toBeNull()
   })
 })

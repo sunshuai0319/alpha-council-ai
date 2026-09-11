@@ -9,6 +9,7 @@ const account = (enabled: boolean): TradingAccount => ({
   environment: "virtual",
   enabled,
   configured: true,
+  credentials: null,
   risk_limits: null,
   effective_risk_limits: null,
   platform_limits: null,

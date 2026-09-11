@@ -95,12 +95,19 @@ export type PlatformLimits = {
 
 export type EffectiveRiskLimits = PlatformLimits & { max_leverage: number }
 
+export type AccountCredentials = {
+  api_key: string
+  api_secret: string
+  passphrase: string
+}
+
 export type TradingAccount = {
   id: string
   provider: string
   environment: string
   enabled: boolean
   configured: boolean
+  credentials: AccountCredentials | null
   risk_limits: RiskLimits | null
   effective_risk_limits: EffectiveRiskLimits | null
   platform_limits: PlatformLimits | null

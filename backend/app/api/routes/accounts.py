@@ -87,12 +87,24 @@ def _response(account: TradingAccount, settings: Settings | None = None) -> dict
     effective = account.risk_limits
     if settings is not None:
         effective = RiskLimits.from_settings(settings).tightened(account.risk_limits).account_view()
+    configured = bool(account.api_key_ref and account.api_secret_ref and account.passphrase_ref)
     return {
         "id": account.id,
         "provider": account.provider,
         "environment": account.environment,
         "enabled": account.enabled,
-        "configured": bool(account.api_key_ref and account.api_secret_ref and account.passphrase_ref),
+        "configured": configured,
+        #: 返回给账户主人自己，前端默认脱敏展示、点击后展开。这是排查
+        #: 凭证填错（例如粘上 WEEX_API_SECRET= 前缀）的唯一入口。
+        "credentials": (
+            {
+                "api_key": account.api_key_ref,
+                "api_secret": account.api_secret_ref,
+                "passphrase": account.passphrase_ref,
+            }
+            if configured
+            else None
+        ),
         "risk_limits": account.risk_limits,
         "effective_risk_limits": effective,
         "platform_limits": _platform_limits(settings) if settings else None,

@@ -111,6 +111,12 @@ h1 { font: 500 clamp(37px, 5vw, 64px)/.99 var(--serif); letter-spacing: -.045em;
 .account-meta b { font-size: 13px; }
 .account-meta span { margin-top: 3px; color: var(--muted); font-size: 11px; }
 .account-row-actions { display: flex; align-items: center; gap: 12px; }
+.account-credentials { flex-basis: 100%; border-top: 1px solid var(--line); padding-top: 12px; }
+.credential-row { display: flex; align-items: baseline; gap: 12px; margin: 4px 0; font-size: 12px; }
+.credential-row span { flex: 0 0 130px; color: var(--muted); }
+.credential-row code { color: var(--paper); font: 12px var(--mono); word-break: break-all; }
+.credential-toggle { margin-top: 8px; padding: 0; color: var(--lime); background: none; border: none; cursor: pointer; font: 12px var(--sans); text-decoration: underline; }
+.credential-toggle:hover { color: var(--paper); }
 .account-status { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .11em; color: var(--muted); }
 .account-status b { color: var(--lime); font-weight: 600; }
 .account-form { display: grid; gap: 10px; margin-top: 16px; }

@@ -127,6 +127,17 @@ def test_account_api_stores_ui_credentials_for_virtual_account(tmp_path) -> None
         assert client.patch(f"/api/accounts/{account_id}", json={"enabled": True}).status_code == 200
         assert db.scalar(select(TradingAccount).where(TradingAccount.id == account_id)).enabled is True
 
+        # 用户自己的账户需要能看到已存凭证（前端默认脱敏、可展开），否则
+        # 填错 API Secret（比如粘上 WEEX_API_SECRET= 前缀）完全无法排查。
+        listed = client.get("/api/accounts")
+        assert listed.status_code == 200
+        (item,) = listed.json()["items"]
+        assert item["credentials"] == {
+            "api_key": "ui-account-key",
+            "api_secret": "ui-account-secret",
+            "passphrase": "ui-account-passphrase",
+        }
+
         live = client.post(
             "/api/accounts",
             json={
