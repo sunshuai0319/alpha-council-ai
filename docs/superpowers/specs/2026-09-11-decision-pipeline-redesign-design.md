@@ -221,10 +221,10 @@ class VetoVerdict(BaseModel):
 
 | 变更 | 类型 |
 |---|---|
-| `market_snapshots` 加 7 列 | 增量迁移 `003` |
+| `market_snapshots` 加 7 列 | 增量迁移（当前 head 是 `005_user_locale`，所以是 `006`） |
 | `market_microstructures` 新表 | 改 `app/db/models.py` 即可（`create_all(checkfirst=True)` 自动补建） |
-| `positions` 加 `effective_stop` 等列 | 增量迁移 `003` |
-| `trading_decisions` 加 `signal_score` / `veto_type` | 增量迁移 `003` |
+| `positions` 加 `effective_stop` 等列 | 增量迁移（第 3 层，编号顺延） |
+| `trading_decisions` 加 `signal_score` / `veto_type` | 增量迁移（第 3 层，编号顺延） |
 
 按 CLAUDE.md 约定：新表只改 models，已有表加列必须写显式增量迁移（照 `002` 模板，`inspect(bind)` 判存在再 `op.add_column`）。
 
