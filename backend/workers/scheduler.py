@@ -17,11 +17,12 @@ class TradingScheduler:
     def __init__(
         self,
         service: TradingCycleService,
-        symbols: tuple[str, ...] = ("BTC-USDT", "ETH-USDT"),
+        symbols: tuple[str, ...] | None = None,
         pipeline: DocumentPipeline | None = None,
     ) -> None:
         self.service = service
-        self.symbols = symbols
+        # 品种由配置决定（TRADING_SYMBOLS）。原来写死在这里，加一个品种要改代码。
+        self.symbols = symbols if symbols is not None else get_settings().symbol_list
         self.pipeline = pipeline
 
     def run_once(self) -> None:
@@ -99,7 +100,9 @@ def main() -> None:
     configure_logging(settings.log_level)
     with SessionLocal() as db:
         service = TradingCycleService(db=db, settings=settings)
-        TradingScheduler(service, pipeline=DocumentPipeline(db=db)).run_forever()
+        TradingScheduler(
+            service, symbols=settings.symbol_list, pipeline=DocumentPipeline(db=db)
+        ).run_forever()
 
 
 if __name__ == "__main__":

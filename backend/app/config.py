@@ -49,7 +49,11 @@ class Settings(BaseSettings):
     #: 平台硬上限。虚拟盘实际杠杆固定 20x 且不可调，上限必须与之对齐，
     #: 否则虚拟盘一开仓就再也无法加仓（max_leverage 会拒掉）。
     max_leverage: int = 20
+    #: 单笔名义敞口占权益上限。
     max_position_notional_pct: float = 0.20
+    #: 账户级总敞口上限。原来总上限与单笔上限同为 20%，于是**同时只能持有一个仓位**
+    #: —— 第二个品种必然被 max_notional 拒掉，加品种等于白加。60% 允许同时最多 3 个。
+    max_total_notional_pct: float = 0.60
     max_single_trade_risk_pct: float = 0.005
     max_daily_loss_pct: float = 0.05
     max_consecutive_losses: int = 3
@@ -87,6 +91,15 @@ class Settings(BaseSettings):
     #: 收益，还会招来 503。
     fred_monthly_interval_seconds: int = 86400
     fred_daily_interval_seconds: int = 3600
+
+    #: 交易的品种。原来写死在 workers/scheduler.py 里，加一个品种要改代码。
+    trading_symbols: str = "BTC-USDT,ETH-USDT"
+
+    @property
+    def symbol_list(self) -> tuple[str, ...]:
+        """`trading_symbols` 的解析结果。"""
+
+        return tuple(part.strip().upper() for part in self.trading_symbols.split(",") if part.strip())
 
     @property
     def timeframe_list(self) -> tuple[str, ...]:

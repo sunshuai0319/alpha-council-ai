@@ -485,13 +485,13 @@ class MultiPositionExchange(RecordingExchange):
 
 
 def test_notional_cap_counts_exposure_across_symbols() -> None:
-    """敞口上限必须算账户总敞口。
+    """总敞口上限必须算账户总敞口（跨品种合计）。
 
-    按品种各算 20%，两个品种就能到 40%。ETH 已有 2000，再开 BTC 1000 →
-    3000 超过 equity 10000 的 20%，必须被拒。持仓放在 ETH 上是为了不触发
-    「单品种一仓」，让这条走到 max_notional 分支。
+    ETH 已有 5500，再开 BTC 1000 → 6500 超过 equity 10000 的 60%（总上限），
+    必须被拒。持仓放在 ETH 上是为了不触发「单品种一仓」，让这条走到
+    max_notional 分支。总上限从 20% 放宽到 60% 是为了能同时持多个品种。
     """
-    exchange = MultiPositionExchange(btc_notional=Decimal(0), eth_notional=Decimal(2000))
+    exchange = MultiPositionExchange(btc_notional=Decimal(0), eth_notional=Decimal(5500))
     service = TradingCycleService(exchange_factory=lambda: exchange)
 
     decision = service._evaluate_proposal(exchange, _long_state())
@@ -547,10 +547,10 @@ def test_account_risk_limits_tighten_the_gate(tmp_path) -> None:
         db.add(User(id="u-1", clerk_user_id="clerk-u1"))
         db.commit()
 
-    # 平台上限 0.20：10% 的提案通过
-    assert "max_notional" not in decision_for(None).reasons
-    # 用户收紧到 0.05：同样的提案被拒
-    assert "max_notional" in decision_for({"max_position_notional_pct": 0.05}).reasons
+    # 平台单笔上限 0.20：10% 的提案通过
+    assert "max_position_notional" not in decision_for(None).reasons
+    # 用户收紧到 0.05：同样的 10% 提案超过单笔上限，被拒
+    assert "max_position_notional" in decision_for({"max_position_notional_pct": 0.05}).reasons
 
 
 def test_global_kill_switch_stops_all_trading() -> None:
@@ -1118,3 +1118,18 @@ def test_paused_account_still_manages_an_open_position(tmp_path) -> None:
     assert len(exchange.requests) == 1, "暂停期间止损仍应执行"
     assert exchange.requests[0].side == "SELL"
     assert db.get(Position, "pos-1").status == "CLOSED"
+
+
+def test_a_second_symbol_can_be_held_within_the_total_cap() -> None:
+    """这次改动的目的：同时持多个品种。
+
+    单笔上限 20%、总上限 60% → 已有 20% + 新开 20% = 40% ≤ 60% → 放行。
+    改动前总上限也是 20%，第二个品种必然被拒 —— 加品种等于白加。
+    """
+    exchange = MultiPositionExchange(btc_notional=Decimal(0), eth_notional=Decimal(2000))
+    service = TradingCycleService(exchange_factory=lambda: exchange)
+
+    decision = service._evaluate_proposal(exchange, _long_state(pct=0.2))
+
+    assert "max_notional" not in decision.reasons, f"实际被拒: {decision.reasons}"
+    assert "max_position_notional" not in decision.reasons

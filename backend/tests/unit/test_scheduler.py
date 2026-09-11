@@ -71,3 +71,28 @@ def test_scheduler_ends_its_transaction_after_each_iteration(tmp_path) -> None:
     TradingScheduler(TradingCycleService(db=db)).run_once()
 
     assert db.in_transaction() is False
+
+
+def test_scheduler_reads_symbols_from_settings(monkeypatch) -> None:
+    """品种列表由配置决定，不再写死在调度器里。"""
+    from app.config import Settings
+
+    monkeypatch.setattr(
+        "workers.scheduler.get_settings",
+        lambda: Settings(
+            DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+            MILVUS_URI="http://localhost:19530",
+            ARK_API_KEY="test-key",
+            TRADING_SYMBOLS="btc-usdt, sol-usdt",
+        ),
+    )
+    scheduler = TradingScheduler(FlakyService())  # type: ignore[arg-type]
+
+    assert scheduler.symbols == ("BTC-USDT", "SOL-USDT")
+
+
+def test_explicit_symbols_still_win() -> None:
+    scheduler = TradingScheduler(  # type: ignore[arg-type]
+        FlakyService(), symbols=("ETH-USDT",)
+    )
+    assert scheduler.symbols == ("ETH-USDT",)

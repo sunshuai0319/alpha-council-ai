@@ -12,7 +12,10 @@ from app.domain.schemas import RiskDecision
 @dataclass(frozen=True)
 class RiskLimits:
     max_leverage: int = 20
+    #: 单笔名义敞口上限。
     max_position_notional_pct: Decimal = Decimal("0.20")
+    #: 账户级总敞口上限。必须 >= 单笔上限，否则第一个仓位就会被自己拒掉。
+    max_total_notional_pct: Decimal = Decimal("0.60")
     max_single_trade_risk_pct: Decimal = Decimal("0.005")
     max_daily_loss_pct: Decimal = Decimal("0.05")
     max_consecutive_losses: int = 3
@@ -26,6 +29,7 @@ class RiskLimits:
         return cls(
             max_leverage=settings.max_leverage,
             max_position_notional_pct=Decimal(str(settings.max_position_notional_pct)),
+            max_total_notional_pct=Decimal(str(settings.max_total_notional_pct)),
             max_single_trade_risk_pct=Decimal(str(settings.max_single_trade_risk_pct)),
             max_daily_loss_pct=Decimal(str(settings.max_daily_loss_pct)),
             max_consecutive_losses=settings.max_consecutive_losses,
@@ -38,6 +42,7 @@ class RiskLimits:
     #: 若允许用户在此调低，只会让风控读到 20x > 上限而拒绝一切开仓。
     ACCOUNT_KEYS = (
         "max_position_notional_pct",
+        "max_total_notional_pct",
         "max_single_trade_risk_pct",
         "max_daily_loss_pct",
         "max_consecutive_losses",
@@ -49,6 +54,7 @@ class RiskLimits:
         return {
             "max_leverage": self.max_leverage,
             "max_position_notional_pct": float(self.max_position_notional_pct),
+        "max_total_notional_pct": float(self.max_total_notional_pct),
             "max_single_trade_risk_pct": float(self.max_single_trade_risk_pct),
             "max_daily_loss_pct": float(self.max_daily_loss_pct),
             "max_consecutive_losses": self.max_consecutive_losses,
@@ -86,6 +92,9 @@ class RiskLimits:
             self,
             max_position_notional_pct=decimal_bounded(
                 self.max_position_notional_pct, "max_position_notional_pct"
+            ),
+            max_total_notional_pct=decimal_bounded(
+                self.max_total_notional_pct, "max_total_notional_pct"
             ),
             max_single_trade_risk_pct=decimal_bounded(
                 self.max_single_trade_risk_pct, "max_single_trade_risk_pct"
@@ -172,7 +181,11 @@ def evaluate_risk(
             reasons.append("daily_trade_limit")
         if leverage < 1 or leverage > active_limits.max_leverage:
             reasons.append("max_leverage")
-        if equity_value > 0 and current_value + proposed_value > equity_value * active_limits.max_position_notional_pct:
+        # 单笔上限：超过就说明提案本身过大。
+        if equity_value > 0 and proposed_value > equity_value * active_limits.max_position_notional_pct:
+            reasons.append("max_position_notional")
+        # 账户总上限：跨品种合计。放宽它到 60% 才谈得上「同时持多个品种」。
+        if equity_value > 0 and current_value + proposed_value > equity_value * active_limits.max_total_notional_pct:
             reasons.append("max_notional")
 
     if proposed_value > 0 and not is_reducing:
