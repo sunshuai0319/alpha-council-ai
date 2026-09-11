@@ -4,12 +4,12 @@ import { useAuth } from "@clerk/nextjs"
 import { ChevronRight, CircleAlert, CirclePause, CirclePlay, RefreshCw, ShieldAlert, Sparkles } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
-import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, ModelText, Pagination, PortfolioTable, ReasonText, RiskBadge, VirtualBadge } from "@/components/console-primitives"
+import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, Pagination, PortfolioTable, ReasonText, RiskBadge, VirtualBadge } from "@/components/console-primitives"
 import { labelText, modelLabel, reasonLabel, actionLabel } from "@/lib/labels"
 import { ApiError, apiRequest } from "@/lib/api"
 import { emptyOverviewHint } from "@/lib/console-hints"
 import { useI18n } from "@/lib/i18n"
-import type { Analysis, DashboardView, Decision, ItemsResponse, MarketSnapshot, PaginatedResponse, Position, RiskEvent, RiskLimits, TradingAccount } from "@/lib/types"
+import type { DashboardView, Decision, ItemsResponse, MarketSnapshot, PaginatedResponse, Position, RiskEvent, RiskLimits, TradingAccount, VetoVerdicts } from "@/lib/types"
 
 type DashboardData = {
   market: MarketSnapshot[]
@@ -317,6 +317,31 @@ function AccountCard({ accounts, refresh }: { accounts: TradingAccount[]; refres
   </section>
 }
 
+//: 三路否决 agent 的展示顺序与文案键（对应后端 analyses.veto_verdicts 的键）。
+const VETO_AGENTS = [
+  ["committee.vetoNews", "news_macro"],
+  ["committee.vetoStructure", "structure_liquidity"],
+  ["committee.vetoData", "data_integrity"],
+] as const
+
+/** 三路否决 agent 的结论卡片。智囊团页与决策行展开共用。 */
+function VetoGrid({ verdicts }: { verdicts: VetoVerdicts }) {
+  const { t } = useI18n()
+  return <div className="agent-grid">
+    {VETO_AGENTS.map(([labelKey, key]) => {
+      const verdict = verdicts[key]
+      return <article className="agent-card" key={key}>
+        <div className="agent-card-top">
+          <span className="agent-glyph"><Sparkles size={14} /></span>
+          <span className="eyebrow">{t(labelKey)}</span>
+          <b className={verdict?.veto ? "negative-text" : "positive-text"}>{verdict?.veto ? t("vetoOutcome.applied") : t("vetoOutcome.none")}</b>
+        </div>
+        <p><ReasonText code={verdict?.reasoning_summary} fallback={t("committee.vetoNoReason")} /></p>
+      </article>
+    })}
+  </div>
+}
+
 function DecisionRow({ decision }: { decision: Decision }) {
   const { t, locale } = useI18n()
   const [open, setOpen] = useState(false)
@@ -331,11 +356,6 @@ function DecisionRow({ decision }: { decision: Decision }) {
   const isEntry = proposal != null && proposal.action !== "HOLD"
   const reasoningText = proposal?.reasoning_summary ? reasonLabelText(proposal.reasoning_summary) : ""
   const invalidationText = (proposal?.invalidation_conditions ?? []).map(reasonLabelText).join(separator)
-
-  const agents: Array<[string, Analysis]> = []
-  if (analyses?.market) agents.push(["committee.agentMarket", analyses.market])
-  if (analyses?.quant) agents.push(["committee.agentQuant", analyses.quant])
-  if (analyses?.macro) agents.push(["committee.agentMacro", analyses.macro])
 
   return <div className="decision-row-wrap">
     <button type="button" className="decision-row" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
@@ -368,15 +388,9 @@ function DecisionRow({ decision }: { decision: Decision }) {
         {proposal.evidence_refs?.length ? <p className="decision-detail-line">{t("trades.evidence")}: {proposal.evidence_refs.join(separator)}</p> : null}
         {reasoningText ? <p className="decision-detail-reasoning">{reasoningText}</p> : null}
       </section> : null}
-      {agents.length ? <section>
-        <h4>{t("trades.detailAnalyses")}</h4>
-        <div className="agent-grid">
-          {agents.map(([labelKey, analysis]) => <article className="agent-card" key={labelKey}>
-            <div className="agent-card-top"><span className="agent-glyph"><Sparkles size={14} /></span><span className="eyebrow">{t(labelKey)}</span><b>{formatPercent(analysis.confidence)}</b></div>
-            <p><ReasonText code={analysis.reasoning_summary} /></p>
-            <footer><ModelText version={analysis.model_version} fallback={t("committee.noModelTrace")} /></footer>
-          </article>)}
-        </div>
+      {analyses?.veto_verdicts ? <section>
+        <h4>{t("trades.detailVeto")}</h4>
+        <VetoGrid verdicts={analyses.veto_verdicts} />
       </section> : null}
       {risk ? <section>
         <h4>{t("trades.detailRisk")}</h4>
@@ -509,7 +523,7 @@ export function ConsolePage({ view }: { view: DashboardView }) {
   if (view === "committee") return <>
     <PageHeader title={t("committee.title")} description={t("committee.description")}><SyncNote error={error} updatedAt={updatedAt} /></PageHeader>
     <section className="committee-banner"><Sparkles size={19} /><div><strong>{t("committee.modelRoute")}</strong><span>{t("committee.retrieval")}</span></div><RiskBadge status={latest?.status ?? "WAITING"} /></section>
-    {latest ? <><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("committee.lastProposal")}</span><h2><ActionMark action={latest.action} /> {latest.symbol}</h2></div><span className="mono">{latest.cycle_id}</span></div><DecisionCard decision={latest} /></section><section className="agent-grid">{([ ["committee.agentMarket", latestAnalysis?.market], ["committee.agentQuant", latestAnalysis?.quant], ["committee.agentMacro", latestAnalysis?.macro] ] as const).map(([labelKey, analysis]) => <article className="agent-card" key={labelKey}><div className="agent-card-top"><span className="agent-glyph"><Sparkles size={14} /></span><span className="eyebrow">{t(labelKey)}</span><b>{analysis?.confidence == null ? "—" : formatPercent(analysis.confidence)}</b></div><p><ReasonText code={analysis?.reasoning_summary} fallback={t("committee.noMeetingBody")} /></p><footer><ModelText version={analysis?.model_version} fallback={t("committee.noModelTrace")} /></footer></article>)}</section></> : <EmptyState title={t("committee.noMeeting")} body={t("committee.noMeetingBody")} />}
+    {latest ? <><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("committee.lastProposal")}</span><h2><ActionMark action={latest.action} /> {latest.symbol}</h2></div><span className="mono">{latest.cycle_id}</span></div><DecisionCard decision={latest} /></section><section className="section-block"><div className="section-heading"><div><span className="eyebrow">{t("committee.vetoFanout")}</span><h2>{t("committee.vetoTitle")}</h2></div></div>{latestAnalysis?.veto_verdicts ? <VetoGrid verdicts={latestAnalysis.veto_verdicts} /> : <EmptyState title={t("committee.vetoIdle")} body={t("committee.vetoIdleBody")} />}</section></> : <EmptyState title={t("committee.noMeeting")} body={t("committee.noMeetingBody")} />}
   </>
 
   if (view === "settings") return <>

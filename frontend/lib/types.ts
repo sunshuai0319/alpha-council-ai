@@ -37,6 +37,17 @@ export type TradeProposal = {
   trace_id?: string
 }
 
+/** 一路否决 agent 的独立结论（新闻宏观 / 结构流动性 / 数据完整性）。 */
+export type VetoVerdict = {
+  veto?: boolean
+  status?: string
+  reasons?: string[]
+  evidence_refs?: string[]
+  reasoning_summary?: string
+}
+
+export type VetoVerdicts = Record<string, VetoVerdict | null>
+
 export type Decision = {
   id: string
   cycle_id: string
@@ -45,9 +56,12 @@ export type Decision = {
   status: string
   proposal?: TradeProposal | null
   analyses?: {
+    //: market/quant/macro 是旧委员会架构的字段，当前 graph 不再产出（恒为 null），
+    //: 保留声明以免旧记录报错；页面只渲染 veto_verdicts。
     market?: Analysis | null
     quant?: Analysis | null
     macro?: Analysis | null
+    veto_verdicts?: VetoVerdicts | null
   } | null
   risk_decision?: {
     status?: string

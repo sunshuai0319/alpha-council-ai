@@ -62,8 +62,11 @@ const decisionRecord = {
     evidence_refs: ["doc-1"],
   },
   analyses: {
-    market: { status: "neutral", confidence: 0.4, reasoning_summary: "market is flat", model_version: "m1" },
-    quant: { status: "BEARISH", confidence: 0.6, reasoning_summary: "quant is bearish", model_version: "q1" },
+    veto_verdicts: {
+      news_macro: { veto: false, status: "none", reasoning_summary: "no conflicting news" },
+      structure_liquidity: { veto: false, status: "none", reasoning_summary: "structure intact" },
+      data_integrity: { veto: false, status: "none", reasoning_summary: "feeds fresh" },
+    },
   },
   risk_decision: { status: "ALLOWED", reasons: ["hold_no_order"] },
   execution_result: { status: "NO_ORDER" },
@@ -241,8 +244,8 @@ describe("console control panel", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /BTC-USDT/ }))
 
-    expect(await screen.findByText("智能体分析")).toBeVisible()
-    expect(screen.getByText("quant is bearish")).toBeVisible()
+    expect(await screen.findByText(zhT("trades.detailVeto"))).toBeVisible()
+    expect(screen.getByText("structure intact")).toBeVisible()
     expect(screen.getByText("提案")).toBeVisible()
     expect(screen.getByText("风控")).toBeVisible()
     expect(screen.getByText("执行")).toBeVisible()
@@ -279,7 +282,7 @@ describe("console control panel", () => {
     render(<ConsolePage view="trades" />)
     fireEvent.click(await screen.findByRole("button", { name: /BTC-USDT/ }))
 
-    expect(await screen.findByText("智能体分析")).toBeVisible()
+    expect(await screen.findByText(zhT("trades.detailVeto"))).toBeVisible()
     expect(screen.queryByText("20×")).toBeNull()
     expect(screen.queryByText("仓位")).toBeNull()
   })
@@ -587,5 +590,44 @@ describe("reason codes in the collapsed list", () => {
 
     expect(await screen.findAllByText("信号分 0.18，未达开仓阈值")).not.toHaveLength(0)
     expect(screen.queryByText("signal_hold_score_0.18")).toBeNull()
+  })
+})
+
+
+describe("committee veto grid", () => {
+  beforeEach(() => { vi.unstubAllGlobals() })
+  afterEach(() => { cleanup() })
+
+  it("renders the three veto agents with their verdicts", async () => {
+    // 旧版页面渲染三位「分析师」——后端 graph 里根本没有这些节点，卡片永远为空。
+    // 现在展示真实的三路否决 agent（后端 analyses.veto_verdicts）。
+    const decision = {
+      ...decisionRecord,
+      analyses: {
+        veto_verdicts: {
+          news_macro: { veto: false, status: "none", reasoning_summary: "no conflicting news" },
+          structure_liquidity: { veto: true, status: "veto", reasoning_summary: "structure broke down" },
+          data_integrity: { veto: false, status: "none" },
+        },
+      },
+    }
+    stubApi("RUNNING", [], [], [decision])
+
+    render(<ConsolePage view="committee" />)
+
+    expect(await screen.findByText(zhT("committee.vetoNews"))).toBeVisible()
+    expect(screen.getByText(zhT("committee.vetoStructure"))).toBeVisible()
+    expect(screen.getByText(zhT("committee.vetoData"))).toBeVisible()
+    expect(screen.getByText("structure broke down")).toBeVisible()
+    expect(screen.getByText(zhT("vetoOutcome.applied"))).toBeVisible()
+    expect(screen.getAllByText(zhT("vetoOutcome.none"))).toHaveLength(2)
+  })
+
+  it("says a HOLD skips the veto agents instead of showing empty cards", async () => {
+    stubApi("RUNNING", [], [], [{ ...decisionRecord, analyses: null }])
+
+    render(<ConsolePage view="committee" />)
+
+    expect(await screen.findByText(zhT("committee.vetoIdle"))).toBeVisible()
   })
 })
