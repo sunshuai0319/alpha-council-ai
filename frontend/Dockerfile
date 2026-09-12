@@ -1,4 +1,4 @@
-FROM registry.cn-hongkong.aliyuncs.com/jac0625/node:22-alpine-arm64
+FROM node:22-alpine
 
 WORKDIR /app
 
@@ -20,10 +20,6 @@ ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL \
     NEXT_PUBLIC_CLERK_SIGN_UP_URL=$NEXT_PUBLIC_CLERK_SIGN_UP_URL \
     NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL=$NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL \
     NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL=$NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL
-
-# 国内构建：npm 走 npmmirror（package-lock 的 resolved 本来也指向它，这里显式
-# 声明，构建期若需补下载也走镜像，不回落 registry.npmjs.org）。
-ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
 
 COPY package.json package-lock.json ./
 RUN npm ci

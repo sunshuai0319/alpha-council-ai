@@ -32,3 +32,47 @@ def test_default_symbols_are_unchanged() -> None:
         ARK_API_KEY="test-key",
     )
     assert settings.symbol_list == ("BTC-USDT", "ETH-USDT")
+
+
+def test_zilliz_vector_store_settings_are_selected_when_enabled() -> None:
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        MILVUS_URI="http://localhost:19530",
+        MILVUS_USER="local-user",
+        MILVUS_PASSWORD="local-password",
+        MILVUS_DB_NAME="default",
+        MILVUS_COLLECTION="local_collection",
+        ARK_API_KEY="test-key",
+        USE_ZILLIZ=True,
+        ZILLIZ_URI="https://zilliz.example",
+        ZILLIZ_TOKEN="zilliz-token",
+        ZILLIZ_USER="zilliz-user",
+        ZILLIZ_PASSWORD="zilliz-password",
+        ZILLIZ_DB_NAME="zilliz-db",
+        ZILLIZ_COLLECTION="zilliz_collection",
+    )
+
+    assert settings.vector_store_uri == "https://zilliz.example"
+    assert settings.vector_store_token == "zilliz-token"
+    assert settings.vector_store_user == "zilliz-user"
+    assert settings.vector_store_password == "zilliz-password"
+    assert settings.vector_store_db_name == "zilliz-db"
+    assert settings.vector_store_collection == "zilliz_collection"
+
+
+def test_zilliz_vector_store_settings_default_to_local_milvus() -> None:
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        MILVUS_URI="http://localhost:19530",
+        MILVUS_TOKEN="local-token",
+        MILVUS_COLLECTION="local_collection",
+        ARK_API_KEY="test-key",
+        USE_ZILLIZ=False,
+        ZILLIZ_URI="https://zilliz.example",
+        ZILLIZ_TOKEN="zilliz-token",
+        ZILLIZ_COLLECTION="zilliz_collection",
+    )
+
+    assert settings.vector_store_uri == "http://localhost:19530"
+    assert settings.vector_store_token == "local-token"
+    assert settings.vector_store_collection == "local_collection"

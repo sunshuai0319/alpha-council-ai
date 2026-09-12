@@ -31,7 +31,7 @@ class MilvusVectorStore:
         embedding_dimension: int = 1024,
     ) -> None:
         self.settings = settings or get_settings()
-        self.collection = self.settings.milvus_collection
+        self.collection = self.settings.vector_store_collection
         self.embedding_dimension = embedding_dimension
         self._client = client
 
@@ -40,14 +40,14 @@ class MilvusVectorStore:
         if self._client is None:
             from pymilvus import MilvusClient
 
-            kwargs: dict[str, Any] = {"uri": self.settings.milvus_uri}
-            if self.settings.milvus_token:
-                kwargs["token"] = self.settings.milvus_token
-            elif self.settings.milvus_user:
-                kwargs["user"] = self.settings.milvus_user
-                kwargs["password"] = self.settings.milvus_password
-            if self.settings.milvus_db_name:
-                kwargs["db_name"] = self.settings.milvus_db_name
+            kwargs: dict[str, Any] = {"uri": self.settings.vector_store_uri}
+            if self.settings.vector_store_token:
+                kwargs["token"] = self.settings.vector_store_token
+            elif self.settings.vector_store_user:
+                kwargs["user"] = self.settings.vector_store_user
+                kwargs["password"] = self.settings.vector_store_password
+            if self.settings.vector_store_db_name:
+                kwargs["db_name"] = self.settings.vector_store_db_name
             self._client = MilvusClient(**kwargs)
         return self._client
 

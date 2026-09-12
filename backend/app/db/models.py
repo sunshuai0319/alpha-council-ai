@@ -349,7 +349,7 @@ class DocumentSummary(TimestampMixin, Base):
     event_type: Mapped[str] = mapped_column(String(64))
     assets: Mapped[list] = mapped_column(JSON, default=list)
     direction: Mapped[str] = mapped_column(String(16))
-    impact_horizon: Mapped[str] = mapped_column(String(32))
+    impact_horizon: Mapped[str] = mapped_column(String(128))
     confidence: Mapped[float] = mapped_column(Float)
     model_version: Mapped[str] = mapped_column(String(128))
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)

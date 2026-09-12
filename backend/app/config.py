@@ -22,6 +22,39 @@ class Settings(BaseSettings):
     milvus_token: str = ""
     milvus_db_name: str = ""
     milvus_collection: str = "alpha_council_documents_bge_m3_v1"
+    use_zilliz: bool = False
+    zilliz_uri: str = ""
+    zilliz_user: str = ""
+    zilliz_password: str = ""
+    zilliz_token: str = ""
+    zilliz_db_name: str = ""
+    zilliz_collection: str = ""
+
+    @property
+    def vector_store_uri(self) -> str:
+        return self.zilliz_uri if self.use_zilliz else self.milvus_uri
+
+    @property
+    def vector_store_user(self) -> str:
+        return self.zilliz_user if self.use_zilliz else self.milvus_user
+
+    @property
+    def vector_store_password(self) -> str:
+        return self.zilliz_password if self.use_zilliz else self.milvus_password
+
+    @property
+    def vector_store_token(self) -> str:
+        return self.zilliz_token if self.use_zilliz else self.milvus_token
+
+    @property
+    def vector_store_db_name(self) -> str:
+        return self.zilliz_db_name if self.use_zilliz else self.milvus_db_name
+
+    @property
+    def vector_store_collection(self) -> str:
+        if self.use_zilliz and self.zilliz_collection:
+            return self.zilliz_collection
+        return self.milvus_collection
 
     embedding_model_path: str = ""
     reranker_model_path: str = ""

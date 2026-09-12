@@ -1,16 +1,16 @@
 # 统一部署：nginx 网关 + 前端 + 后端 + worker。
 #
-# 只管应用。Postgres 与 Milvus 是外部已有服务，通过 backend/.env 里的
-# DATABASE_URL / MILVUS_URI 连接，不在这里起。
+# 只管应用。Postgres 与 Milvus/Zilliz 是外部已有服务，通过 backend/.env 里的
+# DATABASE_URL / MILVUS_URI（或 ZILLIZ_URI）连接，不在这里起。
 #
 # 两个 env 文件，各管一段：
 #   ./.env          网关端口、前端（NEXT_PUBLIC_*，构建与运行都要）、模型目录
 #   ./backend/.env  后端与 worker
 #
 # 常用命令：
-#   docker compose up -d --build
-#   docker compose logs -f worker
-#   docker compose build web        # 改了 NEXT_PUBLIC_* 之后必须重建前端
+#   docker-compose up -d --build
+#   docker-compose logs -f worker
+#   docker-compose build web        # 改了 NEXT_PUBLIC_* 之后必须重建前端
 
 name: alpha-council-ai
 
@@ -88,7 +88,7 @@ services:
         condition: service_healthy
 
   gateway:
-    image: registry.cn-hongkong.aliyuncs.com/jac0625/nginx:latest-arm64
+    image: nginx:latest
     restart: unless-stopped
     ports:
       - "${GATEWAY_PORT:-8888}:80"

@@ -102,6 +102,13 @@ def test_migrations_record_the_applied_revision(tmp_path) -> None:
     assert stamped == head
 
 
+def test_migration_revision_ids_fit_alembic_version_column() -> None:
+    """revision ID 必须适配 alembic_version.version_num 的 VARCHAR(32)。"""
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+
+    assert all(len(revision.revision) <= 32 for revision in script.walk_revisions())
+
+
 def test_market_snapshots_gains_the_range_and_basis_columns(tmp_path) -> None:
     """新增列必须由增量迁移承载 —— create_all 不会动已存在的表。
 
@@ -177,3 +184,38 @@ def test_positions_gains_management_columns(tmp_path) -> None:
     columns = _columns(url, "positions")
     for name in ("effective_stop", "opened_at", "peak_price"):
         assert name in columns, f"positions 缺少 {name}"
+
+
+def test_document_summary_impact_horizon_is_wide_enough_for_composite_labels(tmp_path) -> None:
+    """组合影响周期（例如 short-term bearish; medium-term bullish）不能被截断。"""
+    url = f"sqlite+pysqlite:///{tmp_path / 'document_summary_impact_horizon.db'}"
+
+    engine = create_engine(url)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE document_summaries (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                document_id VARCHAR(36) NOT NULL,
+                summary TEXT NOT NULL,
+                event_type VARCHAR(64) NOT NULL,
+                assets JSON NOT NULL,
+                direction VARCHAR(16) NOT NULL,
+                impact_horizon VARCHAR(32) NOT NULL,
+                confidence FLOAT NOT NULL,
+                model_version VARCHAR(128) NOT NULL,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """
+        )
+    engine.dispose()
+
+    _upgrade(url)
+
+    column = next(
+        column
+        for column in inspect(create_engine(url)).get_columns("document_summaries")
+        if column["name"] == "impact_horizon"
+    )
+    assert column["type"].length == 128
