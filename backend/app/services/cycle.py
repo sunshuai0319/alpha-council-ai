@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
 
 from app.agents.graph import TradingCycleGraph, build_trading_cycle_graph
@@ -56,6 +56,8 @@ from app.services.context import load_macro_context
 from app.signals.params import StrategyParams
 
 logger = logging.getLogger(__name__)
+
+CANDLE_LOOKUP_BATCH_SIZE = 1000
 
 #: 对端不可用（5xx / 超时 / 网络抖动）不是策略失败。把它算进连亏熔断，会让一次短暂
 #: 的对端抖动把账户 PAUSED 到需要人工恢复 —— 实测 WEEX 的 503 是常规抖动。
@@ -227,6 +229,14 @@ class TradingCycleService:
             candle_result.items,
             snapshot_result.items,
             microstructure_result.items,
+        )
+        logger.info(
+            "cycle market persistence complete: user=%s symbol=%s candles=%d snapshots=%d microstructures=%d",
+            user_id,
+            symbol,
+            len(candle_result.items),
+            len(snapshot_result.items),
+            len(microstructure_result.items),
         )
         # 归并落库必须在 _persist 的 commit 之前（生产会话 autoflush=False）。
         record_collector_errors(self.db, candle_result, snapshot_result, microstructure_result)
@@ -916,29 +926,47 @@ class TradingCycleService:
         if self.db is None:
             return
         captured_at = datetime.now(UTC)
+        candle_keys = list({
+            (candle.symbol, candle.timeframe, candle.open_time)
+            for candle in candles
+        })
+        existing_candle_keys: set[tuple[str, str, int]] = set()
+        for offset in range(0, len(candle_keys), CANDLE_LOOKUP_BATCH_SIZE):
+            batch = candle_keys[offset : offset + CANDLE_LOOKUP_BATCH_SIZE]
+            existing_candle_keys.update(
+                self.db.execute(
+                    select(
+                        MarketCandle.symbol,
+                        MarketCandle.timeframe,
+                        MarketCandle.open_time,
+                    ).where(
+                        tuple_(
+                            MarketCandle.symbol,
+                            MarketCandle.timeframe,
+                            MarketCandle.open_time,
+                        ).in_(batch)
+                    )
+                ).tuples()
+            )
         for candle in candles:
-            existing = self.db.scalar(
-                select(MarketCandle).where(
-                    MarketCandle.symbol == candle.symbol,
-                    MarketCandle.timeframe == candle.timeframe,
-                    MarketCandle.open_time == candle.open_time,
+            candle_key = (candle.symbol, candle.timeframe, candle.open_time)
+            if candle_key in existing_candle_keys:
+                continue
+            existing_candle_keys.add(candle_key)
+            self.db.add(
+                MarketCandle(
+                    symbol=candle.symbol,
+                    timeframe=candle.timeframe,
+                    open_time=candle.open_time,
+                    open=candle.open,
+                    high=candle.high,
+                    low=candle.low,
+                    close=candle.close,
+                    volume=candle.volume,
+                    source=candle.source,
+                    captured_at=captured_at,
                 )
             )
-            if existing is None:
-                self.db.add(
-                    MarketCandle(
-                        symbol=candle.symbol,
-                        timeframe=candle.timeframe,
-                        open_time=candle.open_time,
-                        open=candle.open,
-                        high=candle.high,
-                        low=candle.low,
-                        close=candle.close,
-                        volume=candle.volume,
-                        source=candle.source,
-                        captured_at=captured_at,
-                    )
-                )
         # ticker 不返回买卖一/资金费率/持仓量（见 docs/weex-virtual-api.md §1.2），
         # 真实值在同一轮的微观结构采集里。快照行从它补上 —— 否则 market_snapshots
         # 这几列永远是空，市场页的买一/卖一与资金费率只能显示占位符，而真值一直

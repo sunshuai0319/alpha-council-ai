@@ -9,6 +9,7 @@ from app.db.models import (
     AccountSnapshot,
     Base,
     CollectorError,
+    MarketCandle,
     MarketMicrostructureRecord,
     PnlSnapshot,
     Position,
@@ -174,6 +175,58 @@ def test_cycle_persists_microstructure_without_affecting_the_decision(tmp_path) 
         assert len(rows) == 1
         assert rows[0].symbol == "BTC-USDT"
         assert rows[0].funding_rate == 0.0001
+
+
+def test_market_candle_persistence_checks_existing_rows_in_bulk(tmp_path) -> None:
+    """远程 PostgreSQL 上不能为每根 K 线单独发一次存在性查询。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'bulk-candles.db'}")
+    Base.metadata.create_all(engine)
+    timestamps = (1_700_000_000_000, 1_700_043_200_000, 1_700_086_400_000)
+    candles = [
+        Candle(
+            symbol="BTC-USDT",
+            timeframe="12h",
+            open_time=timestamp,
+            open=100,
+            high=101,
+            low=99,
+            close=100,
+            volume=10,
+        )
+        for timestamp in (*timestamps, timestamps[0])
+    ]
+    statements: list[str] = []
+
+    with Session(engine) as db:
+        db.add(
+            MarketCandle(
+                symbol="BTC-USDT",
+                timeframe="12h",
+                open_time=timestamps[0],
+                open=100,
+                high=101,
+                low=99,
+                close=100,
+                volume=10,
+            )
+        )
+        db.commit()
+
+    def capture_statement(_conn, _cursor, statement, _parameters, _context, _executemany) -> None:
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", capture_statement)
+    try:
+        with Session(engine) as db:
+            service = TradingCycleService(db=db)
+            service._persist_market_data(candles, [])
+            assert len(db.scalars(select(MarketCandle)).all()) == len(timestamps)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_statement)
+
+    select_count = sum(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+    # 一次是持久化前的批量存在性检查，一次是测试本身的结果查询。
+    assert select_count == 2
 
 
 def test_snapshot_borrows_fields_the_ticker_omits_from_microstructure(tmp_path) -> None:
