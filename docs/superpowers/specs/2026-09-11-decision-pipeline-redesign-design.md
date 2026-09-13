@@ -2,6 +2,12 @@
 
 日期：2026-09-11
 
+> **当前实现说明（2026-09-13）**：本文记录重构的动机和目标。代码已经完成其中一部分，
+> 但当前 as-built 图、RAG 边界和止盈止损现状以
+> [`docs/current-architecture.md`](../../current-architecture.md) 为准。尤其要注意：旧的
+> `market/quant/macro/committee` 函数仍存在，但不在当前编译图路径上；软件层 TP、near-target
+> 超时和最大持仓时长已经完成，分批止盈仍未完成。
+
 ## 1. 问题
 
 系统跑了 19 个决策周期，**全部 HOLD，订单表为空**（`trading_decisions` 19 条 `HOLD/ALLOWED`，`orders` 0 条）。
@@ -76,13 +82,27 @@
 
 每层单独上线、单独可验证，坏了能定位到具体层。
 
-```
-采集 ──► 规则信号器 ──► LLM 封闭否决 ──► RiskEngine ──► 执行下单（挂灾难止损）
-  │                                                          │
-  └──────────► MarketContext（宏观/新闻）                     ▼
-                                                       持仓登记
-                                                          │
-                                              每轮 PositionManager 巡检
+```text
+load_context → validate_freshness ──失败──→ safe_hold → persist_decision
+                         │
+                         ↓
+                    signal_node
+                    ├─ HOLD ───────────────→ persist_decision
+                    └─ LONG/SHORT
+                         ↓
+                    veto_fanout
+              ┌────────────┼────────────┐
+              ↓            ↓            ↓
+       retrieve_evidence  structure_veto  data_integrity
+              ↓
+          news_veto
+              └────────────┼────────────┘
+                         ↓
+                     merge_veto
+                         ↓
+                 proposal_validator
+                    ├─失败→ safe_hold
+                    └─通过→ persist_decision
 ```
 
 ### 第 1 层：数据层
@@ -119,6 +139,9 @@ open_interest, open_interest_change_pct  ← openInterest + 上轮快照（需�
 
 输入：`technical_indicators` + `MarketSnapshot` + `MarketMicrostructure`（可缺失）+ 宏观上下文
 输出：结构化提案（方向 / 仓位 / SL / TP / 灾难止损 / 分数分解）
+
+当前代码中，`signal_node` 实际只用技术指标、现价和 ATR 产生方向与风险参数；
+`MarketMicrostructure` 和宏观上下文由后续 veto 节点使用，不参与当前规则打分。
 
 打分卡，每项 -1..+1，加权求和成 `composite ∈ [-1, 1]`：
 
@@ -175,11 +198,18 @@ class VetoVerdict(BaseModel):
 
 **关键：`证据不足` 不再是合法否决理由。** 证据不足时规则信号器自己就输出 HOLD 了——这一条堵死了当前「全部 HOLD」的元凶。
 
-**2.4 三个 analyst 改造** — 保留三个角色以维持委员会叙事，但输出改为结构化：`direction ∈ {-1, 0, 1}` / `strength ∈ [0,1]` / `horizon` / `key_observations`，从「决定要不要交易」退为「给否决节点提供结构化观察」。
+**2.4 当前 Agent 角色** — 原三个 analyst/committee 主流程没有接入当前 builder。当前实际
+保留的 LLM 角色只有两个封闭 veto：`news_macro` 读取 RAG 证据和宏观事件，
+`structure_liquidity` 读取技术指标和微观结构；另有一个确定性 `data_integrity` veto。
+方向、仓位和 SL/TP 来自 `signal_node`，不是 LLM。旧的 `market_node`、`quant_node`、
+`macro_node`、`committee_node` 函数仍可单独调用，但不属于当前线上图路径。
 
 **2.5 修必填字段** — `AnalysisResult.model_version` / `trace_id` 改为有默认值。
 
-**2.6 RAG 检索改造** — 现在是固定串 `"{asset} market outlook"`（`app/agents/graph.py:205`），召回的是与交易无关的公司新闻。改为按方向与时间窗构造查询，并过滤 `impact_horizon`：信号器判 LONG 时检索利空证据、判 SHORT 时检索利多证据（**反向取证**——否决节点要找的是反面证据，不是附和材料），时间窗限制在最近 24h。检索目标从「给委员会凑证据」变成「给否决节点提供可能推翻本次判断的材料」。
+**2.6 RAG 当前状态与后续改造** — RAG 已接入默认生产图，但当前仍使用固定查询
+`"{asset} market outlook"`，最多召回 5 条后交给 `news_macro` veto；没有按 LONG/SHORT
+反向取证，也没有最近 24 小时过滤。按方向与时间窗构造查询、过滤 `impact_horizon` 的
+方案仍是后续优化项，不能当作当前行为。
 
 ### 第 3 层：风控与持仓管理
 
@@ -194,20 +224,28 @@ class VetoVerdict(BaseModel):
 
 **3.2 单品种同向只持一仓** — 现在 `_execute` 每轮都可能新开仓，5 分钟一轮会连续加仓击穿风险预算。
 
-**3.3 PositionManager** — 每轮独立于开仓决策运行：
+**3.3 PositionManager** — 每轮独立于开仓决策运行。当前已经实现有效止损触发、保本、ATR
+移动止损、软件止盈、near-target 超时、最大持仓时长、低盈利时间止损和结构失效；分批止盈
+尚未实现。当前实现与目标设计的差异如下：
 
 | 规则 | 触发 | 动作 |
 |---|---|---|
 | 保本 | 浮盈 ≥ 1R | 有效止损上移到 entry |
 | 移动止损 | 浮盈 ≥ 1R 后 | 跟随 `最高价 ∓ ATR(14, 1h)`，只上移不下移 |
-| 分批止盈 | 浮盈 ≥ 1R / 2R | 各平 1/3，余下交给移动止损 |
+| 软件止盈 | 当前有利浮动达到 target R（默认 2R） | 软件层 reduce-only 市价平仓；交易所不再接收 `tpTriggerPrice` |
+| near-target 释放 | 峰值浮盈达到 1.8R 后连续 6h 未到目标 | 软件层 reduce-only 市价平仓，时间戳落库 |
+| 最大持仓时长 | 持仓达到 72h | 无条件软件层 reduce-only 市价平仓 |
+| 分批止盈（目标） | 浮盈 ≥ 1R / 2R | 各平 1/3，余下交给移动止损；本轮尚未实现 |
 | 时间止损 | 持仓 > 48h 且浮盈 < 0.3R | 平仓 |
 | 结构失效 | `composite` 反转穿越 0 | 平仓 |
 | 灾难止损 | 交易所触发单 | 兜底（仅当软件层挂掉） |
 
 **实现约束**：没有撤单接口，所以「移动止损」是**本地记账 + 按需下 reduceOnly 市价单**，不是改交易所那条触发单。有效止损存本地（`positions` 表加列 `effective_stop`）。交易所侧只挂 `3 × stop_distance` 的宽止损，正常情况下永远不该被触发。
 
-§3.2 已实测确认：软件层平仓时交易所会撤掉关联触发单，两者不会互相打架。
+§3.2 已实测确认：软件层平仓时交易所会撤掉关联触发单，两者不会互相打架。当前
+`ExecutionService` 只把 `disaster_stop` 发送为 `slTriggerPrice`；`PositionManager` 负责
+正常 TP、near-target 超时和最大持仓时长。软件平仓只有在交易所订单状态为 `FILLED` 时才
+立即收敛本地状态，`UNKNOWN/OPEN` 留待下一轮 reconciliation。
 
 ### 第 4 层：验证
 
@@ -253,7 +291,8 @@ class VetoVerdict(BaseModel):
 - **风险反推**：断言 `stop_distance == 1.5 × ATR(1h)`、`notional ≤ 20% equity`、单笔风险 ≤ 0.5%
 - **TP / RR 校验**：方向填反 → 拒绝；RR < 1.5 → 拒绝；`is_reducing` 时豁免
 - **VetoVerdict**：枚举外理由 → schema 拒绝；`veto=True` + 空 evidence → 判定为 `veto_invalid_ignored` 且放行
-- **PositionManager**：保本 / 移动止损只上移 / 分批止盈 / 时间止损 / 结构失效，逐条独立测
+- **PositionManager**：保本 / 移动止损只上移 / 软件止盈 / near-target 超时 / 最大持仓时长 /
+  时间止损 / 结构失效，逐条独立测
 - **单品种一仓**：已有同向仓位时不重复开仓
 - **回测器**：固定 fixture K 线，断言已知结果
 - **熔断隔离**：模拟 WEEX 503 连续 N 次，断言账户**未**被 PAUSED

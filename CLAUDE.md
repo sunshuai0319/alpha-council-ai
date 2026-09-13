@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概览
 
-面向 WEEX 虚拟盘的 AI 合约交易实验平台。核心是「采集 → AI 委员会 → 硬性风控 → 模拟执行」的可审计决策周期，只运行在 WEEX virtual futures 上，不接触实盘资金。
+面向 WEEX 虚拟盘的 AI 合约交易实验平台。核心是「采集 → 确定性信号 + LLM veto → 硬性风控 → 模拟执行」的可审计决策周期，只运行在 WEEX virtual futures 上，不接触实盘资金。
 
 Monorepo 结构：
 
@@ -48,13 +48,13 @@ npm run test:e2e   # Playwright（tests/e2e，需要 Clerk 配置）
 
 worker 每 5 分钟（`decision_interval_seconds`）对每个启用的虚拟账户、每个 symbol（`BTC-USDT`/`ETH-USDT`）跑一轮 `TradingCycleService.run()`：
 
-1. **采集**：`WeexCollector` 拉取 5m/1h/4h K 线（各 100 根）与 ticker 快照。`captured_at` 必须是本地观测时刻——WEEX ticker 的 `closeTime` 是 24h 滚动窗口边界，比当前落后约 12 分钟，用作时间戳会让 90s 新鲜度门永远失败。
-2. **委员会**：LangGraph（`app/agents/graph.py`）并行跑 market / quant / macro 三个分析节点 + RAG 证据检索（BGE-M3 嵌入 + BGE-Reranker 重排，Milvus 向量库），最后 committee 节点合成 `TradeProposal`。任何节点异常都退化为 neutral 分析或安全 HOLD，**绝不**直接放行。
+1. **采集**：`WeexCollector` 按 `market_timeframes` 拉取默认 5m/1h/4h K 线（每次最多 1000 根）与 ticker 快照，并采集可用的盘口/成交/资金费率/OI。`captured_at` 必须是本地观测时刻——WEEX ticker 的 `closeTime` 是 24h 滚动窗口边界，比当前落后约 12 分钟，用作时间戳会让 90s 新鲜度门永远失败。
+2. **决策图**：LangGraph（`app/agents/graph.py`）当前实际执行“行情新鲜度 → 确定性规则信号/仓位/SL/TP → 非 HOLD 三路扇出 → news 分支做 RAG、structure/data-integrity 分支并行 → 合并/校验”。旧的 market / quant / macro / committee 函数仍保留但不在当前编译图路径上。行情/RAG/校验错误进入安全 HOLD；LLM veto 当前对非法输出按 `invalid_ignored` 记录，生产安全策略见 `docs/current-architecture.md` 的后续优化。
 3. **风控**：`RiskEngine.evaluate`（`app/risk/engine.py`）是不可变硬上限，模型输出无法覆盖。数据过期、杠杆越界、名义敞口超限、缺止损、日亏损、连亏、日交易额度等任一不过 → 拒绝；熔断信号（日亏损/连亏/权益非正）会暂停账户。CLOSE 单只受账户状态类检查约束，不被敞口/杠杆限制拦截（拦平仓会锁死仓位）。
 4. **执行**：`ExecutionService`（`app/execution/service.py`）只接受 `risk_decision.allowed == true` 的提案；下单超时用 `stable_client_order_id` 回查对账，状态未知则返回 `UNKNOWN` 而非重试。
 5. **对账**：`ReconciliationService` 从 balance 快照推导已实现盈亏（虚拟盘无成交流水）。
 
-并行还有一条 `DocumentPipeline`（`app/workers/pipeline.py`）：RSS 新闻 + FRED CSV + 美联储 RSS → 清洗去重 → Ark 摘要 → BGE-M3 分块嵌入写 Milvus。FRED 月度序列按 `fred_monthly_interval_seconds` 重抓，失败的序列下一轮立刻重试（`_schedule.mark` 只推进成功的）。
+并行还有一条 `DocumentPipeline`（`app/workers/pipeline.py`）：RSS 新闻 + FRED CSV + 美联储 RSS → 清洗去重 → Ark 摘要 → BGE-M3 分块嵌入写 Milvus。RAG 只作为非 HOLD 入场路径的新闻/宏观 veto 证据，不参与规则方向、风控或下单。FRED 月度序列按 `fred_monthly_interval_seconds` 重抓，失败的序列下一轮立刻重试（`_schedule.mark` 只推进成功的）。
 
 ## 关键约定与坑
 
@@ -111,4 +111,4 @@ worker 每 5 分钟（`decision_interval_seconds`）对每个启用的虚拟账�
 
 ## 安全边界
 
-生产必须保持虚拟盘：`WEEX_VIRTUAL_ONLY=true`，凭据属于 virtual 账户，不落日志、不进前端环境变量。风控是最终边界：模型异常、RAG 异常、数据过期、账户不可用、订单状态不确定一律 HOLD/拒绝/UNKNOWN，不自动重试下单。测试接口 `POST /api/test/run-cycle` 只在 `APP_ENV=test` + `X-Test-Exchange: fixture` 时可用，不触网、不发真实订单。
+生产必须保持虚拟盘：`WEEX_VIRTUAL_ONLY=true`，凭据属于 virtual 账户，不落日志、不进前端环境变量。风控是最终边界：RAG 异常、数据过期、账户不可用、订单状态不确定一律 HOLD/拒绝/UNKNOWN；LLM veto 非法输出当前记录 `invalid_ignored`，应按 `docs/current-architecture.md` 的 P1 计划改为默认 fail-closed，不自动重试下单。测试接口 `POST /api/test/run-cycle` 只在 `APP_ENV=test` + `X-Test-Exchange: fixture` 时可用，不触网、不发真实订单。

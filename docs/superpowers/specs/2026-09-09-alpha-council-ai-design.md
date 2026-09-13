@@ -2,6 +2,8 @@
 
 日期：2026-09-09
 
+> 历史首版方案：本文记录初始产品与架构设想，不等同于当前实现合同。当前 LangGraph 节点、RAG 边界、WEEX 下单与止盈止损行为请以 [`docs/current-architecture.md`](../../current-architecture.md) 为准；若本文与现状冲突，以当前实现文档和代码为准。
+
 ## 1. 目标与范围
 
 Alpha Council AI 是一个可演示、可扩展为 SaaS 的多智能体虚拟合约交易平台。首版使用 WEEX 虚拟盘，交易 BTC-USDT 与 ETH-USDT 永续合约，覆盖 5m、1h、4h 周期。系统每 5 分钟自动评估一次，生成交易提案，经确定性风控引擎校验后才允许虚拟盘下单。

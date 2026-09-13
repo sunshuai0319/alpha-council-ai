@@ -2,7 +2,10 @@
 
 ## 安全边界
 
-生产配置必须保持 `WEEX_VIRTUAL_ONLY=true`，并使用 WEEX 的 virtual futures 凭据。`ExecutionService` 只接收 `RiskDecision.allowed == true` 的提案；模型异常、RAG 异常、数据过期、账户不可用和订单状态不确定都会进入 HOLD、拒绝或 UNKNOWN，不会自动重试下单。
+生产配置必须保持 `WEEX_VIRTUAL_ONLY=true`，并使用 WEEX 的 virtual futures 凭据。`ExecutionService` 只接收 `RiskDecision.allowed == true` 的提案；RAG 异常、数据过期、账户不可用和订单状态不确定都会进入 HOLD、拒绝或 UNKNOWN。LLM veto 的非法输出当前记录为 `invalid_ignored`，上线前应按当前架构文档的 P1 方案改为默认 fail-closed，不会自动重试下单。
+
+当前 agent、LangGraph 图、RAG 边界和止盈止损生命周期见
+[`docs/current-architecture.md`](current-architecture.md)。该文档区分了当前实现与尚未落地的优化设计。
 
 ## 启动检查
 
@@ -43,6 +46,15 @@ RAG 检索失败会被记录到 cycle errors；证据不足时提案不能开新
 ### 风控拒绝、暂停或 UNKNOWN
 
 先查看 Dashboard 的 Risk events 和 `/api/events`。确认数据年龄、杠杆、单品种名义本金、止损、日亏损和连续亏损条件。`UNKNOWN` 订单必须先通过 client order id 对账，不得手工重复提交同一 proposal。
+
+### 仓位长期停留在 1.8R/1.9R
+
+当前默认目标是 `2R`，正常 TP 由 `PositionManager` 触发软件层 reduce-only 市价平仓，
+交易所侧只保留 `3R` 灾难止损。达到 `1.8R` 后会锁存 near-target 时间，超过 6 小时仍未
+达到 `2R` 会退出；所有仓位另有 72 小时最大持仓时长。若仓位仍长期占用保证金，先检查
+worker 是否持续运行、WEEX `position/allPosition`、本地 `positions` 和最近的 reconciliation；
+重点确认软件平仓返回的订单状态是否为 `FILLED`。`UNKNOWN/OPEN` 不会提前把本地仓位标为
+`CLOSED`，下一轮对账确认后再收敛。
 
 ## 暂停与恢复
 

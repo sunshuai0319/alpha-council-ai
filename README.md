@@ -1,6 +1,6 @@
 # Alpha Council AI
 
-面向 WEEX 虚拟盘的 AI 合约交易实验平台。系统把实时市场数据、免费新闻/宏观数据、本地 BGE-M3 + BGE-Reranker-v2-M3 检索和火山 Ark `deepseek-v4-pro-ga-260813` 委员会串成一个可审计的决策周期。
+面向 WEEX 虚拟盘的 AI 合约交易实验平台。系统把实时市场数据、免费新闻/宏观数据、本地 BGE-M3 + BGE-Reranker-v2-M3 检索和火山 Ark `deepseek-v4-pro-ga-260813` LLM veto 串成一个可审计的决策周期。
 
 > 当前版本只允许 WEEX virtual futures。所有订单都经过确定性风控，默认只在虚拟盘执行；不接触实盘资金，也不托管用户资产。
 
@@ -11,10 +11,13 @@ Next.js + Clerk
         │ Bearer token
 FastAPI ── TradingCycleService ── WEEX virtual API
    │               │
-   ├── PostgreSQL  ├── LangGraph: market / quant / macro / committee
-   ├── Milvus      └── RiskEngine → ExecutionService → reconciliation
-   └── Worker: 5-minute cycle for enabled virtual accounts
+   ├── PostgreSQL  ├── LangGraph: freshness → rule signal → veto fanout
+   ├── Milvus      │                         → RAG(news) + structure/data → merge → validation
+   └── Worker      └── PositionManager → RiskEngine → Execution → reconciliation
+                    (5-minute cycle; DocumentPipeline runs alongside)
 ```
+
+当前实现的完整 agent、RAG 和下单生命周期见 [`docs/current-architecture.md`](docs/current-architecture.md)。
 
 PostgreSQL 和 Milvus 已按项目约束作为外部服务使用，两个 Compose 文件不会创建它们。
 
@@ -62,7 +65,8 @@ Clerk Dashboard 中启用邮箱和 Google 登录；钱包登录按 Clerk 支持�
 - FRED：公开 CSV 序列（默认包含 FEDFUNDS、CPIAUCSL、UNRATE、DFF、DGS10）。
 - Federal Reserve 官方 RSS：宏观事件补充来源。
 
-新闻正文先清洗、规范化 URL、内容 hash 去重，再由 Ark 摘要；结构化行情和账户事实不写进 RAG。
+新闻正文先清洗、规范化 URL、内容 hash 去重，再由 Ark 摘要并写入 BGE-M3/Milvus。RAG 只
+给非 HOLD 入场路径的新闻/宏观 veto 提供证据；结构化行情和账户事实不写进 RAG。
 
 ## 验证
 

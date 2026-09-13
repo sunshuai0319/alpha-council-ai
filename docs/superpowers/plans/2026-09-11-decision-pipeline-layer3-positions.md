@@ -1,4 +1,4 @@
-# 决策链重构 · 第 3 层：持仓管理 实施计划
+# 决策链重构 · 第 3 层：持仓管理 实施计划（执行记录）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
@@ -8,6 +8,11 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-11-decision-pipeline-redesign-design.md` 第 3 层
 **实测依据:** `docs/weex-virtual-api.md`
+
+> **执行状态（2026-09-13）**：代码级任务已完成并合并到 `main`。除原有保本、移动止损、
+> 时间止损和结构失效外，当前实现还包含软件 TP、near-target 时间锁存/超时、72 小时最大
+> 持仓时长、平仓成交确认和 `near_target_at` 迁移。真实 WEEX 开仓验证仍需在具备 virtual
+> 凭据和运行环境后单独执行。
 
 ---
 
@@ -27,10 +32,10 @@
 
 **Files:** `app/risk/engine.py`、`tests/unit/test_risk.py`
 
-- [ ] 写失败测试：LONG 的 TP ≤ entry → `take_profit_wrong_side`；SHORT 的 TP ≥ entry → 同；R:R < 1.5 → `reward_risk_too_low`；`is_reducing` 时两条都豁免
-- [ ] 确认失败
-- [ ] 实现（沿用 `is_reducing` 豁免，与现有 `stop_loss_required` 同段）
-- [ ] 确认通过 + 提交
+- [x] 写失败测试：LONG 的 TP ≤ entry → `take_profit_wrong_side`；SHORT 的 TP ≥ entry → 同；R:R < 1.5 → `reward_risk_too_low`；`is_reducing` 时两条都豁免
+- [x] 确认失败
+- [x] 实现（沿用 `is_reducing` 豁免，与现有 `stop_loss_required` 同段）
+- [x] 确认通过 + 提交
 
 ---
 
@@ -40,10 +45,10 @@
 
 **Files:** `app/services/cycle.py`、`tests/api/test_cycle_service.py`
 
-- [ ] 写失败测试：已有同 symbol 持仓时，新开仓被拒（`position_already_open`）；CLOSE 不受影响
-- [ ] 确认失败
-- [ ] 实现：`_evaluate_proposal` 里已有 `positions`，加一条检查
-- [ ] 确认通过 + 提交
+- [x] 写失败测试：已有同 symbol 持仓时，新开仓被拒（`position_already_open`）；CLOSE 不受影响
+- [x] 确认失败
+- [x] 实现：`_evaluate_proposal` 里已有 `positions`，加一条检查
+- [x] 确认通过 + 提交
 
 ---
 
@@ -51,10 +56,10 @@
 
 **Files:** `app/domain/schemas.py`（`TradeProposal` 加 `disaster_stop`）、`app/agents/graph.py`（signal_node 填）、`app/execution/service.py`（下单用 disaster_stop）、`tests/unit/test_execution*.py`
 
-- [ ] 写失败测试：非 HOLD 提案带 `disaster_stop` 时，下单请求的 `stop_loss` 用的是 disaster_stop 而不是 stop_loss
-- [ ] 确认失败
-- [ ] 实现
-- [ ] 确认通过 + 提交
+- [x] 写失败测试：非 HOLD 提案带 `disaster_stop` 时，下单请求的 `stop_loss` 用的是 disaster_stop 而不是 stop_loss
+- [x] 确认失败
+- [x] 实现
+- [x] 确认通过 + 提交
 
 ---
 
@@ -64,8 +69,8 @@
 
 **Files:** `app/db/models.py`、`alembic/versions/009_position_management.py`、`tests/integration/test_migrations.py`
 
-- [ ] 写失败测试
-- [ ] 实现（照 002 模板：`inspect` 判存在再 `op.add_column`）
+- [x] 写失败测试
+- [x] 实现（照 002 模板：`inspect` 判存在再 `op.add_column`）
 - [ ] 跑真实库迁移
 - [ ] 提交
 
@@ -79,18 +84,22 @@
 |---|---|---|
 | 保本 | 浮盈 ≥ 1R | `effective_stop` 移到 entry |
 | 移动止损 | 浮盈 ≥ 1R | 跟随 `最高价 ∓ 1×ATR(1h)`，**只上移不下移** |
+| 软件止盈 | 峰值浮盈达到 2R | 软件层 reduce-only 市价平仓 |
+| near-target 释放 | 峰值浮盈达到 1.8R 后 6h 未到 2R | 软件层 reduce-only 市价平仓 |
+| 最大持仓时长 | 持仓达到 72h | 软件层 reduce-only 市价平仓 |
 | 时间止损 | 持仓 > 48h 且浮盈 < 0.3R | 平仓 |
 | 结构失效 | `composite` 反向穿越 0 | 平仓 |
 | 有效止损触及 | 现价 ≤/≥ effective_stop | 平仓（reduceOnly） |
 
 分批止盈（1R/2R 各平 1/3）**本轮不做** —— 它需要部分平仓的数量簿记与多次下单，风险与复杂度都更高，先让主干跑顺。
 
-**Files:** `app/positions/manager.py`（新）、`app/services/cycle.py`（接线）、`tests/unit/test_position_manager.py`
+**Files:** `app/positions/manager.py`、`app/services/cycle.py`、`app/backtest/engine.py`、
+`app/config.py`、`app/signals/params.py`、`app/db/models.py`、增量迁移、相关测试
 
-- [ ] 写失败测试（逐条规则，纯函数式：给状态 → 断言动作）
-- [ ] 实现
-- [ ] 接进 cycle（在 `_execute` 之前跑，先处理已有仓位）
-- [ ] 确认通过 + 提交
+- [x] 写失败测试（逐条规则，纯函数式：给状态 → 断言动作）
+- [x] 实现
+- [x] 接进 cycle（在 `_execute` 之前跑，先处理已有仓位）
+- [x] 确认通过 + 提交
 
 ---
 
@@ -104,12 +113,12 @@
 
 ## 完成标准
 
-- [ ] TP 方向与 R:R 有硬校验，平仓单豁免
-- [ ] 已有仓位时不再加仓
-- [ ] 交易所侧是宽灾难止损，软件层管紧止损
-- [ ] 保本 / 移动止损 / 时间止损 / 结构失效 四条规则生效且只上移不下移
-- [ ] `uv run pytest` / `ruff` / `mypy` 全绿
+- [x] TP 方向与 R:R 有硬校验，平仓单豁免
+- [x] 已有仓位时不再加仓
+- [x] 交易所侧是宽灾难止损，软件层管紧止损
+- [x] 保本 / 移动止损 / 软件止盈 / near-target 超时 / 最大持仓时长 / 时间止损 / 结构失效规则生效
+- [x] `uv run pytest` / `ruff` / `mypy` 在测试配置下全绿
 
 ## 诚实说明
 
-本层的参数（1R 保本、1×ATR 移动、48h 时间止损、0.3R 阈值）**同样是手拍的**。它们和打分的权重一样，只有第 4 层回测才能验证是否真的改善结果。本层解决的是「有没有管理」，不是「管理得好不好」。
+本层的参数（1R 保本、1×ATR 移动、1.8R near-target、6h 超时、72h 最大持仓、48h 时间止损、0.3R 阈值）**同样是手拍的**。它们和打分的权重一样，只有第 4 层回测和前向数据才能验证是否真的改善结果。本层解决的是「有没有管理」，不是「管理得好不好」。
