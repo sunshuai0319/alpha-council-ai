@@ -18,6 +18,7 @@ from app.domain.schemas import (
     VetoReason,
     VetoVerdict,
 )
+from app.rag.query import RetrievalRequest, build_veto_retrieval_request
 from app.signals.params import StrategyParams
 from app.signals.scorer import HOLD as SIGNAL_HOLD
 from app.signals.scorer import LONG as SIGNAL_LONG
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 class EvidenceRetriever(Protocol):
-    def retrieve(self, query: str, *, asset: str | None = None, limit: int = 3) -> list[Any]: ...
+    def retrieve(self, request: RetrievalRequest) -> list[Any]: ...
 
 
 class GraphState(TypedDict, total=False):
@@ -221,15 +222,47 @@ def validate_freshness(
     return {"errors": errors}
 
 
-def retrieve_evidence(state: TradingCycleState, *, retriever: EvidenceRetriever | None = None) -> dict[str, Any]:
+def _serialize_evidence(item: Any) -> Any:
+    if isinstance(item, dict):
+        return item
+    if hasattr(item, "model_dump"):
+        return item.model_dump()
+    return vars(item)
+
+
+def retrieve_evidence(
+    state: TradingCycleState,
+    *,
+    retriever: EvidenceRetriever | None = None,
+    now_ms: int | None = None,
+    lookback_hours: int = 24,
+    limit: int = 5,
+    candidate_limit: int | None = 25,
+    impact_horizon: str | None = None,
+) -> dict[str, Any]:
     current = _as_state(state)
     if retriever is None:
-        return {"retrieved_evidence": []}
-    asset = current.symbol.split("-")[0].upper()
-    try:
-        evidence = retriever.retrieve(f"{asset} market outlook", asset=asset, limit=5)
         return {
-            "retrieved_evidence": [item.__dict__ if hasattr(item, "__dict__") else item for item in evidence]
+            "retrieved_evidence": [],
+            "errors": [*current.errors, "retriever_unavailable"],
+        }
+    asset = current.symbol.split("-")[0].upper()
+    proposal = current.trade_proposal
+    if proposal is None or proposal.action not in {Action.LONG, Action.SHORT}:
+        return {"retrieved_evidence": []}
+    try:
+        request = build_veto_retrieval_request(
+            asset=asset,
+            direction=proposal.action.value,
+            now_ms=now_ms if now_ms is not None else _now_ms(),
+            lookback_hours=lookback_hours,
+            limit=limit,
+            candidate_limit=candidate_limit,
+            impact_horizon=impact_horizon,
+        )
+        evidence = retriever.retrieve(request)
+        return {
+            "retrieved_evidence": [_serialize_evidence(item) for item in evidence]
         }
     except Exception as exc:  # noqa: BLE001 - RAG failure must not create a trade
         return {"retrieved_evidence": [], "errors": [*current.errors, f"retrieval_failed:{exc}"]}
@@ -323,8 +356,12 @@ def _run_veto_agent(
     """
 
     if llm is None:
-        # 没配 LLM 就不能否决：规则信号直接放行，不因缺 LLM 变 HOLD。
-        return {"veto_verdicts": {agent: {"veto": False, "status": "skipped_no_llm"}}}
+        # 安全校验器不可用时不能把规则信号直接放行。
+        return {
+            "veto_verdicts": {
+                agent: {"veto": True, "status": "unavailable_fail_closed"}
+            }
+        }
     reason_list = ", ".join(reason.value for reason in allowed_reasons)
     prompt = (
         f"You are the {agent} on a crypto trading desk. A rule-based signal proposes a trade. "
@@ -340,22 +377,22 @@ def _run_veto_agent(
     )
     try:
         verdict = VetoVerdict.model_validate(parse_json_response(_complete(llm, prompt)))
-    except Exception as exc:  # noqa: BLE001 - 输出非法 = 放行 + 计数，绝不因 LLM 格式错而拦单
+    except Exception as exc:  # noqa: BLE001 - 输出非法 = fail-closed，绝不让校验器失效放单
         logger.warning(
-            "%s veto output rejected (%s), counting as invalid_ignored: %s",
+            "%s veto output rejected (%s), failing closed: %s",
             agent,
             type(exc).__name__,
             str(exc)[:300],
         )
-        return {"veto_verdicts": {agent: {"veto": False, "status": "invalid_ignored"}}}
+        return {"veto_verdicts": {agent: {"veto": True, "status": "invalid_fail_closed"}}}
     out_of_charter = [reason.value for reason in verdict.reasons if reason not in allowed_reasons]
     if out_of_charter:
         # 用别的域的否决理由 = 越界。接受它会让「按域独立」失去意义，也会污染
-        # 后续按 agent 统计的否决精度 —— 记成无效放行。
-        logger.warning("%s vetoed outside its charter (%s), ignoring", agent, out_of_charter)
+        # 后续按 agent 统计的否决精度；同时 fail-closed，避免非法结果放行。
+        logger.warning("%s vetoed outside its charter (%s), failing closed", agent, out_of_charter)
         return {
             "veto_verdicts": {
-                agent: {"veto": False, "status": "invalid_ignored", "out_of_charter": out_of_charter}
+                agent: {"veto": True, "status": "invalid_fail_closed", "out_of_charter": out_of_charter}
             }
         }
     return {
@@ -483,8 +520,25 @@ def merge_veto_node(
     current = _as_state(state)
     now = now_ms or _now_ms()
     verdicts = current.veto_verdicts or {}
-    applied = {name: v for name, v in verdicts.items() if v.get("veto")}
-    invalid = {name: v for name, v in verdicts.items() if v.get("status") == "invalid_ignored"}
+    failed_closed = {
+        name: verdict
+        for name, verdict in verdicts.items()
+        if verdict.get("status") in {"invalid_fail_closed", "unavailable_fail_closed"}
+    }
+    applied = {
+        name: verdict
+        for name, verdict in verdicts.items()
+        if verdict.get("veto") and name not in failed_closed
+    }
+    if failed_closed:
+        reasons = ",".join(
+            f"{name}:{','.join(verdict.get('out_of_charter') or ['agent_failure'])}"
+            for name, verdict in failed_closed.items()
+        )
+        return {
+            "trade_proposal": _hold_proposal(current, f"veto_fail_closed:{reasons}", now).model_dump(),
+            "veto_type": "veto_fail_closed",
+        }
     if applied:
         reasons = ",".join(
             f"{name}:{','.join(v.get('reasons') or ['veto'])}" for name, v in applied.items()
@@ -493,8 +547,6 @@ def merge_veto_node(
             "trade_proposal": _hold_proposal(current, f"vetoed:{reasons}", now).model_dump(),
             "veto_type": "veto_applied",
         }
-    if invalid:
-        return {"veto_type": "veto_invalid_ignored"}
     return {"veto_type": "veto_none"}
 
 
@@ -613,7 +665,18 @@ def build_trading_cycle_graph(
         lambda state: validate_freshness(state, now_ms=now(), max_age_seconds=configured.market_data_max_age_seconds),
     )
     builder.add_node("signal_node", lambda state: signal_node(state, now_ms=now(), params=strategy))
-    builder.add_node("retrieve_evidence", lambda state: retrieve_evidence(state, retriever=retriever))
+    builder.add_node(
+        "retrieve_evidence",
+        lambda state: retrieve_evidence(
+            state,
+            retriever=retriever,
+            now_ms=now(),
+            lookback_hours=configured.rag_lookback_hours,
+            limit=configured.rag_evidence_limit,
+            candidate_limit=configured.rag_candidate_limit,
+            impact_horizon=configured.rag_impact_horizon,
+        ),
+    )
     builder.add_node("veto_fanout", lambda _: {})
     builder.add_node("news_veto_node", lambda state: news_veto_node(state, llm=llm))
     builder.add_node("structure_veto_node", lambda state: structure_veto_node(state, llm=llm))

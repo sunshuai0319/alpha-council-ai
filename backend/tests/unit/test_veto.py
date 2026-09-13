@@ -1,7 +1,7 @@
-"""LLM 否决必须是封闭枚举，且否决必须有证据。
+"""LLM 否决必须是封闭枚举，且有效否决必须有证据。
 
 spec 2.3：`证据不足` 不再是合法否决理由 —— 证据不足时规则信号器自己就 HOLD 了。
-veto=True 但没有证据引用 → 判定为 veto_invalid_ignored 并放行。
+veto=True 但没有证据引用 → schema 拒绝，由 veto 层 fail-closed。
 """
 
 import pytest

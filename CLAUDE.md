@@ -49,7 +49,7 @@ npm run test:e2e   # Playwright（tests/e2e，需要 Clerk 配置）
 worker 每 5 分钟（`decision_interval_seconds`）对每个启用的虚拟账户、每个 symbol（`BTC-USDT`/`ETH-USDT`）跑一轮 `TradingCycleService.run()`：
 
 1. **采集**：`WeexCollector` 按 `market_timeframes` 拉取默认 5m/1h/4h K 线（每次最多 1000 根）与 ticker 快照，并采集可用的盘口/成交/资金费率/OI。`captured_at` 必须是本地观测时刻——WEEX ticker 的 `closeTime` 是 24h 滚动窗口边界，比当前落后约 12 分钟，用作时间戳会让 90s 新鲜度门永远失败。
-2. **决策图**：LangGraph（`app/agents/graph.py`）当前实际执行“行情新鲜度 → 确定性规则信号/仓位/SL/TP → 非 HOLD 三路扇出 → news 分支做 RAG、structure/data-integrity 分支并行 → 合并/校验”。旧的 market / quant / macro / committee 函数仍保留但不在当前编译图路径上。行情/RAG/校验错误进入安全 HOLD；LLM veto 当前对非法输出按 `invalid_ignored` 记录，生产安全策略见 `docs/current-architecture.md` 的后续优化。
+2. **决策图**：LangGraph（`app/agents/graph.py`）当前实际执行“行情新鲜度 → 确定性规则信号/仓位/SL/TP → 非 HOLD 三路扇出 → news 分支做 RAG、structure/data-integrity 分支并行 → 合并/校验”。旧的 market / quant / macro / committee 函数仍保留但不在当前编译图路径上。行情/RAG/校验错误进入安全 HOLD；LLM veto 缺失或非法输出按 fail-closed 记录为 `veto_fail_closed`。
 3. **风控**：`RiskEngine.evaluate`（`app/risk/engine.py`）是不可变硬上限，模型输出无法覆盖。数据过期、杠杆越界、名义敞口超限、缺止损、日亏损、连亏、日交易额度等任一不过 → 拒绝；熔断信号（日亏损/连亏/权益非正）会暂停账户。CLOSE 单只受账户状态类检查约束，不被敞口/杠杆限制拦截（拦平仓会锁死仓位）。
 4. **执行**：`ExecutionService`（`app/execution/service.py`）只接受 `risk_decision.allowed == true` 的提案；下单超时用 `stable_client_order_id` 回查对账，状态未知则返回 `UNKNOWN` 而非重试。
 5. **对账**：`ReconciliationService` 从 balance 快照推导已实现盈亏（虚拟盘无成交流水）。
@@ -111,4 +111,4 @@ worker 每 5 分钟（`decision_interval_seconds`）对每个启用的虚拟账�
 
 ## 安全边界
 
-生产必须保持虚拟盘：`WEEX_VIRTUAL_ONLY=true`，凭据属于 virtual 账户，不落日志、不进前端环境变量。风控是最终边界：RAG 异常、数据过期、账户不可用、订单状态不确定一律 HOLD/拒绝/UNKNOWN；LLM veto 非法输出当前记录 `invalid_ignored`，应按 `docs/current-architecture.md` 的 P1 计划改为默认 fail-closed，不自动重试下单。测试接口 `POST /api/test/run-cycle` 只在 `APP_ENV=test` + `X-Test-Exchange: fixture` 时可用，不触网、不发真实订单。
+生产必须保持虚拟盘：`WEEX_VIRTUAL_ONLY=true`，凭据属于 virtual 账户，不落日志、不进前端环境变量。风控是最终边界：RAG 异常、数据过期、账户不可用、订单状态不确定一律 HOLD/拒绝/UNKNOWN；LLM veto 非法输出记录 `veto_fail_closed` 并安全 HOLD，不自动重试下单。测试接口 `POST /api/test/run-cycle` 只在 `APP_ENV=test` + `X-Test-Exchange: fixture` 时可用，不触网、不发真实订单。

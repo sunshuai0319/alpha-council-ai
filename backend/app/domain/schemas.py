@@ -224,7 +224,7 @@ class TradingCycleState(BaseModel):
     execution_result: ExecutionResult | None = None
     #: 规则信号器的 composite 分数（spec 4.2 前向验证用）。
     signal_score: float | None = None
-    #: LLM 否决结局：veto_none / veto_applied / veto_invalid_ignored。
+    #: LLM 否决结局：veto_none / veto_applied / veto_fail_closed。
     veto_type: str | None = None
     #: 每个专业 veto agent 的独立结论，按 agent 名索引。
     #: 记录它才能算「每个 agent 的否决精度」—— 拦掉的单子里多少事后看是对的。
@@ -257,11 +257,11 @@ class VetoReason(StrEnum):
 class VetoVerdict(BaseModel):
     """LLM 否决节点的输出。
 
-    三种结局（spec 2.3）：
+    三类正常/降级结局（spec 2.3）：
     - veto=False → 放行（veto_none）
     - veto=True 且有证据 → 拦截（veto_applied）
-    - veto=True 但证据为空 / 理由不在枚举内 → 放行 + 计数（veto_invalid_ignored）
-      这个校验由 schema 承担：veto=True 无证据直接 ValidationError。
+    - veto=True 但证据为空 / 理由不在枚举内 → schema ValidationError，由 veto 层转换为
+      fail-closed（veto_fail_closed）而不是放行。
     """
 
     veto: bool

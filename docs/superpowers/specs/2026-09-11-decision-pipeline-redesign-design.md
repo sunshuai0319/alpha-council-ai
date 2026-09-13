@@ -2,11 +2,12 @@
 
 日期：2026-09-11
 
-> **当前实现说明（2026-09-13）**：本文记录重构的动机和目标。代码已经完成其中一部分，
-> 但当前 as-built 图、RAG 边界和止盈止损现状以
+> **当前实现说明（2026-09-13）**：本文记录重构的动机和目标。当前 as-built 图、Agent
+> 边界、RAG 契约和止盈止损现状以
 > [`docs/current-architecture.md`](../../current-architecture.md) 为准。尤其要注意：旧的
 > `market/quant/macro/committee` 函数仍存在，但不在当前编译图路径上；软件层 TP、near-target
-> 超时和最大持仓时长已经完成，分批止盈仍未完成。
+> 超时和最大持仓时长已经完成，RAG 方向/时间窗/注入统一和 veto fail-closed 也已完成，
+> 分批止盈仍未完成。
 
 ## 1. 问题
 
@@ -186,15 +187,16 @@ class VetoVerdict(BaseModel):
     reasoning_summary: str
 ```
 
-三种结局，必须可区分、可统计：
+结局必须可区分、可统计：
 
 | 结局 | 条件 | 处理 |
 |---|---|---|
 | `veto_none` | `veto=False` | 放行 |
 | `veto_applied` | `veto=True` 且枚举与证据都合法 | 拦截 |
-| `veto_invalid_ignored` | `veto=True` 但 `evidence_refs` 为空或理由不在枚举内 | **放行 + 计数** |
+| `veto_fail_closed` | LLM 缺失、超时、解析/schema 失败或理由越界 | **安全 HOLD + 计数** |
 
-`veto_invalid_ignored` 占比长期偏高 = 提示词有问题，必须暴露。连续 **5** 次否决无效则告警。
+`veto_fail_closed` 占比长期偏高 = Ark 调用、提示词或输出 schema 有问题，必须暴露；这类
+周期不会放行新仓。
 
 **关键：`证据不足` 不再是合法否决理由。** 证据不足时规则信号器自己就输出 HOLD 了——这一条堵死了当前「全部 HOLD」的元凶。
 
@@ -206,10 +208,13 @@ class VetoVerdict(BaseModel):
 
 **2.5 修必填字段** — `AnalysisResult.model_version` / `trace_id` 改为有默认值。
 
-**2.6 RAG 当前状态与后续改造** — RAG 已接入默认生产图，但当前仍使用固定查询
-`"{asset} market outlook"`，最多召回 5 条后交给 `news_macro` veto；没有按 LONG/SHORT
-反向取证，也没有最近 24 小时过滤。按方向与时间窗构造查询、过滤 `impact_horizon` 的
-方案仍是后续优化项，不能当作当前行为。
+**2.6 RAG 当前状态** — RAG 已接入默认生产图，且只作为 `news_macro` veto 的反向证据源。
+图通过 `RetrievalRequest` 统一传递资产、LONG/SHORT 方向、反向风险 query、最近时间窗、
+候选/结果上限和可选 `impact_horizon`；LONG 检索 bearish/downside/negative catalyst，
+SHORT 检索 bullish/upside/positive catalyst。默认时间窗为 24 小时、结果 5 条、候选 25 条，
+配置项为 `RAG_LOOKBACK_HOURS`、`RAG_EVIDENCE_LIMIT`、`RAG_CANDIDATE_LIMIT` 和
+`RAG_IMPACT_HORIZON`。默认图和 `run(..., llm=...)` 覆盖路径使用同一 retriever 工厂，
+测试可注入 fake retriever。
 
 ### 第 3 层：风控与持仓管理
 
@@ -274,7 +279,7 @@ class VetoVerdict(BaseModel):
 |---|---|
 | 微观结构采集失败 | 权重归零后重新归一化，**不**整体 HOLD |
 | 宏观数据缺失 | 同上；宏观只影响 `volatility_regime` 之外的制度判断，不作为独立否决 |
-| RAG 检索失败 | 沿用现状：返回空证据，不产生交易理由 |
+| RAG 检索失败 | 记录 `retrieval_failed`/`retriever_unavailable`，返回空证据并进入安全 HOLD |
 | 规则信号器异常 | HOLD + 记录异常类名（`safe-hold`） |
 | LLM 否决节点异常 | 视为 `veto_none` 放行？**否** —— 视为 HOLD。规则信号器已经给出方向，但否决节点异常意味着上下文不可信，按项目「模型异常一律 HOLD」的既有边界处理 |
 | WEEX 5xx / 超时 | 只记 `DATA_SOURCE_DEGRADED`，**不**熔断账户 |
@@ -290,7 +295,7 @@ class VetoVerdict(BaseModel):
 - **微观结构缺失**：断言权重归一化而非 HOLD
 - **风险反推**：断言 `stop_distance == 1.5 × ATR(1h)`、`notional ≤ 20% equity`、单笔风险 ≤ 0.5%
 - **TP / RR 校验**：方向填反 → 拒绝；RR < 1.5 → 拒绝；`is_reducing` 时豁免
-- **VetoVerdict**：枚举外理由 → schema 拒绝；`veto=True` + 空 evidence → 判定为 `veto_invalid_ignored` 且放行
+- **VetoVerdict**：枚举外理由或空 evidence → schema 拒绝并由 veto 层 fail-closed；LLM 不可用同样安全 HOLD
 - **PositionManager**：保本 / 移动止损只上移 / 软件止盈 / near-target 超时 / 最大持仓时长 /
   时间止损 / 结构失效，逐条独立测
 - **单品种一仓**：已有同向仓位时不重复开仓
@@ -302,7 +307,7 @@ class VetoVerdict(BaseModel):
 | 期 | 内容 | 验收 |
 |---|---|---|
 | 1 | 数据层（1.1–1.6） | `macro_observations.value` 非空；决策的 macro 分析不再是 `insufficient_data`；WEEX 5xx 不再 PAUSED 账户 |
-| 2 | 信号层（2.1–2.5） | 回测器能跑出交易样本；LLM 否决率与三种结局分布可统计；`veto_invalid_ignored` 不占多数 |
+| 2 | 信号层（2.1–2.6） | 回测器能跑出交易样本；方向化 RAG、时间窗、统一注入和 `veto_fail_closed` 可测试、可统计 |
 | 3 | 风控与持仓管理（3.1–3.3） | 真实开仓成交；SL 距离与仓位符合风险预算；保本/移动止损在持仓期按预期推进 |
 | 4 | 验证（4.1–4.2） | 参数经回测筛过；前向记录可统计平均 R 与否决率 |
 

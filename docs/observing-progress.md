@@ -29,7 +29,7 @@ LIMIT 20;
 | 字段 | 怎么读 |
 |---|---|
 | `signal_score` | 规则打分卡的 composite。`NULL` = 用的是 2026-09-11 之前的旧代码 |
-| `veto_type` | `NULL` = 没到否决环节（HOLD 短路，零 LLM 调用）<br>`veto_none` = 否决节点放行<br>`veto_applied` = 被否决拦下<br>`veto_invalid_ignored` = LLM 输出不合法，放行并计数 |
+| `veto_type` | `NULL` = 没到否决环节（HOLD 短路，零 LLM 调用）<br>`veto_none` = 否决节点放行<br>`veto_applied` = 合法否决拦下<br>`veto_fail_closed` = veto 不可用或输出不合法，安全拦下 |
 
 ```sql
 -- 2. 真实成交的回合与盈亏（前向验证的核心）
@@ -100,7 +100,7 @@ FROM closed;
 
 | 现象 | 含义 |
 |---|---|
-| `veto_invalid_ignored` 占比很高 | 否决 agent 的提示词有问题，实际在空转 |
+| `veto_fail_closed` 占比很高 | 否决 agent 的 Ark 调用、输出格式或提示词契约异常；这些周期不会放行新仓，应先修复外部服务或 schema |
 | `CIRCUIT_BREAKER` 反复出现 | 连续失败或连亏触发；先看 `reason` 是外部故障还是策略 |
 | `CYCLE_FAILURE` 里出现 5xx | 对端抖动，不应熔断账户（第 1 层已修，若复现说明修漏了） |
 | 长期一笔不开 | 先看 `signal_score` 是否都低于 `STRATEGY_ENTRY_THRESHOLD`（默认 0.35） |

@@ -140,18 +140,20 @@ def test_agents_are_skipped_on_hold_proposals() -> None:
     assert llm.prompts == []
 
 
-def test_agents_are_skipped_without_an_llm() -> None:
-    """没配 LLM 时放行，不能因为缺 LLM 把单子变成 HOLD。"""
+def test_agents_fail_closed_without_an_llm() -> None:
+    """没配 LLM 时必须 fail-closed，不能在缺少安全校验时放行。"""
     result = news_veto_node(_state(), llm=None)
-    assert result["veto_verdicts"]["news_macro"]["veto"] is False
+    verdict = result["veto_verdicts"]["news_macro"]
+    assert verdict["veto"] is True
+    assert verdict["status"] == "unavailable_fail_closed"
 
 
-def test_invalid_agent_output_is_ignored_not_blocking() -> None:
-    """LLM 输出格式错 = 放行 + 计数，不该拦住一个已经过了规则的信号。"""
+def test_invalid_agent_output_fails_closed() -> None:
+    """LLM 输出格式错时必须拦截，避免校验器失效后继续下单。"""
     result = news_veto_node(_state(), llm=RecordingLLM({"veto": True, "reasons": ["WHATEVER"]}))
     verdict = result["veto_verdicts"]["news_macro"]
-    assert verdict["veto"] is False
-    assert verdict["status"] == "invalid_ignored"
+    assert verdict["veto"] is True
+    assert verdict["status"] == "invalid_fail_closed"
 
 
 def test_data_integrity_flags_absurd_spread_without_calling_an_llm() -> None:
@@ -173,15 +175,15 @@ def test_data_integrity_passes_on_missing_microstructure() -> None:
     assert data_integrity_node(_state())["veto_verdicts"]["data_integrity"]["veto"] is False
 
 
-def test_vetoing_outside_your_charter_is_ignored() -> None:
-    """news agent 用 STRUCTURE_INVALIDATED 否决 = 越界，记无效放行。
+def test_vetoing_outside_your_charter_fails_closed() -> None:
+    """news agent 用 STRUCTURE_INVALIDATED 否决 = 越界，必须 fail-closed。
 
     接受它会让「按域独立」失去意义，也会让按 agent 统计的否决精度互相污染。
     """
     result = news_veto_node(_state(), llm=RecordingLLM(VETO_STRUCTURE))
     verdict = result["veto_verdicts"]["news_macro"]
-    assert verdict["veto"] is False
-    assert verdict["status"] == "invalid_ignored"
+    assert verdict["veto"] is True
+    assert verdict["status"] == "invalid_fail_closed"
     assert verdict["out_of_charter"] == ["STRUCTURE_INVALIDATED"]
 
 
@@ -211,9 +213,11 @@ def test_merge_passes_when_nobody_vetoes() -> None:
     assert merge_veto_node(state)["veto_type"] == "veto_none"
 
 
-def test_merge_reports_invalid_ignored_when_an_agent_malformed() -> None:
-    state = _state(veto_verdicts={"news_macro": {"veto": False, "status": "invalid_ignored"}})
-    assert merge_veto_node(state)["veto_type"] == "veto_invalid_ignored"
+def test_merge_blocks_when_an_agent_fails_closed() -> None:
+    state = _state(veto_verdicts={"news_macro": {"veto": True, "status": "invalid_fail_closed"}})
+    result = merge_veto_node(state)
+    assert result["veto_type"] == "veto_fail_closed"
+    assert result["trade_proposal"]["action"] == "HOLD"
 
 
 def test_veto_reason_enum_still_covers_every_charter() -> None:

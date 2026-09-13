@@ -10,7 +10,7 @@ import httpx
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
 
-from app.agents.graph import TradingCycleGraph, build_trading_cycle_graph
+from app.agents.graph import EvidenceRetriever, TradingCycleGraph, build_trading_cycle_graph
 from app.agents.llm import ArkChatClient
 from app.analytics.indicators import INDICATOR_VERSION, calculate_indicators
 from app.collectors.codes import market_data_error_code
@@ -134,6 +134,7 @@ class TradingCycleService:
         settings: Settings | None = None,
         exchange_factory: Callable[[], ExchangeClient] | None = None,
         graph_factory: Callable[[], TradingCycleGraph] | None = None,
+        retriever_factory: Callable[[], EvidenceRetriever] | None = None,
         risk_engine: RiskEngine | None = None,
         execution_service: ExecutionService | None = None,
     ) -> None:
@@ -141,19 +142,22 @@ class TradingCycleService:
         self.settings = settings or get_settings()
         self.exchange_factory = exchange_factory
         self.graph_factory = graph_factory or self._default_graph
+        self.retriever_factory = retriever_factory or self._default_retriever
         self.risk_engine = risk_engine or RiskEngine(self.settings)
         self.execution_service = execution_service or ExecutionService()
         self.reconciliation = ReconciliationService(db=db)
         self._memory_results: dict[str, list[CycleResult]] = {}
         self._memory_market: list[dict[str, Any]] = []
 
+    def _default_retriever(self) -> EvidenceRetriever:
+        vector_store = MilvusVectorStore(self.settings)
+        return Retriever(vector_store, BGEEmbedder(self.settings), BGEReranker(self.settings))
+
     def _default_graph(self) -> TradingCycleGraph:
         llm = ArkChatClient(self.settings)
-        vector_store = MilvusVectorStore(self.settings)
-        retriever = Retriever(vector_store, BGEEmbedder(self.settings), BGEReranker(self.settings))
         return build_trading_cycle_graph(
             llm=llm,
-            retriever=retriever,
+            retriever=self.retriever_factory(),
             settings=self.settings,
         )
 
@@ -162,6 +166,7 @@ class TradingCycleService:
         user_id: str,
         symbol: str = "BTC-USDT",
         llm: Any | None = None,
+        retriever: EvidenceRetriever | None = None,
     ) -> CycleResult:
         cycle_id = str(uuid4())
         started_at = int(datetime.now(UTC).timestamp() * 1000)
@@ -277,11 +282,16 @@ class TradingCycleService:
             equity = balance.balance if balance is not None else None
             if equity is not None:
                 state = state.model_copy(update={"equity": equity})
-            graph = (
-                build_trading_cycle_graph(llm=llm, settings=self.settings)
-                if llm is not None
-                else self.graph_factory()
-            )
+            if llm is not None:
+                # 覆盖 LLM 只替换模型，不改变 RAG 契约；默认仍使用同一套
+                # Milvus + BGE + reranker，测试/调用方可显式注入 fake retriever。
+                graph = build_trading_cycle_graph(
+                    llm=llm,
+                    retriever=retriever if retriever is not None else self.retriever_factory(),
+                    settings=self.settings,
+                )
+            else:
+                graph = self.graph_factory()
             logger.info(
                 "cycle signal: user=%s symbol=%s equity=%s (rule signal + LLM veto)",
                 user_id,

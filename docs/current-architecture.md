@@ -15,8 +15,11 @@
 - `market_node`、`quant_node`、`macro_node`、`committee_node` 和 `run_committee` 仍在
   `app/agents/graph.py` 中保留，但没有被 `build_trading_cycle_graph()` 注册到当前图，
   因而不是线上决策路径。
-- RAG 已接入默认生产图，但只服务于非 HOLD 入场提案的新闻/宏观反向证据。价格、K 线、
-  指标、余额、持仓、风控和下单不依赖 RAG。
+- RAG 已接入默认生产图，但只服务于非 HOLD 入场提案的新闻/宏观反向证据。检索请求统一
+  携带资产、LONG/SHORT 方向、反向风险 query、最近时间窗和召回上限；价格、K 线、指标、
+  余额、持仓、风控和下单不依赖 RAG。
+- LLM veto 的缺失、超时、非法 JSON、schema 不合法或越界理由均 fail-closed，生成安全 HOLD；
+  `veto_fail_closed` 与正常 `veto_applied` 分开记录。
 - 默认止盈是 `2R`，即“止损距离的两倍”，不是入场价格的两倍。交易所侧只保留 `3R`
   灾难止损；正常 `2R` 止盈由本地持仓管理器按软件规则触发 reduce-only 市价平仓。
 - 当前持仓管理器还会在达到 `1.8R` 后锁存接近目标时间，超过 6 小时仍未达到 `2R` 就平仓，
@@ -47,7 +50,7 @@ flowchart TD
     P --> E([END])
 ```
 
-对应代码为 `backend/app/agents/graph.py:598-669`。图本身不负责调用 WEEX、下单或对账；
+对应代码为 `backend/app/agents/graph.py:653-735`。图本身不负责调用 WEEX、下单或对账；
 这些动作由 `TradingCycleService` 在图外按顺序执行。
 
 ### 2.1 节点职责
@@ -58,7 +61,7 @@ flowchart TD
 | `validate_freshness` | 确定性 | 检查行情是否存在、是否超过新鲜度上限 | 失败写入 `errors` |
 | `signal_node` | 确定性规则 | 用 1h/4h 指标计算方向和 composite；按 ATR 反推仓位、止损、止盈、灾难止损 | `TradeProposal`、`signal_score` |
 | `veto_fanout` | 确定性 | 将非 HOLD 提案分发给三路校验；避免结构/数据分支等待 RAG | 无新增字段 |
-| `retrieve_evidence` | RAG | 新闻分支用固定查询 `"{asset} market outlook"` 检索最多 5 条证据 | `retrieved_evidence` |
+| `retrieve_evidence` | RAG | 接收统一 `RetrievalRequest`：资产、方向、反向风险 query、最近 24 小时；默认最多 25 条候选、重排后 5 条结果，可选按影响期限过滤 | `retrieved_evidence` |
 | `news_veto_node` | LLM veto | 只判断新闻/宏观是否与规则信号冲突 | `news_macro` verdict |
 | `structure_veto_node` | LLM veto | 只判断技术结构失效或盘口流动性异常 | `structure_liquidity` verdict |
 | `data_integrity_node` | 确定性 veto | 检查价差、倒挂盘口、24h 区间和现价范围 | `data_integrity` verdict |
@@ -82,25 +85,24 @@ flowchart TD
 风控、交易所副作用和账户事实。这避免把可审计的资金动作交给模型，也避免让旧的
 Committee 再次承担持仓退出职责。
 
-本轮已做一项低风险拓扑优化：`veto_fanout` 提前到 RAG 之前。现在新闻分支是
+当前图的低风险拓扑优化是：`veto_fanout` 提前到 RAG 之前。现在新闻分支是
 `retrieve_evidence → news_veto_node`，结构和数据分支从扇出点直接启动，三路最终在
 `merge_veto` 汇合。这样 RAG 延迟或暂时不可用不会阻塞确定性数据检查；如果 RAG 失败，
 `proposal_validator` 仍会因本轮没有证据而安全 HOLD。
 
+本轮同时完成了 RAG 和降级策略收敛：
+
+1. **已完成：RAG 契约统一**：查询由 `RetrievalRequest` 集中表达；图层负责方向化反向
+   query 和时间窗，Retriever 负责 Milvus 元数据过滤、候选召回和重排。
+2. **已完成：安全降级统一**：RAG 不可用或无结果不能产生入场证据；LLM veto 不可用或
+   输出非法统一 fail-closed。
+
 仍建议按优先级继续优化：
 
-1. **P1 安全策略**：LLM 超时、解析失败或 schema 不合法当前记为 `invalid_ignored`，
-   也就是不应用该路 veto；交易场景更稳妥的默认值应是 fail-closed，或至少做成显式配置，
-   并单独统计降级放行次数。
-2. **P1 注入一致性**：`run(..., llm=...)` 的覆盖构图路径没有传入 retriever，真实调用
-   时会与默认生产图产生不同语义。应统一通过 graph factory 注入 `llm` 和 retriever，
-   测试用 fake retriever，避免“默认路径有 RAG、覆盖路径无 RAG”。
-3. **P2 检索质量**：查询应带方向、时间窗和影响期限过滤，至少区分“支持当前方向”和
-   “反向风险”两类证据；固定的 `market outlook` 容易召回与本次交易无关的旧新闻。
-4. **P2 状态收敛**：删除或隔离旧的 analyst/committee 状态字段，统一模型版本命名，
+1. **P2 状态收敛**：删除或隔离旧的 analyst/committee 状态字段，统一模型版本命名，
    并为每个节点记录耗时、输入快照版本、输出 verdict 和降级原因，便于定位是信号弱、
    否决、证据不足还是外部服务异常。
-5. **P3 生命周期编排**：图继续只负责“本轮入场决策”；持仓管理、平仓重试和对账仍由
+2. **P3 生命周期编排**：图继续只负责“本轮入场决策”；持仓管理、平仓重试和对账仍由
    周期服务负责。若未来需要图化，应拆成独立的 `PositionExitGraph`，避免在同一图中
    混合纯函数决策和不可逆交易副作用。
 
@@ -143,10 +145,9 @@ TradingScheduler.run_forever（默认每 300 秒）
 4. **Data Integrity Veto（非 LLM）**：把能通过代码直接证明的异常交给确定性检查，避免
    用 LLM 判断价差倒挂等事实。
 
-LLM 的实际调用统一走 `ArkChatClient.complete_json()`，温度为 0；瞬时 5xx/超时可重试，
-解析失败或 schema 不合法时，单个 veto 记为 `invalid_ignored`（当前实现；生产安全策略仍
-建议改为 fail-closed）。任一合法 veto 会在
-`merge_veto` 变成安全 HOLD。
+LLM 的实际调用统一走 `ArkChatClient.complete_json()`，温度为 0；瞬时 5xx/超时可重试。
+解析失败、schema 不合法、缺少 LLM 或理由越界时，单个 veto 记为 fail-closed，
+`merge_veto` 生成安全 HOLD；合法 `veto=true` 仍记录为 `veto_applied`。
 
 ### 4.2 重要边界
 
@@ -173,10 +174,11 @@ BGEEmbedder + MilvusVectorStore + BGEReranker
 
 证据链：
 
-- 组装默认 retriever：`backend/app/services/cycle.py:150-158`
-- 非 HOLD 才进入检索：`backend/app/agents/graph.py:632-642`
-- 查询、资产过滤、向量候选和重排：`backend/app/agents/graph.py:224-235`、
-  `backend/app/rag/retriever.py:74-138`
+- 组装默认 retriever：`backend/app/services/cycle.py:152-162`
+- 非 HOLD 才进入检索：`backend/app/agents/graph.py:698-709`
+- 统一请求、方向化 query 和图注入：`backend/app/agents/graph.py:223-272`、
+  `backend/app/rag/query.py`
+- 资产/影响期限/发布时间过滤、向量候选和重排：`backend/app/rag/retriever.py:99-158`
 - 文档入库：RSS/Federal Reserve 文本经清洗、去重、Ark 摘要、分块、BGE-M3 embedding
   后写入 Milvus，见 `backend/app/workers/pipeline.py:56-156`、`163-244`
 
@@ -194,12 +196,13 @@ BGEEmbedder + MilvusVectorStore + BGEReranker
 
 ### 5.3 两个容易误判的细节
 
-1. 当前 RAG 查询仍是固定的 `"{asset} market outlook"`，没有按 LONG/SHORT 做反向取证，
-   也没有在检索器中实现最近 24 小时的时间过滤。9 月 11 日规格中的“方向反向查询 +
-   时间窗”属于未落地的设计建议，不是当前行为。
-2. `TradingCycleService.run(..., llm=...)` 的测试/覆盖路径重新构图时没有传入 retriever
-   （`cycle.py:280-283`），因此该覆盖路径的 RAG 为空；默认生产构图路径才带有
-   Milvus/BGE retriever。若将 `llm` 参数用于真实运行，应补齐同一 retriever 注入。
+1. 当前 RAG 只为新闻 veto 提供反向风险证据：LONG 查询 bearish/downside/negative
+   catalyst，SHORT 查询 bullish/upside/positive catalyst；默认时间窗为最近 24 小时，
+   默认召回 5 条、候选 25 条，可由 `RAG_LOOKBACK_HOURS`、`RAG_EVIDENCE_LIMIT`、
+   `RAG_CANDIDATE_LIMIT` 和 `RAG_IMPACT_HORIZON` 配置。
+2. `TradingCycleService` 的默认图和 `run(..., llm=...)` 覆盖路径都通过同一个
+   `EvidenceRetriever` 契约构图；后者可显式传 `retriever`，未传时使用默认
+   Milvus + BGE + reranker 工厂，不再出现“默认路径有 RAG、覆盖路径没有 RAG”的分叉。
 
 RAG 失败会返回空证据并追加 `retrieval_failed`；对于 LONG/SHORT，后续
 `proposal_validator` 因缺少本次证据而转安全 HOLD。结构化行情与账户事实不写入 RAG。

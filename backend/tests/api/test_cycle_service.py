@@ -40,6 +40,7 @@ from app.exchange.base import (
     OrderRequest,
 )
 from app.risk.engine import RiskLimits
+from app.services import cycle as cycle_module
 from app.services.cycle import TradingCycleService
 
 
@@ -105,6 +106,25 @@ def test_cycle_failure_persists_hold_decision() -> None:
     result = service.run(user_id="u-1", llm=FailingLLM())
     assert result.action == "HOLD"
     assert result.persisted is True
+
+
+def test_llm_override_uses_the_same_injected_rag_contract(monkeypatch) -> None:
+    """覆盖 LLM 时也必须把 retriever 注入图，不能退化为无 RAG 的另一条路径。"""
+    provided_retriever = object()
+    captured: dict[str, object] = {}
+    original_builder = cycle_module.build_trading_cycle_graph
+
+    def recording_builder(*, llm=None, retriever=None, settings=None):
+        captured["retriever"] = retriever
+        return original_builder(llm=llm, retriever=retriever, settings=settings)
+
+    monkeypatch.setattr(cycle_module, "build_trading_cycle_graph", recording_builder)
+    service = TradingCycleService(exchange_factory=FakeExchange)
+
+    result = service.run(user_id="u-1", llm=FailingLLM(), retriever=provided_retriever)
+
+    assert result.action == "HOLD"
+    assert captured["retriever"] is provided_retriever
 
 
 class RecordingCandleExchange(FakeExchange):

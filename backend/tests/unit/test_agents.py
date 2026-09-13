@@ -1,9 +1,16 @@
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.agents.graph import build_trading_cycle_graph, run_committee
+from app.agents.graph import (
+    build_trading_cycle_graph,
+    retrieve_evidence,
+    run_committee,
+    signal_node,
+)
 from app.config import Settings
 from app.domain.enums import Action
 from app.domain.schemas import MarketSnapshot, TradingCycleState
+from app.rag.query import RetrievalRequest, build_veto_retrieval_request
 
 
 class FakeLLM:
@@ -94,6 +101,19 @@ def test_graph_routes_stale_market_data_to_safe_hold() -> None:
     assert "market_snapshot_stale" in result.errors
 
 
+def test_graph_routes_rag_unavailable_to_safe_hold() -> None:
+    graph = build_trading_cycle_graph(
+        settings=_settings(),
+        llm=AllowLLM(),
+        clock_ms=lambda: 1_700_000_000_000,
+    )
+    result = graph.invoke(_bullish_state())
+
+    assert result.trade_proposal is not None
+    assert result.trade_proposal.action is Action.HOLD
+    assert "retriever_unavailable" in result.errors
+
+
 def _bullish_state() -> TradingCycleState:
     """对齐的多头技术结构，让规则信号器给出 LONG。"""
     tf = {
@@ -144,10 +164,65 @@ class VetoLLM:
 
 def _retriever():
     class Retriever:
-        def retrieve(self, query: str, *, asset: str | None = None, limit: int = 3) -> list[dict[str, Any]]:
-            return [{"id": "evidence-1", "content": query, "asset": asset, "limit": limit}]
+        def retrieve(self, request: RetrievalRequest) -> list[dict[str, Any]]:
+            return [{
+                "id": "evidence-1",
+                "content": request.query,
+                "asset": request.asset,
+                "limit": request.limit,
+                "published_at": request.published_after + timedelta(minutes=1),
+            }]
 
     return Retriever()
+
+
+def test_retrieve_evidence_builds_one_directional_recent_request() -> None:
+    class RecordingRetriever:
+        def __init__(self) -> None:
+            self.request: RetrievalRequest | None = None
+
+        def retrieve(self, request: RetrievalRequest) -> list[dict[str, Any]]:
+            self.request = request
+            return []
+
+    retriever = RecordingRetriever()
+    now_ms = 1_700_000_000_000
+    state = _bullish_state()
+    state = TradingCycleState.model_validate({**state.model_dump(), **signal_node(state, now_ms=now_ms)})
+    result = retrieve_evidence(
+        state,
+        retriever=retriever,
+        now_ms=now_ms,
+        lookback_hours=6,
+        limit=4,
+        candidate_limit=12,
+    )
+
+    assert result.get("errors", []) == []
+    assert retriever.request is not None
+    request = retriever.request
+    assert request.asset == "BTC"
+    assert request.direction == "LONG"
+    assert "bearish" in request.query
+    assert "BTC" in request.query
+    assert request.published_after == datetime.fromtimestamp(now_ms / 1000, tz=UTC) - timedelta(hours=6)
+    assert request.limit == 4
+    assert request.candidate_limit == 12
+
+
+def test_short_veto_request_searches_for_opposing_bullish_risk() -> None:
+    request = build_veto_retrieval_request(
+        asset="eth",
+        direction="short",
+        now_ms=1_700_000_000_000,
+        lookback_hours=24,
+        limit=5,
+    )
+
+    assert request.asset == "ETH"
+    assert request.direction == "SHORT"
+    assert "bullish" in request.query
+    assert "upside" in request.query
 
 
 def test_rule_signal_flows_to_long_when_llm_does_not_veto() -> None:

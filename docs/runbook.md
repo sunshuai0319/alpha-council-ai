@@ -2,7 +2,7 @@
 
 ## 安全边界
 
-生产配置必须保持 `WEEX_VIRTUAL_ONLY=true`，并使用 WEEX 的 virtual futures 凭据。`ExecutionService` 只接收 `RiskDecision.allowed == true` 的提案；RAG 异常、数据过期、账户不可用和订单状态不确定都会进入 HOLD、拒绝或 UNKNOWN。LLM veto 的非法输出当前记录为 `invalid_ignored`，上线前应按当前架构文档的 P1 方案改为默认 fail-closed，不会自动重试下单。
+生产配置必须保持 `WEEX_VIRTUAL_ONLY=true`，并使用 WEEX 的 virtual futures 凭据。`ExecutionService` 只接收 `RiskDecision.allowed == true` 的提案；RAG 异常、数据过期、账户不可用和订单状态不确定都会进入 HOLD、拒绝或 UNKNOWN。LLM veto 的非法输出按默认 fail-closed 处理并记录 `veto_fail_closed`，不会自动重试下单。
 
 当前 agent、LangGraph 图、RAG 边界和止盈止损生命周期见
 [`docs/current-architecture.md`](current-architecture.md)。该文档区分了当前实现与尚未落地的优化设计。

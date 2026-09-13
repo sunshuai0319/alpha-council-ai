@@ -290,7 +290,7 @@ class TradingDecision(TimestampMixin, Base):
     model_versions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     #: 规则信号器的 composite 分数（spec 4.2 前向验证：哪些分项真与收益相关）。
     signal_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    #: LLM 否决结局：veto_none / veto_applied / veto_invalid_ignored。
+    #: LLM 否决结局：veto_none / veto_applied / veto_fail_closed。
     veto_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 

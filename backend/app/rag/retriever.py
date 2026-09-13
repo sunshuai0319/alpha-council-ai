@@ -6,6 +6,7 @@ from typing import Any, Protocol
 from app.processing.ark import DocumentSummary
 from app.processing.documents import ProcessedDocument, chunk_text
 from app.rag.milvus import IndexedChunk, MilvusVectorStore
+from app.rag.query import RetrievalRequest
 
 
 class Embedder(Protocol):
@@ -36,6 +37,24 @@ def _hit_entity(hit: Any) -> dict[str, Any]:
         entity = hit.get("entity")
         return entity if isinstance(entity, dict) else hit
     return vars(hit)
+
+
+def _as_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    if isinstance(value, (int, float)) and value > 0:
+        return datetime.fromtimestamp(value / 1000, tz=UTC)
+    if isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    return None
+
+
+def _escape_filter_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
 class DocumentIndexer:
@@ -79,47 +98,48 @@ class Retriever:
 
     def retrieve(
         self,
-        query: str,
-        *,
-        asset: str | None = None,
-        event_type: str | None = None,
-        limit: int = 3,
-        candidate_limit: int | None = None,
+        request: RetrievalRequest,
     ) -> list[Evidence]:
-        if limit < 1:
-            raise ValueError("retrieval limit must be positive")
-        candidate_limit = candidate_limit or max(limit * 5, 10)
+        candidate_limit = request.candidate_limit or max(request.limit * 5, 10)
         filters: list[str] = []
-        if asset:
-            filters.append(f"asset == '{asset.upper()}'")
-        if event_type:
-            filters.append(f"event_type == '{event_type.upper()}'")
+        if request.asset:
+            filters.append(f"asset == '{_escape_filter_value(request.asset)}'")
+        if request.event_type:
+            filters.append(f"event_type == '{_escape_filter_value(request.event_type)}'")
+        if request.impact_horizon:
+            filters.append(f"impact_horizon == '{_escape_filter_value(request.impact_horizon)}'")
+        if request.published_after:
+            cutoff_ms = int(request.published_after.timestamp() * 1000)
+            filters.append(f"published_at >= {cutoff_ms}")
         expression = " and ".join(filters) or None
-        vector = self.embedder.embed([query])[0]
+        vector = self.embedder.embed([request.query])[0]
         raw_hits = self.vector_store.search(vector, candidate_limit, expression)
         candidates: list[tuple[Any, dict[str, Any]]] = []
         for hit in raw_hits:
             entity = _hit_entity(hit)
-            if asset and str(entity.get("asset", "")).upper() != asset.upper():
+            if request.asset and str(entity.get("asset", "")).upper() != request.asset:
                 continue
-            if event_type and str(entity.get("event_type", "")).upper() != event_type.upper():
+            if request.event_type and str(entity.get("event_type", "")).upper() != request.event_type:
+                continue
+            if request.impact_horizon and str(entity.get("impact_horizon", "")).upper() != request.impact_horizon:
+                continue
+            published_at = _as_datetime(entity.get("published_at"))
+            if request.published_after and (published_at is None or published_at < request.published_after):
                 continue
             candidates.append((hit, entity))
         if not candidates:
             return []
-        scores = self.reranker.score(query, [entity.get("content", "") for _, entity in candidates])
+        scores = self.reranker.score(request.query, [entity.get("content", "") for _, entity in candidates])
         if len(scores) != len(candidates):
             raise ValueError("reranker score count does not match candidate count")
         ranked = sorted(
             zip(candidates, scores, strict=True),
             key=lambda item: item[1],
             reverse=True,
-        )[:limit]
+        )[: request.limit]
         evidence: list[Evidence] = []
         for (hit, entity), score in ranked:
-            published_at = entity.get("published_at")
-            if isinstance(published_at, (int, float)) and published_at:
-                published_at = datetime.fromtimestamp(published_at / 1000, tz=UTC)
+            published_at = _as_datetime(entity.get("published_at"))
             evidence.append(
                 Evidence(
                     chunk_id=str(entity.get("id", hit.get("id", "")) if isinstance(hit, dict) else ""),
@@ -132,7 +152,7 @@ class Retriever:
                     impact_horizon=str(entity.get("impact_horizon", "")),
                     vector_score=float(str(hit.get("distance", hit.get("score", 0)) or 0)) if isinstance(hit, dict) else 0,
                     rerank_score=float(score),
-                    published_at=published_at if isinstance(published_at, datetime) else None,
+                    published_at=published_at,
                 )
             )
         return evidence

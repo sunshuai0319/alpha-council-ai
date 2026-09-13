@@ -123,6 +123,13 @@ class Settings(BaseSettings):
     strategy_max_hold_hours: int = 72
     decision_interval_seconds: int = 300
 
+    #: 新闻 veto 的 RAG 检索策略。统一由图构造请求，避免 query、时间窗和召回数量
+    #: 散落在节点与 Retriever 的默认值里。
+    rag_lookback_hours: int = 24
+    rag_evidence_limit: int = 5
+    rag_candidate_limit: int = 25
+    rag_impact_horizon: str | None = None
+
     #: FRED 序列的重抓间隔，按各自更新频率决定。月度数据按分钟级频率重抓没有
     #: 收益，还会招来 503。
     fred_monthly_interval_seconds: int = 86400
