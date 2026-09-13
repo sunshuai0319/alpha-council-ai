@@ -24,6 +24,7 @@ class PositionDecision:
     effective_stop: Decimal
     peak_price: Decimal
     reason: str
+    near_target_at: datetime | None
 
 
 def _favorable_r(*, side: str, entry: Decimal, price: Decimal, risk: Decimal) -> Decimal:
@@ -37,6 +38,33 @@ def _favorable_r(*, side: str, entry: Decimal, price: Decimal, risk: Decimal) ->
 
 def _is_stop_hit(*, side: str, price: Decimal, effective_stop: Decimal) -> bool:
     return price <= effective_stop if side.upper() == "LONG" else price >= effective_stop
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _target_price(
+    *,
+    side: str,
+    entry: Decimal,
+    risk: Decimal,
+    take_profit: Decimal | None,
+    reward_risk: Decimal,
+) -> Decimal | None:
+    """Return the persisted target, or derive one for legacy rows without it."""
+
+    long = side.upper() == "LONG"
+    if take_profit is not None:
+        valid = take_profit > entry if long else take_profit < entry
+        return take_profit if valid else None
+    if risk <= 0 or reward_risk <= 0:
+        return None
+    return entry + risk * reward_risk if long else entry - risk * reward_risk
 
 
 def _advanced_stop(
@@ -79,14 +107,18 @@ def manage(
     opened_at: datetime | None,
     now: datetime,
     signal_score: Decimal | float | None = None,
+    take_profit: Decimal | None = None,
+    near_target_at: datetime | None = None,
     params: StrategyParams | None = None,
 ) -> PositionDecision:
-    """返回该对这个仓位做什么，以及更新后的有效止损 / 最有利价。"""
+    """返回该对这个仓位做什么，以及更新后的持仓管理状态。"""
 
     active = params or StrategyParams()
     risk = abs(entry_price - initial_stop)
     stop = effective_stop if effective_stop is not None else initial_stop
     peak = peak_price if peak_price is not None else entry_price
+    near_target = _as_utc(near_target_at)
+    current_time = _as_utc(now) or now
 
     # 最有利价只在往有利方向走时更新（空仓取更低）。
     if side.upper() == "LONG":
@@ -94,27 +126,55 @@ def manage(
     else:
         peak = min(peak, price)
 
+    target = _target_price(
+        side=side,
+        entry=entry_price,
+        risk=risk,
+        take_profit=take_profit,
+        reward_risk=active.reward_risk,
+    )
+    target_r = _favorable_r(side=side, entry=entry_price, price=target, risk=risk) if target else Decimal(0)
+    favorable = _favorable_r(side=side, entry=entry_price, price=price, risk=risk)
+    peak_favorable = _favorable_r(side=side, entry=entry_price, price=peak, risk=risk)
+
     # 1. 有效止损触及 —— 优先级最高，别的规则不该挡住它。
     if _is_stop_hit(side=side, price=price, effective_stop=stop):
-        return PositionDecision(CLOSE, stop, peak, "effective_stop_hit")
+        return PositionDecision(CLOSE, stop, peak, "effective_stop_hit", near_target)
 
-    # 2. 结构失效：当初开仓的理由没了。
+    # 2. 软件止盈：用 peak 兜住采样跨过目标后又回落的情况。
+    if target is not None and peak_favorable >= target_r:
+        return PositionDecision(CLOSE, stop, peak, "take_profit", near_target)
+
+    # 3. 结构失效：当初开仓的理由没了。
     if signal_score is not None:
         score = Decimal(str(signal_score))
         invalidated = score <= 0 if side.upper() == "LONG" else score >= 0
         if invalidated:
-            return PositionDecision(CLOSE, stop, peak, "structure_invalidated")
+            return PositionDecision(CLOSE, stop, peak, "structure_invalidated", near_target)
 
-    # 3. 时间止损：占着风险预算却不赚钱。
-    favorable = _favorable_r(side=side, entry=entry_price, price=price, risk=risk)
-    if opened_at is not None:
+    # 首次进入 near-target 后锁存时间；即使随后回撤，也不能把这次进展忘掉。
+    if (
+        near_target is None
+        and active.near_target_r > 0
+        and target_r > active.near_target_r
+        and peak_favorable >= active.near_target_r
+    ):
+        near_target = current_time
+
+    opened_time = _as_utc(opened_at)
+    if near_target is not None and active.near_target_timeout_hours >= 0:
+        near_target_age = (current_time - near_target).total_seconds() / 3600
+        if near_target_age >= active.near_target_timeout_hours:
+            return PositionDecision(CLOSE, stop, peak, "near_target_timeout", near_target)
+
+    if opened_time is not None:
         # SQLite 取回来的 timestamp 是 naive 的（Postgres 是 aware）—— 统一按 UTC
         # 处理，否则相减会炸。这个差异只在测试库出现，但代码不该依赖它。
-        if opened_at.tzinfo is None:
-            opened_at = opened_at.replace(tzinfo=UTC)
-        held_hours = (now - opened_at).total_seconds() / 3600
+        held_hours = (current_time - opened_time).total_seconds() / 3600
+        if active.max_hold_hours > 0 and held_hours >= active.max_hold_hours:
+            return PositionDecision(CLOSE, stop, peak, "max_hold", near_target)
         if held_hours >= active.time_stop_hours and favorable < active.time_stop_min_r:
-            return PositionDecision(CLOSE, stop, peak, "time_stop")
+            return PositionDecision(CLOSE, stop, peak, "time_stop", near_target)
 
     # 4. 保本 / 移动止损。
     moved = favorable >= active.breakeven_r
@@ -131,4 +191,5 @@ def manage(
         ),
         peak,
         "trailing_updated" if moved else "holding",
+        near_target,
     )

@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     strategy_trail_atr_multiplier: float = 1.0
     strategy_time_stop_hours: int = 48
     strategy_time_stop_min_r: float = 0.3
+    strategy_near_target_r: float = 1.8
+    strategy_near_target_timeout_hours: int = 6
+    strategy_max_hold_hours: int = 72
     decision_interval_seconds: int = 300
 
     #: FRED 序列的重抓间隔，按各自更新频率决定。月度数据按分钟级频率重抓没有

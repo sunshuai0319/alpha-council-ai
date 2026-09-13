@@ -39,6 +39,8 @@ EXIT_STOP = "stop"
 EXIT_TARGET = "take_profit"
 EXIT_STRUCTURE = "structure_invalidated"
 EXIT_TIME = "time_stop"
+EXIT_NEAR_TARGET = "near_target_timeout"
+EXIT_MAX_HOLD = "max_hold"
 
 
 def _as_datetime(open_time_ms: int) -> datetime:
@@ -120,6 +122,19 @@ class _OpenPosition:
     effective_stop: Decimal
     take_profit: Decimal
     peak_price: Decimal
+    near_target_at: datetime | None = None
+
+
+def _managed_exit_reason(reason: str) -> str:
+    """Map the online position-manager reason to a backtest exit category."""
+
+    return {
+        "structure_invalidated": EXIT_STRUCTURE,
+        "time_stop": EXIT_TIME,
+        "near_target_timeout": EXIT_NEAR_TARGET,
+        "max_hold": EXIT_MAX_HOLD,
+        "take_profit": EXIT_TARGET,
+    }.get(reason, EXIT_TIME)
 
 
 def _indicators_at(
@@ -263,6 +278,8 @@ def run_backtest(
                     initial_stop=position.initial_stop,
                     effective_stop=position.effective_stop,
                     peak_price=position.peak_price,
+                    take_profit=position.take_profit,
+                    near_target_at=position.near_target_at,
                     price=Decimal(str(bar.close)),
                     atr=Decimal(str(atr)) if atr else None,
                     # 时间止损在回测里同样生效 —— 用 K 线时刻而不是跳过它。
@@ -276,9 +293,7 @@ def run_backtest(
                         position,
                         exit_time=bar.open_time,
                         exit_price=Decimal(str(bar.close)),
-                        exit_reason=(
-                            EXIT_STRUCTURE if decision.reason == "structure_invalidated" else EXIT_TIME
-                        ),
+                        exit_reason=_managed_exit_reason(decision.reason),
                         entry_fee_pct=entry_fee,
                         exit_fee_pct=exit_fee,
                     )
@@ -288,6 +303,7 @@ def run_backtest(
                 else:
                     position.effective_stop = decision.effective_stop
                     position.peak_price = decision.peak_price
+                    position.near_target_at = decision.near_target_at
 
         # 单品种一仓：手里有仓就不再看新信号。
         if position is not None:

@@ -1051,6 +1051,29 @@ class OnePositionExchange(RecordingExchange):
         ]
 
 
+class PendingCloseExchange(OnePositionExchange):
+    """平仓请求尚未确认成交，验证本地仓位不能提前释放。"""
+
+    def place_order(self, request: OrderRequest) -> ExchangeOrder:
+        self.requests.append(request)
+        return ExchangeOrder(
+            order_id="order-pm-pending",
+            client_order_id=request.client_order_id,
+            symbol=request.symbol,
+            side=request.side,
+            position_side=request.position_side,
+            status="OPEN",
+            order_type=request.order_type,
+            quantity=request.quantity,
+            executed_quantity=Decimal(0),
+            price=Decimal(100),
+            average_price=Decimal(0),
+            time_in_force=None,
+            created_at=None,
+            updated_at=None,
+        )
+
+
 def _evaluate(tmp_path, exchange) -> RiskDecision:
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'one.db'}")
     Base.metadata.create_all(engine)
@@ -1110,7 +1133,9 @@ def _open_position_row(**overrides):
         "quantity": Decimal(1),
         "entry_price": Decimal(100),
         "stop_loss": Decimal(97),
+        "take_profit": Decimal(106),
         "effective_stop": Decimal(97),
+        "near_target_at": None,
         "peak_price": Decimal(100),
         "opened_at": datetime.now(UTC),
         "status": "OPEN",
@@ -1156,6 +1181,59 @@ def test_cycle_moves_the_stop_to_breakeven_and_persists_it(tmp_path) -> None:
 
     assert exchange.requests == []  # 没平仓
     assert db.get(Position, "pos-1").effective_stop == Decimal(100)
+
+
+def test_cycle_closes_a_position_at_software_take_profit(tmp_path) -> None:
+    """达到本地 TP → reduce-only 平仓，而不是依赖不可撤销的交易所 TP。"""
+    exchange = OnePositionExchange(side="LONG", notional=Decimal(100))
+    db, service = _service_with_position(tmp_path, exchange)
+
+    service._manage_positions(exchange, _long_state(price=106))
+    db.commit()
+
+    assert len(exchange.requests) == 1
+    assert exchange.requests[0].reduce_only is True
+    assert db.get(Position, "pos-1").status == "CLOSED"
+
+
+def test_cycle_keeps_position_open_until_software_close_is_filled(tmp_path) -> None:
+    """平仓单为 OPEN/UNKNOWN 时不能提前释放本地保证金占用状态。"""
+    exchange = PendingCloseExchange()
+    db, service = _service_with_position(tmp_path, exchange)
+
+    service._manage_positions(exchange, _long_state(price=106))
+    db.commit()
+
+    assert len(exchange.requests) == 1
+    assert exchange.requests[0].reduce_only is True
+    assert db.get(Position, "pos-1").status == "OPEN"
+
+
+def test_cycle_persists_the_near_target_timestamp(tmp_path) -> None:
+    """首次进入 1.8R 后要记时间，后续才能执行近目标超时。"""
+    exchange = OnePositionExchange(side="LONG", notional=Decimal(100))
+    db, service = _service_with_position(tmp_path, exchange)
+
+    service._manage_positions(exchange, _long_state(price=105.5))
+    db.commit()
+
+    near_target_at = db.get(Position, "pos-1").near_target_at
+    assert near_target_at is not None
+
+
+def test_cycle_closes_a_near_target_position_after_timeout(tmp_path) -> None:
+    """1.8R 后长时间不到 2R → 释放仓位。"""
+    exchange = OnePositionExchange(side="LONG", notional=Decimal(100))
+    row = _open_position_row(
+        near_target_at=datetime.now(UTC) - timedelta(hours=6, minutes=1),
+    )
+    db, service = _service_with_position(tmp_path, exchange, row=row)
+
+    service._manage_positions(exchange, _long_state(price=104))
+    db.commit()
+
+    assert len(exchange.requests) == 1
+    assert db.get(Position, "pos-1").status == "CLOSED"
 
 
 def test_position_management_leaves_other_symbols_alone(tmp_path) -> None:

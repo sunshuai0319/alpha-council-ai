@@ -494,8 +494,8 @@ class TradingCycleService:
                 logger.exception("recording the %s failure also failed", step)
 
     def _manage_positions(self, exchange: ExchangeClient, state: TradingCycleState) -> None:
-        """对**本品种**已有仓位跑持仓管理：触及有效止损/结构失效/时间止损就平，
-        否则推进有效止损。
+        """对**本品种**已有仓位跑持仓管理：执行 TP、止损、近目标超时、最大持仓、
+        结构失效和时间止损，否则推进有效止损。
 
         只处理 state.symbol —— 拿 BTC 的信号分去管 ETH 的仓位是错的。
 
@@ -532,6 +532,8 @@ class TradingCycleService:
                 initial_stop=row.stop_loss or row.entry_price,
                 effective_stop=row.effective_stop,
                 peak_price=row.peak_price,
+                take_profit=row.take_profit,
+                near_target_at=row.near_target_at,
                 price=price,
                 atr=Decimal(str(atr_raw)) if atr_raw else None,
                 opened_at=row.opened_at,
@@ -550,6 +552,7 @@ class TradingCycleService:
                 continue
             row.effective_stop = decision.effective_stop
             row.peak_price = decision.peak_price
+            row.near_target_at = decision.near_target_at
         if self.db is not None:
             self.db.flush()
 
@@ -586,12 +589,22 @@ class TradingCycleService:
             )
             self.record_failure(state.user_id, position.symbol, exc)
             return
+        if order.status.upper() != "FILLED":
+            logger.warning(
+                "position management close not confirmed: user=%s symbol=%s order=%s status=%s",
+                state.user_id,
+                position.symbol,
+                order.order_id,
+                order.status,
+            )
+            return
         row.status = "CLOSED"
         row.quantity = Decimal(0)
         row.unrealized_pnl = Decimal(0)
         row.stop_loss = None
         row.take_profit = None
         row.effective_stop = None
+        row.near_target_at = None
         logger.info(
             "position management closed: user=%s symbol=%s order=%s status=%s",
             state.user_id,
@@ -643,6 +656,7 @@ class TradingCycleService:
         )
         row.opened_at = datetime.now(UTC)
         row.peak_price = row.entry_price
+        row.near_target_at = None
         self.db.flush()
 
     def _halt(self, user_id: str, decision: RiskDecision) -> None:

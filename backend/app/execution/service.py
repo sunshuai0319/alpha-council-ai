@@ -41,7 +41,9 @@ def _order_request_for(
         client_order_id=stable_client_order_id(proposal.proposal_id),
         price=entry_price,
         stop_loss=Decimal(str(exchange_stop)) if exchange_stop is not None else None,
-        take_profit=Decimal(str(proposal.take_profit)) if proposal.take_profit is not None else None,
+        # 正常 TP 由 PositionManager 软件执行；WEEX 虚拟盘的触发单不可撤/不可改，
+        # 交易所侧只挂 disaster_stop 作为 worker 故障兜底。
+        take_profit=None,
         reduce_only=reduce_only,
     )
 

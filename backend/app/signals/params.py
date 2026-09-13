@@ -56,6 +56,12 @@ class StrategyParams:
     #: 持仓超过这么久且浮盈不足 time_stop_min_r 就平掉。
     time_stop_hours: int = 48
     time_stop_min_r: Decimal = Decimal("0.3")
+    #: 浮盈达到该 R 后开始计时；超时仍未达到 TP 就释放仓位。
+    near_target_r: Decimal = Decimal("1.8")
+    #: 达到 near_target_r 后最多等待多久。
+    near_target_timeout_hours: int = 6
+    #: 绝对最大持仓时长，避免盈利仓无限期占用资金。
+    max_hold_hours: int = 72
 
     @classmethod
     def from_settings(cls, settings: "Settings") -> "StrategyParams":
@@ -75,6 +81,9 @@ class StrategyParams:
             trail_atr_multiplier=Decimal(str(settings.strategy_trail_atr_multiplier)),
             time_stop_hours=settings.strategy_time_stop_hours,
             time_stop_min_r=Decimal(str(settings.strategy_time_stop_min_r)),
+            near_target_r=Decimal(str(settings.strategy_near_target_r)),
+            near_target_timeout_hours=settings.strategy_near_target_timeout_hours,
+            max_hold_hours=settings.strategy_max_hold_hours,
             # 风险预算与 RiskLimits 同源，不另开字段。
             risk_pct=Decimal(str(settings.max_single_trade_risk_pct)),
             max_notional_pct=Decimal(str(settings.max_position_notional_pct)),

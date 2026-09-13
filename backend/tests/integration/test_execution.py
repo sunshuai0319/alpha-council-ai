@@ -127,6 +127,7 @@ def test_exchange_stop_uses_the_wide_disaster_level_not_the_software_stop() -> N
     )
 
     assert exchange.request.stop_loss == Decimal(109)
+    assert exchange.request.take_profit is None
 
 
 def test_falls_back_to_the_software_stop_when_no_disaster_level_is_given() -> None:

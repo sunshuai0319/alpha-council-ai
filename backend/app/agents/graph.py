@@ -630,16 +630,17 @@ def build_trading_cycle_graph(
         {"safe_hold": "safe_hold", "signal_node": "signal_node"},
     )
     # HOLD 提案直接收尾：方向已定、无可否决，整条路径零 LLM 调用。
-    # 非 HOLD 才做 RAG 检索 + LLM 否决。
+    # 非 HOLD 先扇出；RAG 只阻塞新闻否决分支，结构和数据硬校验可同时开始。
     builder.add_conditional_edges(
         "signal_node",
-        lambda state: "persist_decision" if _proposal_is_hold(state) else "retrieve_evidence",
-        {"persist_decision": "persist_decision", "retrieve_evidence": "retrieve_evidence"},
+        lambda state: "persist_decision" if _proposal_is_hold(state) else "veto_fanout",
+        {"persist_decision": "persist_decision", "veto_fanout": "veto_fanout"},
     )
     # 三个专业 veto 并行跑、扇入到 merge：任一 veto 即拦截（见 merge_veto_node）。
-    builder.add_edge("retrieve_evidence", "veto_fanout")
+    # 新闻分支自身先 RAG 再调用 LLM；其它分支不再等待 RAG。
+    builder.add_edge("veto_fanout", "retrieve_evidence")
+    builder.add_edge("retrieve_evidence", "news_veto_node")
     for veto_node_name in ("news_veto_node", "structure_veto_node", "data_integrity_node"):
-        builder.add_edge("veto_fanout", veto_node_name)
         builder.add_edge(veto_node_name, "merge_veto")
     builder.add_edge("merge_veto", "proposal_validator")
     builder.add_conditional_edges(

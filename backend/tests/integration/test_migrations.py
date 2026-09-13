@@ -182,7 +182,7 @@ def test_positions_gains_management_columns(tmp_path) -> None:
     _upgrade(url)
 
     columns = _columns(url, "positions")
-    for name in ("effective_stop", "opened_at", "peak_price"):
+    for name in ("effective_stop", "opened_at", "peak_price", "near_target_at"):
         assert name in columns, f"positions 缺少 {name}"
 
 

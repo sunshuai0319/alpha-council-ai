@@ -212,6 +212,8 @@ class Position(TimestampMixin, Base):
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: 持仓期内最有利的价格（多仓取最高、空仓取最低），移动止损用它推算。
     peak_price: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    #: 首次达到近目标阈值的时刻，超时仍未达到 TP 时释放仓位。
+    near_target_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="OPEN")
 
 

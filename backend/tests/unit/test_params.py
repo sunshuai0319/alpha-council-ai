@@ -20,6 +20,9 @@ def test_defaults_match_the_values_the_modules_shipped_with() -> None:
     assert params.trail_atr_multiplier == Decimal("1.0")
     assert params.time_stop_hours == 48
     assert params.time_stop_min_r == Decimal("0.3")
+    assert params.near_target_r == Decimal("1.8")
+    assert params.near_target_timeout_hours == 6
+    assert params.max_hold_hours == 72
 
 
 def test_params_can_be_overridden_per_run() -> None:
@@ -58,6 +61,22 @@ def test_from_settings_allows_env_style_overrides_of_signal_params() -> None:
     assert params.entry_threshold == 0.6
     assert params.atr_multiplier == Decimal(2)
     assert params.reward_risk == Decimal(3)
+
+
+def test_from_settings_reads_position_exit_policy() -> None:
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        MILVUS_URI="http://localhost:19530",
+        ARK_API_KEY="test-key",
+        STRATEGY_NEAR_TARGET_R=1.7,
+        STRATEGY_NEAR_TARGET_TIMEOUT_HOURS=4,
+        STRATEGY_MAX_HOLD_HOURS=60,
+    )
+    params = StrategyParams.from_settings(settings)
+
+    assert params.near_target_r == Decimal("1.7")
+    assert params.near_target_timeout_hours == 4
+    assert params.max_hold_hours == 60
 
 
 def test_from_settings_leaves_unset_params_at_their_defaults() -> None:

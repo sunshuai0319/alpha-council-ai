@@ -19,6 +19,8 @@ def _long(**overrides):
         "entry_price": Decimal(100),
         "initial_stop": Decimal(97),
         "effective_stop": Decimal(97),
+        "take_profit": Decimal(106),
+        "near_target_at": None,
         "peak_price": Decimal(100),
         "price": Decimal(100),
         "atr": Decimal(3),
@@ -50,8 +52,70 @@ def test_moves_stop_to_breakeven_at_one_r() -> None:
 
 def test_trails_at_one_atr_once_past_one_r() -> None:
     """浮盈超 1R 后跟随 1×ATR：peak 106 → 止损 103。"""
-    decision = _long(price=Decimal(106), peak_price=Decimal(106))
-    assert decision.effective_stop == Decimal(103)
+    decision = _long(price=Decimal(105), peak_price=Decimal(105))
+    assert decision.effective_stop == Decimal(102)
+
+
+def test_closes_when_price_reaches_or_crosses_software_take_profit() -> None:
+    """软件止盈必须使用 >=，不能因为 5 分钟采样跨过精确价而漏平。"""
+    decision = _long(price=Decimal("106.1"), peak_price=Decimal("106.1"))
+
+    assert decision.action == CLOSE
+    assert decision.reason == "take_profit"
+
+
+def test_latches_the_time_when_position_reaches_near_target() -> None:
+    reached_at = OPENED + timedelta(hours=1)
+    decision = _long(
+        price=Decimal("105.5"),
+        peak_price=Decimal("105.5"),
+        now=reached_at,
+    )
+
+    assert decision.action == HOLD
+    assert decision.near_target_at == reached_at
+
+
+def test_closes_when_near_target_has_stalled_past_timeout() -> None:
+    decision = _long(
+        price=Decimal(104),
+        peak_price=Decimal("105.5"),
+        near_target_at=OPENED + timedelta(hours=1),
+        now=OPENED + timedelta(hours=7),
+    )
+
+    assert decision.action == CLOSE
+    assert decision.reason == "near_target_timeout"
+
+
+def test_closes_any_position_past_absolute_max_hold() -> None:
+    decision = _long(
+        price=Decimal(101),
+        now=OPENED + timedelta(hours=73),
+    )
+
+    assert decision.action == CLOSE
+    assert decision.reason == "max_hold"
+
+
+def test_short_closes_when_price_reaches_take_profit() -> None:
+    decision = manage(
+        side="SHORT",
+        entry_price=Decimal(100),
+        initial_stop=Decimal(103),
+        effective_stop=Decimal(103),
+        take_profit=Decimal(94),
+        near_target_at=None,
+        peak_price=Decimal(100),
+        price=Decimal(94),
+        atr=Decimal(3),
+        opened_at=OPENED,
+        now=OPENED + timedelta(minutes=30),
+        signal_score=Decimal("-0.5"),
+    )
+
+    assert decision.action == CLOSE
+    assert decision.reason == "take_profit"
 
 
 def test_trailing_stop_never_moves_backwards() -> None:
@@ -77,6 +141,8 @@ def test_short_position_trails_downwards() -> None:
         entry_price=Decimal(100),
         initial_stop=Decimal(103),
         effective_stop=Decimal(103),
+        take_profit=Decimal(90),
+        near_target_at=None,
         peak_price=Decimal(94),
         price=Decimal(94),
         atr=Decimal(3),

@@ -210,6 +210,8 @@ class ReconciliationService:
             stale_row.unrealized_pnl = Decimal(0)
             stale_row.stop_loss = None
             stale_row.take_profit = None
+            stale_row.effective_stop = None
+            stale_row.near_target_at = None
         now = datetime.now(UTC)
         if balance is not None:
             unrealized = sum((position.unrealized_pnl for position in positions), Decimal(0))
