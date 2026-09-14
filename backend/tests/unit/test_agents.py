@@ -176,6 +176,15 @@ def _retriever():
     return Retriever()
 
 
+def _empty_retriever():
+    class Retriever:
+        def retrieve(self, request: RetrievalRequest) -> list[dict[str, Any]]:
+            del request
+            return []
+
+    return Retriever()
+
+
 def test_retrieve_evidence_builds_one_directional_recent_request() -> None:
     class RecordingRetriever:
         def __init__(self) -> None:
@@ -237,6 +246,23 @@ def test_rule_signal_flows_to_long_when_llm_does_not_veto() -> None:
     assert result.trade_proposal is not None
     assert result.trade_proposal.action == Action.LONG
     assert result.signal_score is not None and result.signal_score > 0
+    assert result.veto_type == "veto_none"
+    assert result.errors == []
+
+
+def test_rule_signal_allows_veto_none_without_rag_evidence() -> None:
+    """RAG 只提供反向风险，未召回反向证据不应否定规则信号。"""
+    graph = build_trading_cycle_graph(
+        settings=_settings(),
+        llm=AllowLLM(),
+        retriever=_empty_retriever(),
+        clock_ms=lambda: 1_700_000_000_000,
+    )
+
+    result = graph.invoke(_bullish_state())
+
+    assert result.trade_proposal is not None
+    assert result.trade_proposal.action == Action.LONG
     assert result.veto_type == "veto_none"
     assert result.errors == []
 

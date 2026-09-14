@@ -116,13 +116,24 @@ def _entry_proposal(**overrides) -> TradeProposal:
     return TradeProposal(**{**base, **overrides})
 
 
-def test_exchange_stop_uses_the_wide_disaster_level_not_the_software_stop() -> None:
-    """交易所挂的是 3× 灾难止损，不是软件层的 1× —— 那条改不了也撤不掉，
-    挂紧的话移动止损根本没机会执行（实测无 cancel/modify 端点）。"""
+def test_exchange_entry_includes_static_take_profit_and_wide_disaster_stop() -> None:
+    """交易所同时挂静态 2R 止盈和宽灾难止损，本地仍负责动态止损。"""
     exchange = CapturingExchange()
     proposal = _entry_proposal(disaster_stop=109)
 
     ExecutionService().execute(
+        exchange, proposal, RiskDecision(status="ALLOWED"), quantity=Decimal("0.01")
+    )
+
+    assert exchange.request.stop_loss == Decimal(109)
+    assert exchange.request.take_profit == Decimal(94)
+
+
+def test_exchange_take_profit_can_be_disabled_for_safe_rollout() -> None:
+    exchange = CapturingExchange()
+    proposal = _entry_proposal(disaster_stop=109)
+
+    ExecutionService(exchange_take_profit_enabled=False).execute(
         exchange, proposal, RiskDecision(status="ALLOWED"), quantity=Decimal("0.01")
     )
 

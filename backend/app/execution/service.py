@@ -18,6 +18,7 @@ def _order_request_for(
     *,
     quantity: Decimal,
     entry_price: Decimal | None = None,
+    exchange_take_profit_enabled: bool = True,
 ) -> OrderRequest:
     if proposal.action is Action.LONG:
         side, position_side, reduce_only = "BUY", "LONG", False
@@ -29,9 +30,16 @@ def _order_request_for(
         reduce_only = True
     else:
         raise ValueError("HOLD proposals do not create orders")
-    # 交易所挂的是宽灾难止损（3×），不是软件层那条紧的 —— 交易所的触发单改不了
-    # 也撤不掉，挂紧就没机会执行移动止损了。没给灾难止损时退回 stop_loss。
+    # 交易所挂的是宽灾难止损（3×），不是软件层那条紧的 —— 触发单不能用于移动止损。
+    # 静态 TP 也在开仓时附带，之后由本地管理器继续负责动态退出。没给灾难止损时退回 stop_loss。
     exchange_stop = proposal.disaster_stop if proposal.disaster_stop is not None else proposal.stop_loss
+    exchange_take_profit = (
+        Decimal(str(proposal.take_profit))
+        if exchange_take_profit_enabled
+        and proposal.action in {Action.LONG, Action.SHORT}
+        and proposal.take_profit is not None
+        else None
+    )
     return OrderRequest(
         symbol=proposal.symbol,
         side=side,
@@ -41,9 +49,9 @@ def _order_request_for(
         client_order_id=stable_client_order_id(proposal.proposal_id),
         price=entry_price,
         stop_loss=Decimal(str(exchange_stop)) if exchange_stop is not None else None,
-        # 正常 TP 由 PositionManager 软件执行；WEEX 虚拟盘的触发单不可撤/不可改，
-        # 交易所侧只挂 disaster_stop 作为 worker 故障兜底。
-        take_profit=None,
+        # 静态 TP 由交易所优先触发，PositionManager 仍保留为延迟/触发失败时的兜底。
+        # 平仓请求不附带 TP，避免把已关闭仓位的退出参数误传给交易所。
+        take_profit=exchange_take_profit,
         reduce_only=reduce_only,
     )
 
@@ -61,6 +69,9 @@ def _query_by_client_id(exchange: Any, client_order_id: str) -> ExchangeOrder | 
 
 
 class ExecutionService:
+    def __init__(self, *, exchange_take_profit_enabled: bool = True) -> None:
+        self.exchange_take_profit_enabled = exchange_take_profit_enabled
+
     def execute(
         self,
         exchange: ExchangeClient,
@@ -85,7 +96,12 @@ class ExecutionService:
                 client_order_id=client_order_id,
                 message="risk decision did not allow execution",
             )
-        request = _order_request_for(proposal, quantity=quantity, entry_price=entry_price)
+        request = _order_request_for(
+            proposal,
+            quantity=quantity,
+            entry_price=entry_price,
+            exchange_take_profit_enabled=self.exchange_take_profit_enabled,
+        )
         try:
             order = exchange.place_order(request)
         except (TimeoutError, httpx.TimeoutException) as exc:

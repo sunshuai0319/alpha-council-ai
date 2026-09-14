@@ -6,7 +6,14 @@ import httpx
 from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
-from app.processing.documents import DocumentInput, ProcessedDocument, prepare_document
+from app.processing.documents import (
+    DocumentInput,
+    ProcessedDocument,
+    merge_assets,
+    normalize_event_type,
+    normalize_impact_horizon,
+    prepare_document,
+)
 
 
 class DocumentSummary(BaseModel):
@@ -92,13 +99,21 @@ class DocumentProcessingResult:
 
 
 class DocumentProcessor:
-    def __init__(self, summary_client: Any) -> None:
+    def __init__(self, summary_client: Any, known_assets: tuple[str, ...] = ()) -> None:
         self.summary_client = summary_client
+        self.known_assets = known_assets
 
     def process(self, document: DocumentInput) -> "DocumentProcessingResult":
-        prepared = prepare_document(document)
+        prepared = prepare_document(document, known_assets=self.known_assets)
         try:
             summary = self.summary_client.summarize(prepared)
         except Exception as exc:  # noqa: BLE001 - retain document for retry after NLP failure
             return DocumentProcessingResult(document=prepared, summary=None, status="FAILED", error=str(exc))
+        summary = summary.model_copy(
+            update={
+                "assets": list(merge_assets(prepared.assets, summary.assets, self.known_assets)),
+                "event_type": normalize_event_type(summary.event_type or prepared.event_type),
+                "impact_horizon": normalize_impact_horizon(summary.impact_horizon),
+            }
+        )
         return DocumentProcessingResult(document=prepared, summary=summary, status="PROCESSED")

@@ -4,7 +4,14 @@ from app.processing.documents import (
     DocumentRepository,
     ProcessedDocument,
     chunk_text,
+    classify_asset_scope,
     clean_text,
+    detect_assets,
+    merge_assets,
+    normalize_asset,
+    normalize_assets,
+    normalize_event_type,
+    normalize_impact_horizon,
     prepare_document,
 )
 
@@ -17,6 +24,13 @@ __all__ = [
     "ProcessedDocument",
     "SummaryError",
     "chunk_text",
+    "classify_asset_scope",
     "clean_text",
+    "detect_assets",
+    "merge_assets",
+    "normalize_asset",
+    "normalize_assets",
+    "normalize_event_type",
+    "normalize_impact_horizon",
     "prepare_document",
 ]

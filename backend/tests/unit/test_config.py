@@ -34,6 +34,27 @@ def test_default_symbols_are_unchanged() -> None:
     assert settings.symbol_list == ("BTC-USDT", "ETH-USDT")
 
 
+def test_exchange_take_profit_is_enabled_by_default() -> None:
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        MILVUS_URI="http://localhost:19530",
+        ARK_API_KEY="test-key",
+    )
+
+    assert settings.exchange_take_profit_enabled is True
+
+
+def test_exchange_take_profit_can_be_disabled_by_configuration() -> None:
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        MILVUS_URI="http://localhost:19530",
+        ARK_API_KEY="test-key",
+        EXCHANGE_TAKE_PROFIT_ENABLED=False,
+    )
+
+    assert settings.exchange_take_profit_enabled is False
+
+
 def test_zilliz_vector_store_settings_are_selected_when_enabled() -> None:
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",

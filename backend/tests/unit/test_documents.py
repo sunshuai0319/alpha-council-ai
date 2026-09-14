@@ -4,7 +4,15 @@ import httpx
 
 from app.config import Settings
 from app.processing.ark import ArkSummaryClient, DocumentProcessor, DocumentSummary
-from app.processing.documents import DocumentInput, DocumentRepository, chunk_text, prepare_document
+from app.processing.documents import (
+    DocumentInput,
+    DocumentRepository,
+    chunk_text,
+    detect_assets,
+    normalize_asset,
+    normalize_impact_horizon,
+    prepare_document,
+)
 
 
 def test_same_url_or_content_hash_is_inserted_once() -> None:
@@ -28,6 +36,29 @@ def test_document_cleaning_and_tags_are_deterministic() -> None:
     assert document.assets == ("BTC", "ETH")
     assert document.event_type == "ETF"
     assert document.language == "en"
+
+
+def test_asset_detection_covers_long_tail_aliases_and_configured_symbols() -> None:
+    assert detect_assets("Bitcoin Cash and Litecoin moved with BCHSUSDT volume.") == ("BCH", "LTC")
+    assert detect_assets("Bitcoin Cash and Bitcoin both moved.") == ("BTC", "BCH")
+    assert detect_assets("BCHUSDT rallied.", known_assets=("BCH-USDT",)) == ("BCH",)
+
+
+def test_asset_normalization_accepts_llm_labels_and_exchange_symbols() -> None:
+    assert normalize_asset("Bitcoin Cash") == "BCH"
+    assert normalize_asset("BCH-USDT") == "BCH"
+    assert normalize_asset("BCHSUSDT") == "BCH"
+    assert normalize_asset("EUR/USD") == "EUR/USD"
+    assert normalize_asset("USDT") == ""
+    assert normalize_asset("USBDC") == ""
+
+
+def test_impact_horizon_is_normalized_to_shared_taxonomy() -> None:
+    assert normalize_impact_horizon("days") == "SHORT"
+    assert normalize_impact_horizon("short-to-medium") == "SHORT_MEDIUM"
+    assert normalize_impact_horizon("weeks") == "MEDIUM"
+    assert normalize_impact_horizon("unknown") == "UNKNOWN"
+    assert normalize_impact_horizon("a very long historical horizon label") == "UNKNOWN"
 
 
 def test_chunk_text_has_overlap_and_rejects_invalid_configuration() -> None:

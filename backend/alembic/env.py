@@ -11,7 +11,8 @@ config = context.config
 config.set_main_option("sqlalchemy.url", "unused")
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # 不要让同进程中的迁移关闭应用 logger；否则迁移后 Milvus/RAG 调用会变成静默。
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

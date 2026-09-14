@@ -8,7 +8,7 @@
 # 后端 API（前端要用）
 cd backend && uv run uvicorn app.main:app --reload --port 8000
 
-# 交易 worker（每 5 分钟一轮，**必须重启才会加载新配置与新代码**）
+# 交易 worker（基准间隔 5 分钟；上一轮完整执行结束后计时，**必须重启才会加载新配置与新代码**）
 cd backend && uv run python -m workers.scheduler
 ```
 
@@ -29,7 +29,7 @@ LIMIT 20;
 | 字段 | 怎么读 |
 |---|---|
 | `signal_score` | 规则打分卡的 composite。`NULL` = 用的是 2026-09-11 之前的旧代码 |
-| `veto_type` | `NULL` = 没到否决环节（HOLD 短路，零 LLM 调用）<br>`veto_none` = 否决节点放行<br>`veto_applied` = 合法否决拦下<br>`veto_fail_closed` = veto 不可用或输出不合法，安全拦下 |
+| `veto_type` | `NULL` = 没到否决环节（HOLD 短路，零 RAG/LLM 调用）<br>`veto_none` = 否决节点放行（RAG 可以是空结果）<br>`veto_applied` = 合法否决拦下<br>`veto_fail_closed` = veto 不可用或输出不合法，安全拦下 |
 
 ```sql
 -- 2. 真实成交的回合与盈亏（前向验证的核心）
@@ -105,6 +105,43 @@ FROM closed;
 | `CYCLE_FAILURE` 里出现 5xx | 对端抖动，不应熔断账户（第 1 层已修，若复现说明修漏了） |
 | 长期一笔不开 | 先看 `signal_score` 是否都低于 `STRATEGY_ENTRY_THRESHOLD`（默认 0.35） |
 | `signal_score` 全是 NULL | worker 跑的是旧代码，重启它 |
+| 出现 `entry_signal_evidence_missing` | 规则提案缺少指标证据；这不是“RAG 没搜到新闻”，应检查 signal_node 输出 |
+
+RAG 的正常空结果不会阻塞开仓：Retriever 会先按币种检索，未命中时回退到空资产标签的
+通用市场/宏观材料；两级都无结果时交给 `news_veto_node` 判断。只有模型未配置、路径不存在、
+Milvus 不可用或检索异常才会记录 `retrieval_failed` 并安全 HOLD。
+
+## 看 Milvus 是否真的被调用
+
+应用将 Milvus/RAG 调用写到标准日志（默认 `LOG_LEVEL=INFO`）。重点搜索：
+
+```bash
+grep -E "milvus (client|collection|search|insert)|rag (retrieval|asset fallback|reranker)" <worker日志>
+```
+
+判断方式：
+
+- `milvus search start/complete`：已调用 Milvus；`raw_hits=0` 表示向量库没有返回候选。
+- `rag retrieval search ... candidates=0`：可能是 Milvus 返回为空，也可能是应用层时间/资产/事件过滤后为空。
+- `rag asset fallback`：目标币种没有候选，开始查空资产的通用市场/宏观材料。
+- `rag reranker start/complete`：已经有候选并进入 BGE-Reranker；两级召回都为空时不会执行。
+- `milvus insert/upsert ... asset_counts=...`：文档入库或回填批次各资产写入多少行，可直接发现
+  标注偏斜；v2 还会记录 `asset_scope`/`schema_version` 到 collection。
+
+日志不会输出连接 token 或 query 正文。修改代码或 `.env` 后，必须重启长驻 worker 才会加载。
+
+历史 v1 数据不会因重启自动重算。本次已完成 v2 回填（116 篇、175 行、失败 0），并将本地
+`.env` 切换到 v2；如果要在另一环境修复资产覆盖，可先执行：
+
+```bash
+cd backend
+uv run python scripts/reindex_documents.py --dry-run
+uv run python scripts/reindex_documents.py --target-collection alpha_council_documents_bge_m3_v2
+```
+
+回填脚本只读取 PostgreSQL 中已 `INDEXED` 且有正文/摘要的文档，使用同一 BGE-M3 重新向量化，
+写入新 collection，不删除旧 collection；完成后应核对总行数、资产分布和重复键，再修改配置。
+长驻 API/worker 进程必须重启后才会加载新的 collection 和代码。
 
 ## 复现回测
 

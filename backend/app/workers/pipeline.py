@@ -15,9 +15,18 @@ from app.db.collector_errors import record_collector_errors
 from app.db.models import DocumentSummary as DocumentSummaryRecord
 from app.db.models import MacroObservationRecord, SourceDocument
 from app.processing.ark import ArkSummaryClient, DocumentSummary
-from app.processing.documents import DocumentInput, chunk_text, prepare_document
+from app.processing.documents import (
+    DocumentInput,
+    chunk_text,
+    classify_asset_scope,
+    merge_assets,
+    normalize_event_type,
+    normalize_impact_horizon,
+    prepare_document,
+)
 from app.rag.embeddings import BGEEmbedder
-from app.rag.milvus import IndexedChunk, MilvusVectorStore
+from app.rag.milvus import MilvusVectorStore
+from app.rag.retriever import build_indexed_chunks
 from app.workers.schedule import SourceSchedule
 
 logger = logging.getLogger(__name__)
@@ -41,8 +50,8 @@ class DocumentPipeline:
         self.macro = macro or MacroCollector()
         self.summary_client = summary_client or ArkSummaryClient()
         self.embedder = embedder or BGEEmbedder()
-        self.indexer = indexer or MilvusVectorStore()
         self.settings = settings or get_settings()
+        self.indexer = indexer or MilvusVectorStore(self.settings)
         self._schedule = SourceSchedule(self._fred_intervals(), clock=clock)
 
     def _fred_intervals(self) -> dict[str, int]:
@@ -162,7 +171,7 @@ class DocumentPipeline:
 
     def _process(self, document: DocumentInput) -> bool | None:
         """Return True when indexed, None when already indexed, False on failure."""
-        prepared = prepare_document(document)
+        prepared = prepare_document(document, known_assets=self.settings.asset_list)
         record = self.db.scalar(
             select(SourceDocument).where(
                 or_(
@@ -198,6 +207,16 @@ class DocumentPipeline:
         record.processing_attempts = (record.processing_attempts or 0) + 1
         try:
             summary: DocumentSummary = self.summary_client.summarize(prepared)
+            assets = merge_assets(prepared.assets, summary.assets, self.settings.asset_list)
+            event_type = normalize_event_type(summary.event_type or prepared.event_type)
+            impact_horizon = normalize_impact_horizon(summary.impact_horizon)
+            summary = summary.model_copy(
+                update={
+                    "assets": list(assets),
+                    "event_type": event_type,
+                    "impact_horizon": impact_horizon,
+                }
+            )
             existing_summary = self.db.scalar(
                 select(DocumentSummaryRecord).where(DocumentSummaryRecord.document_id == record.id)
             )
@@ -207,33 +226,31 @@ class DocumentPipeline:
             )
             summary_row.summary = summary.summary
             summary_row.event_type = summary.event_type
-            summary_row.assets = summary.assets
+            summary_row.assets = list(assets)
             summary_row.direction = summary.direction
             summary_row.impact_horizon = summary.impact_horizon
             summary_row.confidence = summary.confidence
             summary_row.model_version = "ark:" + getattr(self.summary_client, "model", "configured")
+            metadata = dict(summary_row.metadata_json or {})
+            metadata.update(
+                {
+                    "asset_scope": classify_asset_scope(assets, record.source, event_type),
+                    "rag_schema_version": "v2",
+                }
+            )
+            summary_row.metadata_json = metadata
             if existing_summary is None:
                 self.db.add(summary_row)
             chunks = chunk_text(prepared.cleaned_text)
             vectors = self.embedder.embed(chunks)
             self.indexer.insert(
-                [
-                    IndexedChunk(
-                        chunk_id=f"{record.id}:{index}",
-                        document_id=record.id,
-                        content=chunk,
-                        canonical_url=record.canonical_url,
-                        source=record.source,
-                        asset=summary.assets[0] if summary.assets else "",
-                        event_type=summary.event_type,
-                        impact_horizon=summary.impact_horizon,
-                        published_at=record.published_at,
-                        content_hash=record.content_hash,
-                        embedding_model="BAAI/bge-m3",
-                        embedding=vector,
-                    )
-                    for index, (chunk, vector) in enumerate(zip(chunks, vectors, strict=True))
-                ]
+                build_indexed_chunks(
+                    prepared,
+                    summary,
+                    vectors,
+                    "BAAI/bge-m3",
+                    texts=chunks,
+                )
             )
             record.processing_status = "INDEXED"
             record.processing_error = None

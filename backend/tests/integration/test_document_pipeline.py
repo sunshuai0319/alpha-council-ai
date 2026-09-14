@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from sqlalchemy import create_engine, select
@@ -92,6 +93,18 @@ class FakeIndexer:
 
     def insert(self, chunks):
         self.chunks.extend(chunks)
+
+
+class MultiAssetRSS(FakeRSS):
+    def collect(self):
+        result = super().collect()
+        item = result.items[0]
+        result.items[0] = replace(
+            item,
+            summary="Bitcoin and Ethereum ETF flows increased.",
+            title="Bitcoin and Ethereum ETF update",
+        )
+        return result
 
 
 class RecordingMacro:
@@ -247,6 +260,66 @@ def test_document_pipeline_persists_summary_macro_observation_and_indexes(tmp_pa
         assert indexer.chunks
 
 
+def test_document_pipeline_uses_detected_asset_when_summary_omits_assets(tmp_path):
+    """摘要模型漏标资产时，仍使用文档预处理阶段识别出的币种标签。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'asset_fallback.db'}")
+    Base.metadata.create_all(engine)
+    indexer = FakeIndexer()
+
+    class SummaryWithoutAssets(FakeSummary):
+        def summarize(self, document):
+            return super().summarize(document).model_copy(update={"assets": []})
+
+    with Session(engine) as db:
+        pipeline = DocumentPipeline(
+            db=db,
+            rss=FakeRSS(),
+            macro=FakeMacro(),
+            summary_client=SummaryWithoutAssets(),
+            embedder=FakeEmbedder(),
+            indexer=indexer,
+        )
+        pipeline.run_once()
+
+    news_chunk = next(chunk for chunk in indexer.chunks if chunk.source == "test")
+    assert news_chunk.asset == "BTC"
+
+
+def test_document_pipeline_merges_summary_assets_and_indexes_each_asset(tmp_path):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'multi_asset.db'}")
+    Base.metadata.create_all(engine)
+    indexer = FakeIndexer()
+
+    class SummaryWithExchangeLabels(FakeSummary):
+        def summarize(self, document):
+            return super().summarize(document).model_copy(
+                update={"assets": ["BTC-USDT", "ETH"], "impact_horizon": "short-to-medium"}
+            )
+
+    with Session(engine) as db:
+        pipeline = DocumentPipeline(
+            db=db,
+            rss=MultiAssetRSS(),
+            macro=FakeEmptyMacro(),
+            summary_client=SummaryWithExchangeLabels(),
+            embedder=FakeEmbedder(),
+            indexer=indexer,
+            settings=Settings(trading_symbols="BTC-USDT,ETH-USDT"),
+        )
+        pipeline.run_once()
+
+        summary = db.scalar(select(DocumentSummary).where(DocumentSummary.document_id.is_not(None)))
+        assert summary is not None
+        assert summary.assets == ["BTC", "ETH"]
+        assert summary.impact_horizon == "SHORT_MEDIUM"
+        assert summary.metadata_json["asset_scope"] == "ASSET_SPECIFIC"
+
+    news_chunks = [chunk for chunk in indexer.chunks if chunk.source == "test"]
+    assert {chunk.asset for chunk in news_chunks} == {"BTC", "ETH"}
+    assert len(news_chunks) == 2
+    assert len({chunk.chunk_id for chunk in news_chunks}) == 2
+
+
 class FakeEmptyRSS:
     def collect(self):
         return CollectorResult(
@@ -263,6 +336,12 @@ class FakeEmptyRSS:
                 )
             ],
         )
+
+
+class FakeEmptyMacro:
+    def collect(self, series_ids=(), fred_limit=30, fed_feed_url=None):
+        del series_ids, fred_limit, fed_feed_url
+        return CollectorResult(source="fred"), CollectorResult(source="federal-reserve")
 
 
 def test_document_pipeline_marks_empty_content_as_skipped_not_indexed(tmp_path):

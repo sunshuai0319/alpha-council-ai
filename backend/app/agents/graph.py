@@ -614,8 +614,10 @@ def proposal_validator(state: TradingCycleState, *, now_ms: int | None = None) -
             reasons.append("entry_position_size_missing")
         if proposal.stop_loss is None:
             reasons.append("entry_stop_loss_missing")
-        if not proposal.evidence_refs or not current.retrieved_evidence:
-            reasons.append("entry_evidence_missing")
+        # RAG 只负责发现反向新闻/宏观风险，不是规则信号的入场证明。
+        # 没召回到反向证据等价于 veto_none，不能把正常信号误判成安全错误。
+        if not proposal.evidence_refs:
+            reasons.append("entry_signal_evidence_missing")
     valid_until = proposal.valid_until
     if (
         valid_until is not None

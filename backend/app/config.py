@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     milvus_token: str = ""
     milvus_db_name: str = ""
     milvus_collection: str = "alpha_council_documents_bge_m3_v1"
+    #: RAG v2 adds asset_scope/schema_version fields; v1 remains the safe default
+    #: until the explicit reindex script has populated a new collection.
+    milvus_schema_version: str = "v1"
     use_zilliz: bool = False
     zilliz_uri: str = ""
     zilliz_user: str = ""
@@ -71,6 +74,9 @@ class Settings(BaseSettings):
 
     weex_base_url: str = "https://api-contract.weex.com"
     weex_virtual_only: bool = True
+    #: 开仓时在交易所侧附带策略止盈。关闭后仍保留本地 PositionManager 止盈，
+    #: 适用于虚拟盘触发行为验证或交易所侧 TP 临时降级。
+    exchange_take_profit_enabled: bool = True
 
     clerk_jwks_url: str = ""
     clerk_issuer: str = ""
@@ -143,6 +149,21 @@ class Settings(BaseSettings):
         """`trading_symbols` 的解析结果。"""
 
         return tuple(part.strip().upper() for part in self.trading_symbols.split(",") if part.strip())
+
+    @property
+    def asset_list(self) -> tuple[str, ...]:
+        """Configured base assets, used by ingestion to resolve long-tail symbols."""
+
+        assets: list[str] = []
+        for symbol in self.symbol_list:
+            compact = symbol.replace("-", "").replace("_", "")
+            if compact.endswith("SUSDT"):
+                compact = f"{compact[:-5]}USDT"
+            if compact.endswith("USDT") and len(compact) > 4:
+                compact = compact[:-4]
+            if compact and compact not in assets:
+                assets.append(compact)
+        return tuple(assets)
 
     @property
     def timeframe_list(self) -> tuple[str, ...]:

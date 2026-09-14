@@ -7,7 +7,13 @@
 > [`docs/current-architecture.md`](../../current-architecture.md) 为准。尤其要注意：旧的
 > `market/quant/macro/committee` 函数仍存在，但不在当前编译图路径上；软件层 TP、near-target
 > 超时和最大持仓时长已经完成，RAG 方向/时间窗/注入统一和 veto fail-closed 也已完成，
-> 分批止盈仍未完成。
+> 分批止盈仍未完成。2026-09-14 起，开仓默认还会附带静态交易所侧 2R TP；本地 TP 保留为
+> 兜底，动态止损仍只由本地管理器执行。
+>
+> **RAG 入库实现状态（2026-09-14）**：文档入库已实现规则资产识别与 Ark `assets` union、
+> 基础币种归一化、多资产 chunk 行展开，以及 `asset_scope`/`schema_version` v2 兼容写入；
+> 历史 v1 collection 通过 `backend/scripts/reindex_documents.py` 非破坏式回填。本文其余内容
+> 保留为设计演进记录，不覆盖当前代码事实。
 
 ## 1. 问题
 
@@ -51,7 +57,8 @@
 
 1. **持仓尺度**：1h 定方向与入场，4h 做趋势过滤，5m 仅做择时确认；持仓 2 小时–2 天，允许隔夜。
 2. **信号架构**：确定性规则打分器定方向 / 仓位 / SL / TP；LLM 降级为复核者。
-3. **止损止盈**：交易所侧只挂宽灾难止损兜底，保本 / 移动止损 / 分批止盈由软件层在周期内执行。
+3. **止损止盈（原方案）**：交易所侧只挂宽灾难止损兜底，保本 / 移动止损 / 分批止盈由软件层在周期内执行。
+   当前 as-built 已在此基础上增加静态 2R 交易所 TP，软件层仍负责动态规则和兜底。
 4. **LLM 否决权**：封闭枚举，只可否决不可改方向；无合法枚举命中即放行。
 
 ### 3.1 为什么选 1h–4h
@@ -237,7 +244,7 @@ SHORT 检索 bullish/upside/positive catalyst。默认时间窗为 24 小时、�
 |---|---|---|
 | 保本 | 浮盈 ≥ 1R | 有效止损上移到 entry |
 | 移动止损 | 浮盈 ≥ 1R 后 | 跟随 `最高价 ∓ ATR(14, 1h)`，只上移不下移 |
-| 软件止盈 | 当前有利浮动达到 target R（默认 2R） | 软件层 reduce-only 市价平仓；交易所不再接收 `tpTriggerPrice` |
+| 软件止盈 | 当前有利浮动达到 target R（默认 2R） | 本地 reduce-only 市价平仓兜底；开仓默认同时附带交易所静态 `tpTriggerPrice` |
 | near-target 释放 | 峰值浮盈达到 1.8R 后连续 6h 未到目标 | 软件层 reduce-only 市价平仓，时间戳落库 |
 | 最大持仓时长 | 持仓达到 72h | 无条件软件层 reduce-only 市价平仓 |
 | 分批止盈（目标） | 浮盈 ≥ 1R / 2R | 各平 1/3，余下交给移动止损；本轮尚未实现 |
@@ -248,9 +255,10 @@ SHORT 检索 bullish/upside/positive catalyst。默认时间窗为 24 小时、�
 **实现约束**：没有撤单接口，所以「移动止损」是**本地记账 + 按需下 reduceOnly 市价单**，不是改交易所那条触发单。有效止损存本地（`positions` 表加列 `effective_stop`）。交易所侧只挂 `3 × stop_distance` 的宽止损，正常情况下永远不该被触发。
 
 §3.2 已实测确认：软件层平仓时交易所会撤掉关联触发单，两者不会互相打架。当前
-`ExecutionService` 只把 `disaster_stop` 发送为 `slTriggerPrice`；`PositionManager` 负责
-正常 TP、near-target 超时和最大持仓时长。软件平仓只有在交易所订单状态为 `FILLED` 时才
-立即收敛本地状态，`UNKNOWN/OPEN` 留待下一轮 reconciliation。
+`ExecutionService` 默认把 `disaster_stop` 和 `take_profit` 分别发送为
+`slTriggerPrice` / `tpTriggerPrice`；`PositionManager` 负责动态止损、正常 TP 兜底、
+near-target 超时和最大持仓时长。软件平仓只有在交易所订单状态为 `FILLED` 时才立即收敛
+本地状态，`UNKNOWN/OPEN` 留待下一轮 reconciliation。
 
 ### 第 4 层：验证
 

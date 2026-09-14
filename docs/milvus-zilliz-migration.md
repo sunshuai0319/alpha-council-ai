@@ -5,6 +5,9 @@
 ## 行为
 
 - 源集合默认读取 `MILVUS_COLLECTION`，未设置时使用 `alpha_council_documents_bge_m3_v1`。
+- RAG v2 的 `asset_scope` / `schema_version` 需要先通过
+  `backend/scripts/reindex_documents.py` 写入新 collection，再切换 `MILVUS_COLLECTION`；不要
+  直接在现有 v1 collection 上改 schema。
 - 目标集合默认使用相同名称，也可以通过 `ZILLIZ_COLLECTION` 或 `--target-collection` 指定。
 - 目标集合不存在时，复制源集合的字段和索引配置后创建。
 - 使用主键判断重复记录。目标中已存在的记录跳过，不会覆盖目标已有内容。

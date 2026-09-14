@@ -159,6 +159,7 @@ def test_weex_place_order_rounds_quantity_and_prices_to_contract_precision() -> 
                 client_order_id="alpha-0001",
                 price=Decimal("76940.123456"),
                 time_in_force="GTC",
+                take_profit=Decimal("77777.999"),
                 stop_loss=Decimal("76140.999"),
             )
         )
@@ -166,6 +167,7 @@ def test_weex_place_order_rounds_quantity_and_prices_to_contract_precision() -> 
     # CONTRACT_INFO_RESPONSE: quantityPrecision=6, pricePrecision=1
     assert captured["quantity"] == "0.026002"
     assert captured["price"] == "76940.1"
+    assert captured["tpTriggerPrice"] == "77777.9"
     assert captured["slTriggerPrice"] == "76140.9"
 
 

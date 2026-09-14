@@ -144,7 +144,9 @@ class TradingCycleService:
         self.graph_factory = graph_factory or self._default_graph
         self.retriever_factory = retriever_factory or self._default_retriever
         self.risk_engine = risk_engine or RiskEngine(self.settings)
-        self.execution_service = execution_service or ExecutionService()
+        self.execution_service = execution_service or ExecutionService(
+            exchange_take_profit_enabled=self.settings.exchange_take_profit_enabled
+        )
         self.reconciliation = ReconciliationService(db=db)
         self._memory_results: dict[str, list[CycleResult]] = {}
         self._memory_market: list[dict[str, Any]] = []
@@ -293,7 +295,7 @@ class TradingCycleService:
             else:
                 graph = self.graph_factory()
             logger.info(
-                "cycle signal: user=%s symbol=%s equity=%s (rule signal + LLM veto)",
+                "cycle evaluation: user=%s symbol=%s equity=%s",
                 user_id,
                 symbol,
                 equity,
@@ -301,12 +303,15 @@ class TradingCycleService:
             state = graph.invoke(state)
             proposal = state.trade_proposal
             logger.info(
-                "cycle proposal: user=%s symbol=%s action=%s confidence=%s evidence=%d agents(market=%s,quant=%s,macro=%s)",
+                "cycle proposal: user=%s symbol=%s action=%s signal_score=%s veto_type=%s confidence=%s evidence=%d errors=%s agents(market=%s,quant=%s,macro=%s)",
                 user_id,
                 symbol,
                 proposal.action.value if proposal else "NONE",
+                state.signal_score,
+                state.veto_type,
                 proposal.confidence if proposal else None,
                 len(state.retrieved_evidence),
+                state.errors,
                 state.market_analysis.status if state.market_analysis else None,
                 state.quant_analysis.status if state.quant_analysis else None,
                 state.macro_analysis.status if state.macro_analysis else None,

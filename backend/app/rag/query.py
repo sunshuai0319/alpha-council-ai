@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from app.processing.documents import normalize_asset, normalize_event_type, normalize_impact_horizon
+
 
 @dataclass(frozen=True)
 class RetrievalRequest:
@@ -28,16 +30,16 @@ class RetrievalRequest:
         if self.candidate_limit is not None and self.candidate_limit < 1:
             raise ValueError("retrieval candidate limit must be positive")
         if self.asset:
-            object.__setattr__(self, "asset", self.asset.strip().upper())
+            object.__setattr__(self, "asset", normalize_asset(self.asset))
         if self.direction:
             normalized_direction = self.direction.strip().upper()
             if normalized_direction not in {"LONG", "SHORT"}:
                 raise ValueError(f"unsupported trade direction: {self.direction}")
             object.__setattr__(self, "direction", normalized_direction)
         if self.event_type:
-            object.__setattr__(self, "event_type", self.event_type.strip().upper())
+            object.__setattr__(self, "event_type", normalize_event_type(self.event_type))
         if self.impact_horizon:
-            object.__setattr__(self, "impact_horizon", self.impact_horizon.strip().upper())
+            object.__setattr__(self, "impact_horizon", normalize_impact_horizon(self.impact_horizon))
         if self.published_after is not None:
             published_after = self.published_after
             if published_after.tzinfo is None:
@@ -59,7 +61,7 @@ def build_veto_retrieval_request(
 ) -> RetrievalRequest:
     """为新闻 veto 构造统一的、只寻找反向风险的近期证据请求。"""
 
-    normalized_asset = asset.strip().upper()
+    normalized_asset = normalize_asset(asset)
     if not normalized_asset:
         raise ValueError("retrieval asset must not be empty")
     normalized_direction = direction.strip().upper()
