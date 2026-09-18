@@ -55,6 +55,23 @@ def test_exchange_take_profit_can_be_disabled_by_configuration() -> None:
     assert settings.exchange_take_profit_enabled is False
 
 
+def test_reentry_cooldown_defaults_to_six_hours_and_is_configurable() -> None:
+    default_settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        MILVUS_URI="http://localhost:19530",
+        ARK_API_KEY="test-key",
+    )
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        MILVUS_URI="http://localhost:19530",
+        ARK_API_KEY="test-key",
+        REENTRY_COOLDOWN_SECONDS=900,
+    )
+
+    assert default_settings.reentry_cooldown_seconds == 6 * 60 * 60
+    assert settings.reentry_cooldown_seconds == 900
+
+
 def test_zilliz_vector_store_settings_are_selected_when_enabled() -> None:
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",

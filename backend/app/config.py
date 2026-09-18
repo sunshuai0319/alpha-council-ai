@@ -128,6 +128,9 @@ class Settings(BaseSettings):
     strategy_near_target_timeout_hours: int = 6
     strategy_max_hold_hours: int = 72
     decision_interval_seconds: int = 300
+    #: 仓位从交易所消失后，禁止同一品种被持续旧信号立即重新开仓的时间。
+    #: 覆盖人工平仓、交易所止盈/止损和强平等外部退出；真实仓位重新出现时不影响管理。
+    reentry_cooldown_seconds: int = 21600
 
     #: 新闻 veto 的 RAG 检索策略。统一由图构造请求，避免 query、时间窗和召回数量
     #: 散落在节点与 Retriever 的默认值里。

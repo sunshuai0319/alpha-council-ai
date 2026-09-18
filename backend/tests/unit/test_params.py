@@ -84,6 +84,10 @@ def test_from_settings_leaves_unset_params_at_their_defaults() -> None:
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
         MILVUS_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
+        # Settings 默认会读取仓库 .env；显式传入代码默认值，避免测试被本地运行配置污染。
+        STRATEGY_REWARD_RISK=2.0,
+        STRATEGY_NEAR_TARGET_R=1.8,
+        STRATEGY_NEAR_TARGET_TIMEOUT_HOURS=6,
     )
     assert StrategyParams.from_settings(settings) == StrategyParams()
 

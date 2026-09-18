@@ -465,6 +465,28 @@ class TradingCycleService:
             proposal.leverage,
         )
         account = self._account_for_user(state.user_id)
+        if not is_reducing and account is not None and not any(
+            position.symbol == proposal.symbol for position in positions
+        ) and self._has_local_open_position(
+            user_id=state.user_id,
+            trading_account_id=account.id,
+            symbol=proposal.symbol,
+        ):
+            return RiskDecision(
+                status=RiskStatus.REJECTED,
+                reasons=["exchange_position_missing"],
+                checked_at=now_ms,
+            )
+        if not is_reducing and account is not None and self._in_reentry_cooldown(
+            user_id=state.user_id,
+            trading_account_id=account.id,
+            symbol=proposal.symbol,
+        ):
+            return RiskDecision(
+                status=RiskStatus.REJECTED,
+                reasons=["reentry_cooldown"],
+                checked_at=now_ms,
+            )
         limits = self.risk_engine.limits.tightened(account.risk_limits if account else None)
         return self.risk_engine.evaluate(
             limits=limits,
@@ -484,6 +506,51 @@ class TradingCycleService:
             is_reducing=is_reducing,
             checked_at=now_ms,
         )
+
+    def _has_local_open_position(
+        self,
+        *,
+        user_id: str,
+        trading_account_id: str,
+        symbol: str,
+    ) -> bool:
+        if self.db is None:
+            return False
+        return self.db.scalar(
+            select(Position).where(
+                Position.user_id == user_id,
+                Position.trading_account_id == trading_account_id,
+                Position.symbol == symbol,
+                Position.status == "OPEN",
+            )
+        ) is not None
+
+    def _in_reentry_cooldown(
+        self,
+        *,
+        user_id: str,
+        trading_account_id: str,
+        symbol: str,
+    ) -> bool:
+        """判断同一品种是否刚刚退出，避免旧信号在下一轮立即重开。"""
+
+        if self.db is None or self.settings.reentry_cooldown_seconds <= 0:
+            return False
+        row = self.db.scalar(
+            select(Position).where(
+                Position.user_id == user_id,
+                Position.trading_account_id == trading_account_id,
+                Position.symbol == symbol,
+                Position.status == "CLOSED",
+            )
+        )
+        if row is None or row.updated_at is None:
+            return False
+        closed_at = row.updated_at
+        if closed_at.tzinfo is None:
+            closed_at = closed_at.replace(tzinfo=UTC)
+        age = (datetime.now(UTC) - closed_at).total_seconds()
+        return age < self.settings.reentry_cooldown_seconds
 
     def _best_effort(
         self,

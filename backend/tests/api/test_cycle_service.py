@@ -1128,6 +1128,60 @@ def test_entry_passes_when_no_position_is_open(tmp_path) -> None:
     assert "position_already_open" not in decision.reasons
 
 
+def test_entry_is_rejected_during_reentry_cooldown_after_external_close(tmp_path) -> None:
+    """人工平仓后，持续的旧信号不能在下一轮立刻把同一品种重新开回来。"""
+    row = _open_position_row(
+        status="CLOSED",
+        quantity=Decimal(0),
+        updated_at=datetime.now(UTC),
+    )
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'reentry-cooldown.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.add(row)
+        db.commit()
+        service = TradingCycleService(db=db, exchange_factory=RecordingExchange)
+        decision = service._evaluate_proposal(RecordingExchange(balance=Decimal(10000)), _long_state(pct=0.01))
+
+    assert "reentry_cooldown" in decision.reasons
+
+
+def test_entry_is_allowed_after_reentry_cooldown_expires(tmp_path) -> None:
+    row = _open_position_row(
+        status="CLOSED",
+        quantity=Decimal(0),
+        updated_at=datetime.now(UTC) - timedelta(hours=7),
+    )
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'reentry-expired.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.add(row)
+        db.commit()
+        service = TradingCycleService(db=db, exchange_factory=RecordingExchange)
+        decision = service._evaluate_proposal(RecordingExchange(balance=Decimal(10000)), _long_state(pct=0.01))
+
+    assert "reentry_cooldown" not in decision.reasons
+
+
+def test_entry_is_rejected_when_exchange_position_disappears_before_reconciliation(tmp_path) -> None:
+    """人工平仓后的第一轮不能在 reconciliation 前用旧的本地 OPEN 行重新开仓。"""
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'reentry-race.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="u-1", clerk_user_id="clerk-u1"))
+        db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
+        db.add(_open_position_row())
+        db.commit()
+        service = TradingCycleService(db=db, exchange_factory=RecordingExchange)
+        decision = service._evaluate_proposal(RecordingExchange(balance=Decimal(10000)), _long_state(pct=0.01))
+
+    assert "exchange_position_missing" in decision.reasons
+
+
 def test_closing_is_never_blocked_by_the_one_position_rule(tmp_path) -> None:
     """平仓必须永远放行，否则仓位会被锁死。"""
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'close.db'}")

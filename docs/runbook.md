@@ -67,6 +67,12 @@ uv run python scripts/reindex_documents.py --target-collection alpha_council_doc
 
 先查看 Dashboard 的 Risk events 和 `/api/events`。确认数据年龄、杠杆、单品种名义本金、止损、日亏损和连续亏损条件。`UNKNOWN` 订单必须先通过 client order id 对账，不得手工重复提交同一 proposal。
 
+如果人工在 WEEX 控制台平仓，下一轮可能先看到交易所空仓、本地仍为 OPEN，此时应记录
+`exchange_position_missing`，不会重新下单；对账完成后同一品种默认进入 6 小时再入场冷却，
+记录为 `reentry_cooldown`。这段时间内 worker 仍会采集行情、执行对账和处理其他品种，但不会
+对该品种执行新的 LONG/SHORT 开仓。冷却时间可通过 `REENTRY_COOLDOWN_SECONDS` 调整，修改后
+必须重启长驻 worker；设置为 `0` 可关闭该保护。
+
 ### 仓位长期停留在 1.8R/1.9R
 
 当前默认目标是 `2R`，开仓时交易所侧会同时挂静态 TP 和 `3R` 灾难止损，本地
