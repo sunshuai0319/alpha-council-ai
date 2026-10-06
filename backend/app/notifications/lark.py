@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 
 from app.config import Settings
-from app.domain.enums import Action
+from app.domain.enums import Action, RiskStatus
 from app.domain.schemas import ExecutionResult, RiskDecision, TradeProposal, TradingCycleState
 
 logger = logging.getLogger(__name__)
@@ -52,19 +52,57 @@ def _format_time(milliseconds: int) -> str:
     return datetime.fromtimestamp(milliseconds / 1000, tz=UTC).strftime("%m-%d %H:%M UTC")
 
 
-def _action_label(proposal: TradeProposal | None) -> str:
+_ACTION_LABELS = {
+    Action.LONG: "做多",
+    Action.SHORT: "做空",
+    Action.CLOSE: "平仓",
+    Action.HOLD: "观望",
+}
+
+_RISK_STATUS_LABELS = {
+    RiskStatus.ALLOWED: "通过",
+    RiskStatus.REJECTED: "拒绝",
+    RiskStatus.PAUSED: "暂停",
+}
+
+_EXECUTION_STATUS_LABELS = {
+    "NOT_EXECUTED": "未自动下单",
+    "FILLED": "已成交",
+    "OPEN": "已挂单",
+    "PARTIALLY_FILLED": "部分成交",
+    "PENDING": "等待成交",
+    "CANCELED": "已撤单",
+    "REJECTED": "执行被拒绝",
+    "UNKNOWN": "状态未知",
+    "SKIPPED": "已跳过",
+}
+
+
+def _action_code(proposal: TradeProposal | None) -> Action | None:
     if proposal is None:
-        return "HOLD"
-    return {
-        Action.LONG: "LONG",
-        Action.SHORT: "SHORT",
-        Action.CLOSE: "CLOSE",
-        Action.HOLD: "HOLD",
-    }[proposal.action]
+        return None
+    return proposal.action
 
 
-def _action_color(action: str) -> str:
-    return {"LONG": "green", "SHORT": "red", "CLOSE": "orange"}.get(action, "blue")
+def _action_label(proposal: TradeProposal | None) -> str:
+    action = _action_code(proposal)
+    return "无信号" if action is None else _ACTION_LABELS[action]
+
+
+def _action_color(action: Action | None) -> str:
+    if action is None:
+        return "blue"
+    return {Action.LONG: "green", Action.SHORT: "red", Action.CLOSE: "orange"}.get(action, "blue")
+
+
+def _risk_status_label(status: RiskStatus) -> str:
+    return _RISK_STATUS_LABELS.get(status, "未知")
+
+
+def _execution_status_label(execution: ExecutionResult | None) -> str:
+    if execution is None:
+        return "未发送订单"
+    return _EXECUTION_STATUS_LABELS.get(execution.status, "已记录")
 
 
 def _md_field(label: str, value: str) -> dict[str, Any]:
@@ -79,8 +117,9 @@ def build_trade_signal_card(
     """Build a Card 2.0 payload from a cycle decision without network access."""
 
     proposal = state.trade_proposal
+    action_code = _action_code(proposal)
     action = _action_label(proposal)
-    action_color = _action_color(action)
+    action_color = _action_color(action_code)
     market_price = state.market_snapshot.last_price if state.market_snapshot else None
     stop_loss = proposal.stop_loss if proposal else None
     take_profit = proposal.take_profit if proposal else None
@@ -90,7 +129,7 @@ def build_trade_signal_card(
     reasoning = proposal.reasoning_summary if proposal else "未生成交易提案"
     if len(reasoning) > 240:
         reasoning = f"{reasoning[:237]}..."
-    execution_text = execution.status if execution else "未发送订单"
+    execution_text = _execution_status_label(execution)
 
     # Card 2.0 follows lark-im's card workflow: one primary focus, grouped
     # fields, a restrained blue palette, and no callback interaction.
@@ -146,7 +185,7 @@ def build_trade_signal_card(
                     "element_id": "details",
                     "fields": [
                         _md_field("参考下单价格", _format_number(market_price)),
-                        _md_field("风控状态", risk.status.value),
+                        _md_field("风控状态", _risk_status_label(risk.status)),
                         _md_field("参考止损价", _format_number(stop_loss)),
                         _md_field("参考止盈价", _format_number(take_profit)),
                         _md_field("仓位比例", f"{_format_number(size_pct)}%"),

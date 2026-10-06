@@ -98,7 +98,21 @@ Dashboard 的 Pause/Resume 会以当前 Clerk 用户为范围写入进程内控�
 
 worker 默认使用 `TRADING_EXECUTION_MODE=notify`：继续采集行情、生成信号、执行风控并把决策落库，但不会发送 WEEX 开仓/平仓订单，也不会运行软件层自动止盈止损。配置 `LARK_APP_ID`、`LARK_APP_SECRET`、`LARK_RECEIVE_ID_TYPE` 和 `LARK_RECEIVE_ID` 后，LONG/SHORT/CLOSE 信号会通过 Lark 国际版 interactive 卡片推送；`LARK_NOTIFY_HOLD=true` 才会额外推送 HOLD。
 
-Lark 国际版 API 使用 `https://open.larksuite.com`。应用需要启用机器人和发送消息权限（通常为 `im:chat`、`im:message`），并把机器人加入目标群；`chat_id` 可在 Lark 开放平台或群信息中取得。应用密钥只放在本地 `backend/.env`，不要提交到 Git。
+Lark 国际版 API 使用 `https://open.larksuite.com`。卡片中的交易动作会显示为中文：`做多`、`做空`、`平仓`、`观望`。
+
+应用需要启用机器人能力，并申请以下最小权限：
+
+- `im:message`：以应用身份发送私聊和群聊消息（包括 interactive 卡片）。
+- `im:chat`：读取/搜索应用可见的群聊信息，用于获取目标群的 `chat_id`。
+
+申请权限后需要创建并发布应用版本；测试阶段可以使用测试企业和测试用户。还需要把机器人加入目标群，否则应用身份不能向该群发送卡片。应用密钥只放在本地 `backend/.env`，不要提交到 Git。
+
+获取 `LARK_RECEIVE_ID`（群聊 `chat_id`）有两种方式：
+
+1. 在 Lark 客户端打开目标群，进入群设置中的“机器人”，把应用机器人加入群。
+2. 在 Lark API Explorer 中切换到该应用，调用“获取用户或机器人可见的群列表”（Search for groups visible to a user or bot），在返回结果中按群名称找到 `chat_id`。群 ID 通常以 `oc_` 开头，把它填入 `LARK_RECEIVE_ID`。
+
+也可以用 OpenAPI 查询群列表，使用同一个 `tenant_access_token`；当前代码支持用逗号分隔配置多个 `chat_id`。官方 FAQ 说明 `chat_id` 可通过创建群或搜索应用/用户可见群的 API 获取，消息卡片发送示例也要求先取得群 ID。
 
 如果需要恢复原来的自动开仓、交易所止盈止损和 PositionManager 自动平仓，将 `TRADING_EXECUTION_MODE=execute` 后重启 worker。修改 `.env` 或代码后必须重启长驻 worker 才会加载新设置。
 

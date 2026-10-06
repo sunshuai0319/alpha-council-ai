@@ -72,9 +72,12 @@ def test_card_2_schema_contains_reference_order_fields() -> None:
 
     assert card["schema"] == "2.0"
     assert card["header"]["template"] == "blue"
-    assert card["header"]["text_tag_list"][0]["text"]["content"] == "LONG"
+    assert card["header"]["text_tag_list"][0]["text"]["content"] == "做多"
+    signal = next(element for element in card["body"]["elements"] if element.get("element_id") == "signal")
+    assert "**做多**" in signal["text"]["content"]
     details = next(element for element in card["body"]["elements"] if element.get("element_id") == "details")
     contents = [field["text"]["content"] for field in details["fields"]]
+    assert any("风控状态" in content and "通过" in content for content in contents)
     assert any("参考下单价格" in content and "100" in content for content in contents)
     assert any("参考止损价" in content and "97" in content for content in contents)
     assert any("参考止盈价" in content and "106" in content for content in contents)
