@@ -356,11 +356,14 @@ class TradingCycleService:
             if self.settings.trading_execution_mode == "notify":
                 # Lark failure must not lose the decision or turn a signal into a
                 # trading-cycle failure; `_best_effort` records it and continues.
+                def _send_lark_notification() -> None:
+                    self.lark_notifier.notify(state, risk_decision, execution)
+
                 self._best_effort(
                     "lark_notification",
                     user_id,
                     symbol,
-                    lambda: self.lark_notifier.notify(state, risk_decision, execution),
+                    _send_lark_notification,
                 )
         # 对账同样与暂停无关：它是纯观测，也是「交易所自动止损后本地行怎么跟上」的
         # 唯一机制。放在暂停分支之外，暂停期间才不会留下幽灵持仓。
