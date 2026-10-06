@@ -42,7 +42,9 @@ def _format_number(value: Any) -> str:
         number = Decimal(str(value))
     except Exception:  # noqa: BLE001 - card rendering must not break a decision
         return str(value)
-    rendered = format(number, "f").rstrip("0").rstrip(".")
+    rendered = format(number, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
     return rendered or "0"
 
 
