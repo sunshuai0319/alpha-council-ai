@@ -1,5 +1,7 @@
 from functools import lru_cache
 
+from typing import Literal
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -85,6 +87,20 @@ class Settings(BaseSettings):
     clerk_webhook_signing_secret: str = ""
 
     trading_enabled: bool = True
+    #: 默认只推送交易信号，不向交易所发送开仓、平仓、止盈或止损订单。
+    #: 设置为 execute 可恢复原有自动执行链路。
+    trading_execution_mode: Literal["notify", "execute"] = "notify"
+
+    #: Lark 国际版应用机器人配置。密钥只从本地环境变量读取，不提交到仓库。
+    lark_base_url: str = "https://open.larksuite.com"
+    lark_app_id: str = ""
+    lark_app_secret: str = ""
+    #: 可用逗号分隔配置多个 chat_id/open_id；留空时只记录决策，不发消息。
+    lark_receive_id: str = ""
+    lark_receive_id_type: Literal["chat_id", "open_id", "user_id", "union_id", "email"] = "chat_id"
+    lark_timeout_seconds: float = 10.0
+    #: HOLD 信号默认不发卡，避免多品种每轮产生大量无操作通知。
+    lark_notify_hold: bool = False
     #: 平台硬上限。虚拟盘实际杠杆固定 20x 且不可调，上限必须与之对齐，
     #: 否则虚拟盘一开仓就再也无法加仓（max_leverage 会拒掉）。
     max_leverage: int = 20

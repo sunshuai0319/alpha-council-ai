@@ -52,6 +52,7 @@ from app.rag.milvus import MilvusVectorStore
 from app.rag.retriever import Retriever
 from app.reconciliation.service import ReconciliationService
 from app.risk.engine import RiskEngine, daily_loss_pct
+from app.notifications.lark import LarkNotifier
 from app.services.context import load_macro_context
 from app.signals.params import StrategyParams
 
@@ -137,6 +138,7 @@ class TradingCycleService:
         retriever_factory: Callable[[], EvidenceRetriever] | None = None,
         risk_engine: RiskEngine | None = None,
         execution_service: ExecutionService | None = None,
+        lark_notifier: LarkNotifier | None = None,
     ) -> None:
         self.db = db
         self.settings = settings or get_settings()
@@ -147,6 +149,7 @@ class TradingCycleService:
         self.execution_service = execution_service or ExecutionService(
             exchange_take_profit_enabled=self.settings.exchange_take_profit_enabled
         )
+        self.lark_notifier = lark_notifier or LarkNotifier(self.settings)
         self.reconciliation = ReconciliationService(db=db)
         self._memory_results: dict[str, list[CycleResult]] = {}
         self._memory_market: list[dict[str, Any]] = []
@@ -254,14 +257,24 @@ class TradingCycleService:
         )
         if halt_reason is None and not self.settings.trading_enabled:
             halt_reason = "trading_disabled"
-        # 持仓管理放在暂停判断**之前**：暂停只阻止新决策产生，不阻止给已有仓位降险。
-        # 熔断恰恰由日亏损/连亏触发 —— 那时正持着亏损仓，放弃管理会让亏损一路走到
-        # 交易所那条 3× 的宽灾难止损，而不是软件层的 1R。
-        # 没有 state.signal_score 时结构失效不会触发（暂停期没有新信号），
-        # 但止损触及、保本、移动、时间止损照常。
-        #
-        # 失败不终止周期：它同样是观测/降险步骤，对端抖动时把整轮炸掉只会丢掉决策。
-        self._best_effort("position_management", user_id, symbol, lambda: self._manage_positions(exchange, state))
+        # 自动执行模式才管理已有仓位。通知模式必须连软件层止盈/止损也停掉，
+        # 否则 worker 仍可能在没有发出新开仓单的情况下自动平仓。
+        if self.settings.trading_execution_mode == "execute":
+            # 持仓管理放在暂停判断**之前**：暂停只阻止新决策产生，不阻止给已有仓位降险。
+            # 熔断恰恰由日亏损/连亏触发 —— 那时正持着亏损仓，放弃管理会让亏损一路走到
+            # 交易所那条 3× 的宽灾难止损，而不是软件层的 1R。
+            # 没有 state.signal_score 时结构失效不会触发（暂停期没有新信号），
+            # 但止损触及、保本、移动、时间止损照常。
+            #
+            # 失败不终止周期：它同样是观测/降险步骤，对端抖动时把整轮炸掉只会丢掉决策。
+            self._best_effort("position_management", user_id, symbol, lambda: self._manage_positions(exchange, state))
+        else:
+            logger.info(
+                "position management skipped: user=%s symbol=%s mode=%s",
+                user_id,
+                symbol,
+                self.settings.trading_execution_mode,
+            )
         if halt_reason is not None:
             logger.info(
                 "cycle halted: user=%s symbol=%s reason=%s (no committee, no order)",
@@ -326,16 +339,29 @@ class TradingCycleService:
                 risk_decision.status.value,
                 risk_decision.reasons,
             )
-            execution = self._execute(exchange, state, risk_decision)
+            if self.settings.trading_execution_mode == "execute":
+                execution = self._execute(exchange, state, risk_decision)
+            else:
+                execution = self._notification_execution(state, risk_decision)
             logger.info(
-                "cycle execution: user=%s symbol=%s status=%s order_id=%s message=%s",
+                "cycle execution: user=%s symbol=%s mode=%s status=%s order_id=%s message=%s",
                 user_id,
                 symbol,
+                self.settings.trading_execution_mode,
                 execution.status if execution else "NO_ORDER",
                 execution.exchange_order_id if execution else None,
                 execution.message if execution else None,
             )
             state = state.model_copy(update={"risk_assessment": risk_decision, "execution_result": execution})
+            if self.settings.trading_execution_mode == "notify":
+                # Lark failure must not lose the decision or turn a signal into a
+                # trading-cycle failure; `_best_effort` records it and continues.
+                self._best_effort(
+                    "lark_notification",
+                    user_id,
+                    symbol,
+                    lambda: self.lark_notifier.notify(state, risk_decision, execution),
+                )
         # 对账同样与暂停无关：它是纯观测，也是「交易所自动止损后本地行怎么跟上」的
         # 唯一机制。放在暂停分支之外，暂停期间才不会留下幽灵持仓。
         account = self._account_for_user(user_id)
@@ -843,6 +869,25 @@ class TradingCycleService:
         return daily_loss_pct(
             day_start_equity=day_open_equity,
             current_equity=current_equity,
+        )
+
+    @staticmethod
+    def _notification_execution(
+        state: TradingCycleState,
+        risk_decision: RiskDecision,
+    ) -> ExecutionResult | None:
+        proposal = state.trade_proposal
+        if proposal is None or proposal.action is Action.HOLD:
+            return None
+        return ExecutionResult(
+            status="NOT_EXECUTED",
+            proposal_id=proposal.proposal_id,
+            client_order_id=stable_client_order_id(proposal.proposal_id),
+            message=(
+                "notification mode: no exchange order sent"
+                if risk_decision.allowed
+                else "notification mode: risk gate rejected; no exchange order sent"
+            ),
         )
 
     def _execute(
