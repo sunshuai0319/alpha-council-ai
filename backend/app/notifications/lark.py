@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 
@@ -217,9 +218,12 @@ class LarkNotifier:
         risk: RiskDecision,
         execution: ExecutionResult | None = None,
     ) -> bool:
-        if state.trade_proposal is not None and state.trade_proposal.action is Action.HOLD:
-            if not self.settings.lark_notify_hold:
-                return False
+        if (
+            state.trade_proposal is not None
+            and state.trade_proposal.action is Action.HOLD
+            and not self.settings.lark_notify_hold
+        ):
+            return False
         if not self.configured:
             logger.info("Lark notification skipped: app credentials or receive id are not configured")
             return False

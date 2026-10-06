@@ -1217,7 +1217,7 @@ def _open_position_row(**overrides):
     return Position(**{**base, **overrides})
 
 
-def _service_with_position(tmp_path, exchange, row=None):
+def _service_with_position(tmp_path, exchange, row=None, settings=None):
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'manage.db'}")
     Base.metadata.create_all(engine)
     db = Session(engine)
@@ -1225,7 +1225,11 @@ def _service_with_position(tmp_path, exchange, row=None):
     db.add(TradingAccount(id="a-1", user_id="u-1", enabled=True))
     db.add(row or _open_position_row())
     db.commit()
-    return db, TradingCycleService(db=db, exchange_factory=lambda: exchange)
+    return db, TradingCycleService(
+        db=db,
+        settings=settings or Settings(trading_execution_mode="execute"),
+        exchange_factory=lambda: exchange,
+    )
 
 
 def test_cycle_closes_a_position_that_hits_its_effective_stop(tmp_path) -> None:
@@ -1385,7 +1389,11 @@ def test_paused_account_still_reconciles_the_phantom_row_away(tmp_path) -> None:
 def test_paused_account_still_manages_an_open_position(tmp_path) -> None:
     """暂停期间持仓管理照跑 —— 放弃管理会让亏损走到 3× 的宽灾难止损。"""
     exchange = PausedMarketExchange(price=96.0)  # 现价 96 < 有效止损 97
-    db, service = _service_with_position(tmp_path, exchange)
+    db, service = _service_with_position(
+        tmp_path,
+        exchange,
+        settings=Settings(trading_execution_mode="execute"),
+    )
     service.pause("u-1")
 
     service.run(user_id="u-1", llm=FailingLLM())
@@ -1633,3 +1641,40 @@ def test_decisions_expose_the_model_versions() -> None:
     payload = TradingCycleService._decision_dict(row)
 
     assert payload["model_versions"] == {"committee": "deepseek-v4-pro-ga-260813"}
+
+
+def test_notify_mode_never_places_an_order_and_notifies_with_reference_price() -> None:
+    class ActionableGraph:
+        def invoke(self, state):
+            proposal = _long_state(price=100).trade_proposal
+            return state.model_copy(
+                update={
+                    "trade_proposal": proposal,
+                    "signal_decided_at": int(datetime.now(UTC).timestamp() * 1000),
+                }
+            )
+
+    class CapturingNotifier:
+        def __init__(self):
+            self.calls = []
+
+        def notify(self, state, risk, execution):
+            self.calls.append((state, risk, execution))
+            return True
+
+    notifier = CapturingNotifier()
+    exchange = FakeExchange()
+    service = TradingCycleService(
+        settings=Settings(trading_execution_mode="notify"),
+        exchange_factory=lambda: exchange,
+        graph_factory=ActionableGraph,
+        lark_notifier=notifier,
+    )
+
+    result = service.run(user_id="u-1")
+
+    assert result.action is Action.LONG
+    assert result.execution_result is not None
+    assert result.execution_result.status == "NOT_EXECUTED"
+    assert notifier.calls[0][0].market_snapshot.last_price == 100
+    assert not hasattr(exchange, "requests")

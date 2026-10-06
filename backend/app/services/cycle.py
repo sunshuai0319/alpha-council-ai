@@ -45,6 +45,7 @@ from app.exchange.base import (
 )
 from app.exchange.weex import WeexClient, WeexCredentials
 from app.execution.service import ExecutionService, stable_client_order_id
+from app.notifications.lark import LarkNotifier
 from app.positions.manager import CLOSE as POSITION_CLOSE
 from app.positions.manager import manage as manage_position
 from app.rag.embeddings import BGEEmbedder, BGEReranker
@@ -52,7 +53,6 @@ from app.rag.milvus import MilvusVectorStore
 from app.rag.retriever import Retriever
 from app.reconciliation.service import ReconciliationService
 from app.risk.engine import RiskEngine, daily_loss_pct
-from app.notifications.lark import LarkNotifier
 from app.services.context import load_macro_context
 from app.signals.params import StrategyParams
 

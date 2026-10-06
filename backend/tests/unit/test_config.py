@@ -55,6 +55,23 @@ def test_exchange_take_profit_can_be_disabled_by_configuration() -> None:
     assert settings.exchange_take_profit_enabled is False
 
 
+def test_trading_defaults_to_lark_notification_mode_and_can_restore_execution() -> None:
+    default_settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        MILVUS_URI="http://localhost:19530",
+        ARK_API_KEY="test-key",
+    )
+    execute_settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        MILVUS_URI="http://localhost:19530",
+        ARK_API_KEY="test-key",
+        TRADING_EXECUTION_MODE="execute",
+    )
+
+    assert default_settings.trading_execution_mode == "notify"
+    assert execute_settings.trading_execution_mode == "execute"
+
+
 def test_reentry_cooldown_defaults_to_six_hours_and_is_configurable() -> None:
     default_settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
