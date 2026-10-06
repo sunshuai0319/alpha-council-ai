@@ -77,10 +77,14 @@ def test_card_2_schema_contains_reference_order_fields() -> None:
     assert "**做多**" in signal["text"]["content"]
     details = next(element for element in card["body"]["elements"] if element.get("element_id") == "details")
     contents = [field["text"]["content"] for field in details["fields"]]
+    assert all("\\n" not in content for content in contents)
+    assert all("\n" in content for content in contents)
     assert any("风控状态" in content and "通过" in content for content in contents)
     assert any("参考下单价格" in content and "100" in content for content in contents)
     assert any("参考止损价" in content and "97" in content for content in contents)
     assert any("参考止盈价" in content and "106" in content for content in contents)
+    risk = next(element for element in card["body"]["elements"] if element.get("element_id") == "risk")
+    assert "\\n" not in risk["text"]["content"]
 
 
 def test_notifier_gets_one_token_and_sends_to_each_configured_recipient() -> None:

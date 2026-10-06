@@ -52,6 +52,12 @@ def _format_time(milliseconds: int) -> str:
     return datetime.fromtimestamp(milliseconds / 1000, tz=UTC).strftime("%m-%d %H:%M UTC")
 
 
+def _normalize_line_breaks(value: str) -> str:
+    """Convert escaped line breaks from model text into card-rendered breaks."""
+
+    return value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+
+
 _ACTION_LABELS = {
     Action.LONG: "做多",
     Action.SHORT: "做空",
@@ -106,7 +112,7 @@ def _execution_status_label(execution: ExecutionResult | None) -> str:
 
 
 def _md_field(label: str, value: str) -> dict[str, Any]:
-    return {"is_short": True, "text": {"tag": "lark_md", "content": f"**{label}**\\n{value}"}}
+    return {"is_short": True, "text": {"tag": "lark_md", "content": f"**{label}**\n{value}"}}
 
 
 def build_trade_signal_card(
@@ -125,8 +131,8 @@ def build_trade_signal_card(
     take_profit = proposal.take_profit if proposal else None
     size_pct = proposal.position_size_pct * 100 if proposal else 0
     leverage = proposal.leverage if proposal else 0
-    reasons = "、".join(risk.reasons) if risk.reasons else "无"
-    reasoning = proposal.reasoning_summary if proposal else "未生成交易提案"
+    reasons = _normalize_line_breaks("、".join(risk.reasons) if risk.reasons else "无")
+    reasoning = _normalize_line_breaks(proposal.reasoning_summary if proposal else "未生成交易提案")
     if len(reasoning) > 240:
         reasoning = f"{reasoning[:237]}..."
     execution_text = _execution_status_label(execution)
@@ -182,6 +188,16 @@ def build_trade_signal_card(
                 },
                 {
                     "tag": "div",
+                    "element_id": "details-title",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "**交易参数**",
+                        "text_size": "heading-4",
+                        "lines": 1,
+                    },
+                },
+                {
+                    "tag": "div",
                     "element_id": "details",
                     "fields": [
                         _md_field("参考下单价格", _format_number(market_price)),
@@ -199,8 +215,8 @@ def build_trade_signal_card(
                     "text": {
                         "tag": "lark_md",
                         "content": (
-                            f"**风控理由**\\n{reasons}\\n\\n"
-                            f"**策略说明**\\n{reasoning}"
+                            f"**风控理由**\n{reasons}\n\n"
+                            f"**策略说明**\n{reasoning}"
                         ),
                         "text_size": "body",
                         "lines": 6,
