@@ -24,7 +24,7 @@ from app.processing.documents import (
     normalize_impact_horizon,
     prepare_document,
 )
-from app.rag.embeddings import BGEEmbedder
+from app.rag.embeddings import create_embedder
 from app.rag.milvus import MilvusVectorStore
 from app.rag.retriever import build_indexed_chunks
 from app.workers.schedule import SourceSchedule
@@ -48,10 +48,13 @@ class DocumentPipeline:
         self.db = db
         self.rss = rss or RSSCollector()
         self.macro = macro or MacroCollector()
-        self.summary_client = summary_client or ArkSummaryClient()
-        self.embedder = embedder or BGEEmbedder()
         self.settings = settings or get_settings()
-        self.indexer = indexer or MilvusVectorStore(self.settings)
+        self.summary_client = summary_client or ArkSummaryClient()
+        self.embedder = embedder or create_embedder(self.settings)
+        self.indexer = indexer or MilvusVectorStore(
+            self.settings,
+            embedding_dimension=getattr(self.embedder, "dimension", self.settings.active_embedding_dimension),
+        )
         self._schedule = SourceSchedule(self._fred_intervals(), clock=clock)
 
     def _fred_intervals(self) -> dict[str, int]:
@@ -248,7 +251,7 @@ class DocumentPipeline:
                     prepared,
                     summary,
                     vectors,
-                    "BAAI/bge-m3",
+                    getattr(self.embedder, "model_name", "BAAI/bge-m3"),
                     texts=chunks,
                 )
             )

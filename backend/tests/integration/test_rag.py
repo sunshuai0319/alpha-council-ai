@@ -21,6 +21,12 @@ class FakeReranker:
         return [float(index) for index, _ in enumerate(documents)]
 
 
+class ExplodingReranker:
+    def score(self, query: str, documents: Sequence[str]) -> list[float]:
+        del query, documents
+        raise AssertionError("reranker must not be called")
+
+
 class FakeMilvus:
     def __init__(self) -> None:
         self.inserted = []
@@ -198,6 +204,26 @@ def test_retriever_applies_asset_filter_before_rerank() -> None:
     assert results
     assert all(item.asset == "BTC" for item in results)
     assert milvus.last_filter == "asset == 'BTC'"
+
+
+def test_retriever_can_skip_reranker_and_use_vector_scores() -> None:
+    milvus = FakeMilvus()
+    retriever = Retriever(milvus, FakeEmbedder(), None)
+
+    results = retriever.retrieve(RetrievalRequest(query="BTC ETF", asset="BTC", limit=2))
+
+    assert [item.chunk_id for item in results] == ["btc-1", "btc-old"]
+    assert [item.vector_score for item in results] == [0.8, 0.7]
+    assert [item.rerank_score for item in results] == [0.8, 0.7]
+
+
+def test_retriever_does_not_call_optional_reranker_when_disabled() -> None:
+    milvus = FakeMilvus()
+    retriever = Retriever(milvus, FakeEmbedder(), None)
+
+    results = retriever.retrieve(RetrievalRequest(query="BTC ETF", asset="BTC", limit=1))
+
+    assert results[0].chunk_id == "btc-1"
 
 
 def test_retrieval_request_normalizes_exchange_asset_and_horizon() -> None:

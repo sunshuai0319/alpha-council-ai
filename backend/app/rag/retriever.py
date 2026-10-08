@@ -147,10 +147,16 @@ def build_indexed_chunks(
 
 
 class Retriever:
-    def __init__(self, vector_store: Any, embedder: Embedder, reranker: Reranker) -> None:
+    def __init__(self, vector_store: Any, embedder: Embedder, reranker: Reranker | None = None) -> None:
         self.vector_store = vector_store
         self.embedder = embedder
         self.reranker = reranker
+
+    @staticmethod
+    def _vector_score(hit: Any) -> float:
+        if not isinstance(hit, dict):
+            return 0.0
+        return float(hit.get("distance", hit.get("score", 0)) or 0)
 
     @staticmethod
     def _filter_expression(request: RetrievalRequest, asset_filter: str | None) -> str | None:
@@ -215,6 +221,7 @@ class Retriever:
         request: RetrievalRequest,
     ) -> list[Evidence]:
         candidate_limit = request.candidate_limit or max(request.limit * 5, 10)
+        search_limit = candidate_limit if self.reranker is not None else request.limit
         vector = self.embedder.embed([request.query])[0]
         asset_filters: list[str | None] = [request.asset] if request.asset else [None]
         if request.asset:
@@ -229,7 +236,7 @@ class Retriever:
                     request.asset,
                     self._asset_scope_label(asset_filter),
                 )
-            candidates = self._search_candidates(request, vector, candidate_limit, asset_filter)
+            candidates = self._search_candidates(request, vector, search_limit, asset_filter)
             if candidates:
                 selected_asset_filter = asset_filter
                 break
@@ -239,36 +246,55 @@ class Retriever:
                 request.asset or "<none>",
             )
             return []
-        rerank_started_at = perf_counter()
-        logger.info(
-            "rag reranker start: asset_scope=%s candidates=%d",
-            self._asset_scope_label(selected_asset_filter),
-            len(candidates),
-        )
-        try:
-            scores = self.reranker.score(request.query, [entity.get("content", "") for _, entity in candidates])
-        except Exception as exc:
-            logger.error(
-                "rag reranker failed: asset_scope=%s candidates=%d error_type=%s",
+        if self.reranker is None:
+            ranked = [
+                (candidate, self._vector_score(candidate[0]))
+                for candidate in sorted(
+                    candidates,
+                    key=lambda item: self._vector_score(item[0]),
+                    reverse=True,
+                )[: request.limit]
+            ]
+            logger.info(
+                "rag reranker skipped: asset_scope=%s candidates=%d results=%d reason=disabled",
                 self._asset_scope_label(selected_asset_filter),
                 len(candidates),
-                type(exc).__name__,
+                len(ranked),
             )
-            raise
-        logger.info(
-            "rag reranker complete: asset_scope=%s candidates=%d results=%d elapsed_ms=%.1f",
-            self._asset_scope_label(selected_asset_filter),
-            len(candidates),
-            len(scores),
-            (perf_counter() - rerank_started_at) * 1000,
-        )
-        if len(scores) != len(candidates):
-            raise ValueError("reranker score count does not match candidate count")
-        ranked = sorted(
-            zip(candidates, scores, strict=True),
-            key=lambda item: item[1],
-            reverse=True,
-        )[: request.limit]
+        else:
+            rerank_started_at = perf_counter()
+            logger.info(
+                "rag reranker start: asset_scope=%s candidates=%d",
+                self._asset_scope_label(selected_asset_filter),
+                len(candidates),
+            )
+            try:
+                scores = self.reranker.score(
+                    request.query,
+                    [entity.get("content", "") for _, entity in candidates],
+                )
+            except Exception as exc:
+                logger.error(
+                    "rag reranker failed: asset_scope=%s candidates=%d error_type=%s",
+                    self._asset_scope_label(selected_asset_filter),
+                    len(candidates),
+                    type(exc).__name__,
+                )
+                raise
+            logger.info(
+                "rag reranker complete: asset_scope=%s candidates=%d results=%d elapsed_ms=%.1f",
+                self._asset_scope_label(selected_asset_filter),
+                len(candidates),
+                len(scores),
+                (perf_counter() - rerank_started_at) * 1000,
+            )
+            if len(scores) != len(candidates):
+                raise ValueError("reranker score count does not match candidate count")
+            ranked = sorted(
+                zip(candidates, scores, strict=True),
+                key=lambda item: item[1],
+                reverse=True,
+            )[: request.limit]
         evidence: list[Evidence] = []
         for (hit, entity), score in ranked:
             published_at = _as_datetime(entity.get("published_at"))
@@ -282,7 +308,7 @@ class Retriever:
                     asset=str(entity.get("asset", "")),
                     event_type=str(entity.get("event_type", "")),
                     impact_horizon=str(entity.get("impact_horizon", "")),
-                    vector_score=float(str(hit.get("distance", hit.get("score", 0)) or 0)) if isinstance(hit, dict) else 0,
+                    vector_score=self._vector_score(hit),
                     rerank_score=float(score),
                     published_at=published_at,
                     asset_scope=str(entity.get("asset_scope", "UNKNOWN")),

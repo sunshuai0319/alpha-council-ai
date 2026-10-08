@@ -45,18 +45,18 @@ class IndexedChunk:
 
 
 class MilvusVectorStore:
-    """Small Milvus client wrapper for the configured BGE-M3 collection."""
+    """Small Milvus client wrapper for the configured embedding collection."""
 
     def __init__(
         self,
         settings: Settings | None = None,
         client: Any | None = None,
-        embedding_dimension: int = 1024,
+        embedding_dimension: int | None = None,
         schema_version: str | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.collection = self.settings.vector_store_collection
-        self.embedding_dimension = embedding_dimension
+        self.embedding_dimension = embedding_dimension or self.settings.active_embedding_dimension
         self.schema_version = str(
             schema_version or getattr(self.settings, "milvus_schema_version", "v1")
         ).lower()

@@ -48,7 +48,7 @@ from app.execution.service import ExecutionService, stable_client_order_id
 from app.notifications.lark import LarkNotifier
 from app.positions.manager import CLOSE as POSITION_CLOSE
 from app.positions.manager import manage as manage_position
-from app.rag.embeddings import BGEEmbedder, BGEReranker
+from app.rag.embeddings import create_embedder
 from app.rag.milvus import MilvusVectorStore
 from app.rag.retriever import Retriever
 from app.reconciliation.service import ReconciliationService
@@ -155,8 +155,12 @@ class TradingCycleService:
         self._memory_market: list[dict[str, Any]] = []
 
     def _default_retriever(self) -> EvidenceRetriever:
-        vector_store = MilvusVectorStore(self.settings)
-        return Retriever(vector_store, BGEEmbedder(self.settings), BGEReranker(self.settings))
+        embedder = create_embedder(self.settings)
+        vector_store = MilvusVectorStore(
+            self.settings,
+            embedding_dimension=getattr(embedder, "dimension", self.settings.active_embedding_dimension),
+        )
+        return Retriever(vector_store, embedder)
 
     def _default_graph(self) -> TradingCycleGraph:
         llm = ArkChatClient(self.settings)
