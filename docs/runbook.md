@@ -51,13 +51,16 @@ Retriever 会从币种级证据回退到空资产标签的通用市场/宏观材
 
 ```bash
 cd backend
+# 打印 source/target collection、provider、维度、可回填文档数
 uv run python scripts/reindex_documents.py --dry-run
-uv run python scripts/reindex_documents.py --target-collection alpha_council_documents_bge_m3_v2
+# 目标默认是 Doubao 集合；旧 BGE 集合只读，不 drop、不覆盖
+uv run python scripts/reindex_documents.py
 ```
 
-脚本只读 PostgreSQL 和旧 collection，向新 v2 collection upsert，不清空源数据或旧 collection。
-回填后检查 `asset_scope`、`schema_version`、每个交易品种的行数；当前 `.env` 已切换到 v2，必须
-重启长驻 API/worker 进程后才会实际加载新 collection。
+脚本只读 PostgreSQL 和旧 collection，向新 collection upsert，不清空源数据或旧 collection。
+回填后检查 `asset_scope`、`schema_version`、每个交易品种的行数；切换 `.env` 的
+`ZILLIZ_COLLECTION`（或 `MILVUS_COLLECTION`）与 `EMBEDDING_PROVIDER` 后，必须重启长驻
+API/worker 进程后才会实际加载新 collection。
 
 ### Clerk 登录失败或 API 返回 401
 

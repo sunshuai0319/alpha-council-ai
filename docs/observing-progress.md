@@ -136,10 +136,11 @@ grep -E "milvus (client|collection|search|insert)|rag (retrieval|asset fallback|
 ```bash
 cd backend
 uv run python scripts/reindex_documents.py --dry-run
-uv run python scripts/reindex_documents.py --target-collection alpha_council_documents_bge_m3_v2
+uv run python scripts/reindex_documents.py
 ```
 
-回填脚本只读取 PostgreSQL 中已 `INDEXED` 且有正文/摘要的文档，使用同一 BGE-M3 重新向量化，
+回填脚本只读取 PostgreSQL 中已 `INDEXED` 且有正文/摘要的文档，用 `EMBEDDING_PROVIDER`
+选定的 provider 重新向量化（当前为 Doubao，1024 维；目标集合默认 `<base>_doubao_vision_v1`），
 写入新 collection，不删除旧 collection；完成后应核对总行数、资产分布和重复键，再修改配置。
 长驻 API/worker 进程必须重启后才会加载新的 collection 和代码。
 

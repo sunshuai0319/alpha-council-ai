@@ -279,12 +279,13 @@ BGE-Reranker-v2-M3 对候选文本进行 cross-encoder 重排 → 返回最多 5
 ```bash
 cd backend
 uv run python scripts/reindex_documents.py --dry-run
-uv run python scripts/reindex_documents.py \
-  --target-collection alpha_council_documents_bge_m3_v2
+uv run python scripts/reindex_documents.py
 ```
 
-脚本默认只处理 PostgreSQL 中已有摘要且状态为 `INDEXED`、正文非空的文档；默认目标名为当前
-collection 的 `_v1 → _v2`。它不删除源数据或旧 collection，失败文档会继续处理并在最终统计中报告。
+脚本默认只处理 PostgreSQL 中已有摘要且状态为 `INDEXED`、正文非空的文档；目标集合固定为
+Doubao 集合（`<base>_doubao_vision_v1`，v2 schema、1024 维），`--dry-run` 会先打印
+source/target collection、provider、维度和可回填文档数。它不删除源数据或旧 collection，
+失败文档会继续处理并在最终统计中报告。
 
 ## 6. 当前止盈、止损和仓位释放
 
