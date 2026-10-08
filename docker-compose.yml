@@ -11,7 +11,7 @@
 #   docker-compose up -d --build
 #   docker-compose logs -f worker
 #   docker-compose build web        # 改了 NEXT_PUBLIC_* 之后必须重建前端
-#   docker-compose up -d --no-deps worker   # 只起 worker，不连带拉 api
+#   docker-compose up -d worker   # 只起 worker（不启动 web/api/gateway）
 
 name: alpha-council-ai
 
@@ -52,9 +52,10 @@ services:
     restart: unless-stopped
     env_file:
       - ./backend/.env
-    depends_on:
-      api:
-        condition: service_healthy
+    # 刻意不写 depends_on: api。worker 不调用 api —— 那个依赖只是借用
+    # 「api 健康 = 迁移跑完了」来排序，代价是 `up --no-deps worker` 会被
+    # 这个带条件的依赖卡住（报 "no such service: api"），想只起 worker 就起不来。
+    # 迁移是幂等的：需要时先跑一次 docker compose up -d api，或手动 alembic upgrade head。
     command: python -m workers.scheduler
     # worker 只连数据库与交易所，不对外暴露端口
 

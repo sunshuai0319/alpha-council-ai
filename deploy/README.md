@@ -42,11 +42,18 @@ docker compose logs -f worker      # 交易周期在 worker 里跑
 
 ```bash
 docker compose build worker
-docker compose up -d --no-deps worker
+docker compose up -d worker
 ```
 
-`--no-deps` 不能省：worker 声明了 `depends_on: api`，直接 `up worker` 会把 api 一并拉起。
-代价是不再自动跑 `alembic upgrade head`（那是 api 的 command），换新库前要先手动执行一次。
+worker 不调用 api，所以 compose 里**刻意没有** `depends_on: api` —— 那个依赖只是借用
+「api 健康 = 迁移跑完了」来排序，代价是 `up --no-deps worker` 会被带条件的依赖卡住
+（报 `no such service: api`），想只起 worker 反而起不来。
+
+代价是不再自动跑 `alembic upgrade head`（那是 api 的 command）。换新库前先执行一次：
+
+```bash
+docker compose run --rm api alembic upgrade head
+```
 
 访问 `http://<主机>:${GATEWAY_PORT:-8888}`。
 
