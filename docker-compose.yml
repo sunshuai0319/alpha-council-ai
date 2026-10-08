@@ -4,13 +4,14 @@
 # DATABASE_URL / MILVUS_URI（或 ZILLIZ_URI）连接，不在这里起。
 #
 # 两个 env 文件，各管一段：
-#   ./.env          网关端口、前端（NEXT_PUBLIC_*，构建与运行都要）、模型目录
+#   ./.env          网关端口、前端（NEXT_PUBLIC_*，构建与运行都要）
 #   ./backend/.env  后端与 worker
 #
 # 常用命令：
 #   docker-compose up -d --build
 #   docker-compose logs -f worker
 #   docker-compose build web        # 改了 NEXT_PUBLIC_* 之后必须重建前端
+#   docker-compose up -d --no-deps worker   # 只起 worker，不连带拉 api
 
 name: alpha-council-ai
 
@@ -22,14 +23,12 @@ x-clerk-public: &clerk-public
   NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL: ${NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL:-/dashboard}
   NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL: ${NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL:-/dashboard}
 
-# BGE 模型共 12.8G，不可能打进镜像，只能从宿主机只读挂载。
-# 容器内路径固定为 /models，因此覆盖 backend/.env 里的宿主机路径。
-x-model-volumes: &model-volumes
-  - ${MODEL_DIR:?MODEL_DIR 必须指向同时包含 bge-m3 与 bge-reranker-v2-m3 的目录}:/models:ro
-
-x-model-env: &model-env
-  EMBEDDING_MODEL_PATH: /models/bge-m3
-  RERANKER_MODEL_PATH: /models/bge-reranker-v2-m3
+# 本地 BGE 模型（12.8G）不再挂载：EMBEDDING_PROVIDER=doubao，BGEEmbedder/BGEReranker
+# 都不会被实例化，挂载纯属浪费，而且 ${MODEL_DIR:?...} 这个必需变量会让所有 compose
+# 命令在解析阶段就报错退出。
+# 若要把嵌入切回 local（EMBEDDING_PROVIDER=local），需要自己给 api 和 worker 加回：
+#   volumes: ["<宿主机模型目录>:/models:ro"]
+#   environment: {EMBEDDING_MODEL_PATH: /models/bge-m3}
 
 services:
   api:
@@ -37,9 +36,6 @@ services:
     restart: unless-stopped
     env_file:
       - ./backend/.env
-    environment:
-      <<: *model-env
-    volumes: *model-volumes
     # 迁移是幂等的，起服务前先补齐表结构
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     healthcheck:
@@ -56,9 +52,6 @@ services:
     restart: unless-stopped
     env_file:
       - ./backend/.env
-    environment:
-      <<: *model-env
-    volumes: *model-volumes
     depends_on:
       api:
         condition: service_healthy

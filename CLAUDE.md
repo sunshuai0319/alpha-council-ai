@@ -60,11 +60,12 @@ worker 每 5 分钟（`decision_interval_seconds`）对每个启用的虚拟账�
 
 ### 三个 env 文件分工
 
-- `./.env` — 仅 docker compose 部署用（`GATEWAY_PORT`、`MODEL_DIR`、前端 `NEXT_PUBLIC_*`）。
+- `./.env` — 仅 docker compose 部署用（`GATEWAY_PORT`、前端 `NEXT_PUBLIC_*`）。
 - `./backend/.env` — 后端与 worker（本地与容器共用）。
 - `./frontend/.env` — 前端本地开发；容器只取它的 `CLERK_SECRET_KEY`。
 
-`WEEX_VIRTUAL_ONLY` 必须保持 `true`；模型文件路径本地指向宿主机，容器内覆盖为 `/models`（只读挂载）。
+`WEEX_VIRTUAL_ONLY` 必须保持 `true`。嵌入走 Doubao（`EMBEDDING_PROVIDER=doubao`），容器里
+不再挂载本地 BGE 模型；要切回 `local` 需按 `docker-compose.yml` 顶部注释加回挂载。
 
 ### WEEX 虚拟盘语义（实测确认，与正式合约盘不同）
 

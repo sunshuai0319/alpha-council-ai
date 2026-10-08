@@ -15,8 +15,8 @@
 
 | 文件 | 谁读 | 装什么 |
 |---|---|---|
-| `.env`（根） | docker compose | 网关端口、模型目录、前端构建参数 |
-| `backend/.env` | api + worker（本地与容器共用） | 数据库 / Milvus / Ark / Clerk 后端 / 风控 |
+| `.env`（根） | docker compose | 网关端口、前端构建参数 |
+| `backend/.env` | api + worker（本地与容器共用） | 数据库 / Zilliz / Ark / Clerk 后端 / 风控 |
 | `frontend/.env` | `npm run dev`；容器只取其中的 `CLERK_SECRET_KEY` | 前端本地开发 |
 
 前端公开变量在 `.env`（根）与 `frontend/.env` 中各有一份，这是**机制决定的**：Next 在构建时
@@ -25,10 +25,11 @@
 
 ## 前置条件
 
-1. **Postgres 与 Milvus 已在运行**（本方案不启动它们），在 `backend/.env` 里配好 `DATABASE_URL` / `MILVUS_URI`。
-2. **BGE 模型已在部署主机上**（约 12.8G，不会打进镜像）。在根 `.env` 里设 `MODEL_DIR`
-   指向同时包含 `bge-m3` 与 `bge-reranker-v2-m3` 的目录。注意这是**部署主机**的路径。
-3. `cp .env.example .env` 填好，确认 `backend/.env` 与 `frontend/.env` 存在。
+1. **Postgres 与 Zilliz 已在运行**（本方案不启动它们），在 `backend/.env` 里配好 `DATABASE_URL` / `ZILLIZ_URI`。
+2. `cp .env.example .env` 填好，确认 `backend/.env` 与 `frontend/.env` 存在。
+
+> 不再需要 `MODEL_DIR`：嵌入走 Doubao（`EMBEDDING_PROVIDER=doubao`），本地 BGE 模型没有
+> 被实例化的路径，容器里也不挂载模型目录。要切回 `local` 见 `docker-compose.yml` 顶部注释。
 
 ## 启动
 
@@ -36,6 +37,16 @@
 docker compose up -d --build
 docker compose logs -f worker      # 交易周期在 worker 里跑
 ```
+
+**只起 worker**（不启动 web/api/gateway）：
+
+```bash
+docker compose build worker
+docker compose up -d --no-deps worker
+```
+
+`--no-deps` 不能省：worker 声明了 `depends_on: api`，直接 `up worker` 会把 api 一并拉起。
+代价是不再自动跑 `alembic upgrade head`（那是 api 的 command），换新库前要先手动执行一次。
 
 访问 `http://<主机>:${GATEWAY_PORT:-8888}`。
 
