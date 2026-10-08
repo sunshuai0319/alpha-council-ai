@@ -1,9 +1,12 @@
-"""Re-embed PostgreSQL documents into a new, compatible Milvus RAG collection.
+"""Re-embed PostgreSQL documents into the Doubao Milvus RAG collection.
 
 The source PostgreSQL rows and the current Milvus collection are read only.
 The target collection is never dropped or cleared; use a new target name for
 every schema migration. Re-running against a partially populated target is
 supported when the client exposes Milvus ``upsert``.
+
+向量由 ``EMBEDDING_PROVIDER`` 选定的 provider 生成；本脚本把目标固定为 Doubao
+集合（v2 schema，1024 维），因此切换 provider 不需要动旧集合。
 """
 
 from __future__ import annotations
@@ -26,11 +29,16 @@ from app.db.models import SourceDocument
 from app.db.session import SessionLocal
 from app.processing.ark import DocumentSummary
 from app.processing.documents import DocumentInput, prepare_document
-from app.rag.embeddings import BGEEmbedder
+from app.rag.embeddings import create_embedder
 from app.rag.milvus import MilvusVectorStore
 from app.rag.retriever import DocumentIndexer
 
 logger = logging.getLogger("reindex_documents")
+
+#: 回填目标固定是 Doubao 集合；旧 BGE 集合保持只读，env 可随时切回去。
+_DOUBAO_COLLECTION_SUFFIX = "doubao_vision_v1"
+#: 规范集合名形如 `<base>_<provider>_v<N>`，只替换 provider 与版本这一段。
+_PROVIDER_VERSION_SUFFIX = re.compile(r"_(?:bge|bge_m3|doubao_vision)_v\d+$")
 
 
 @dataclass
@@ -42,28 +50,62 @@ class ReindexStats:
 
 
 def default_target_collection(source_collection: str) -> str:
-    """Return a non-destructive v2 name for the current collection."""
+    """Return the Doubao collection name derived from the source collection.
 
-    if re.search(r"_v1$", source_collection):
-        return re.sub(r"_v1$", "_v2", source_collection)
-    return f"{source_collection}_v2"
+    源集合名只用来取名字，函数本身不读不写任何集合。规范名
+    （`<base>_bge_m3_v2`）替换掉 provider/版本后缀，裸名字追加 `_doubao_v1`。
+    """
+
+    base = _PROVIDER_VERSION_SUFFIX.sub("", source_collection)
+    if base != source_collection:
+        return f"{base}_{_DOUBAO_COLLECTION_SUFFIX}"
+    return f"{source_collection}_doubao_v1"
 
 
 def target_settings(settings: Settings, collection: str) -> Settings:
+    """Destination settings for the Doubao collection; the source stays untouched."""
+
     updates = {
         "milvus_collection": collection,
         "milvus_schema_version": "v2",
+        # 目标集合由 Doubao 生成向量：active_embedding_dimension 随之取
+        # doubao_embedding_dimension（默认 1024），保证建集合维度与向量一致。
+        "embedding_provider": "doubao",
     }
     if settings.use_zilliz:
         updates["zilliz_collection"] = collection
     return settings.model_copy(update=updates)
 
 
+def dry_run_plan(settings: Settings, target_collection: str, selected: int) -> dict[str, object]:
+    """Describe what a reindex would write, without touching Milvus."""
+
+    destination = target_settings(settings, target_collection)
+    return {
+        "source_collection": settings.vector_store_collection,
+        "target_collection": target_collection,
+        "provider": destination.embedding_provider,
+        "dimension": destination.active_embedding_dimension,
+        "selected": selected,
+    }
+
+
+def format_plan(plan: dict[str, object]) -> str:
+    return " ".join(f"{key}={value}" for key, value in plan.items())
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target-collection", help="New collection name; defaults to the current name with _v2")
+    parser.add_argument(
+        "--target-collection",
+        help="New collection name; defaults to the Doubao collection name",
+    )
     parser.add_argument("--limit", type=int, default=0, help="Maximum documents to process; 0 means all")
-    parser.add_argument("--dry-run", action="store_true", help="Only report the number of eligible documents")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report source/target collection, provider, dimension and document count only",
+    )
     return parser
 
 
@@ -72,6 +114,8 @@ def run(*, settings: Settings, target_collection: str, limit: int = 0, dry_run: 
         raise ValueError("limit must not be negative")
     if target_collection == settings.vector_store_collection:
         raise ValueError("target collection must differ from the current collection")
+
+    destination_settings = target_settings(settings, target_collection)
 
     with SessionLocal() as db:
         statement = (
@@ -91,20 +135,22 @@ def run(*, settings: Settings, target_collection: str, limit: int = 0, dry_run: 
     stats = ReindexStats(selected=len(records))
     if dry_run:
         logger.info(
-            "reindex dry run: source_collection=%s target_collection=%s selected=%d",
-            settings.vector_store_collection,
-            target_collection,
-            stats.selected,
+            "reindex dry run: %s",
+            format_plan(dry_run_plan(settings, target_collection, stats.selected)),
         )
         return stats
 
-    destination_settings = target_settings(settings, target_collection)
-    store = MilvusVectorStore(destination_settings, schema_version="v2")
+    embedder = create_embedder(destination_settings)
+    store = MilvusVectorStore(
+        destination_settings,
+        embedding_dimension=embedder.dimension,
+        schema_version="v2",
+    )
     store.ensure_collection()
     indexer = DocumentIndexer(
         store,
-        BGEEmbedder(destination_settings),
-        embedding_model="bge-m3",
+        embedder,
+        embedding_model=embedder.model_name,
         write_method="upsert",
     )
     for source, stored_summary in records:
@@ -157,6 +203,8 @@ def main() -> None:
         limit=args.limit,
         dry_run=args.dry_run,
     )
+    if args.dry_run:
+        print(format_plan(dry_run_plan(settings, target_collection, stats.selected)))
     print(
         f"selected={stats.selected} indexed={stats.indexed} rows={stats.rows} failed={stats.failed} "
         f"target_collection={target_collection}"
