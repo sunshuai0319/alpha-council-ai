@@ -45,7 +45,7 @@ uv run uvicorn app.main:app --reload --port 8000
 
 ```bash
 cd backend
-uv run python -m workers.scheduler
+uv run python -u -m workers.scheduler 2>&1 | grep --line-buffered -e 'lark notification'
 ```
 
 启动前端：
