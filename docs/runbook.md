@@ -35,14 +35,15 @@ Collector 按 symbol/timeframe 隔离错误；本轮状态带有错误，图会�
 
 Market、Quant、Macro 单个分析失败会退化为 neutral analysis；委员会输出解析失败会生成 `safe-hold`。检查 Ark endpoint、模型名、超时和配额，不要通过放宽 schema 来“修复”交易。
 
-### Milvus 或本地模型不可用
+### Zilliz 或 Doubao 嵌入不可用
 
 RAG 检索失败会被记录到 cycle errors 并安全 HOLD；正常没有命中反向材料不阻塞规则入场，
-Retriever 会从币种级证据回退到空资产标签的通用市场/宏观材料。排查时检查 collection 名称、
-向量维度（BGE-M3 为 1024）、BGE-M3 与 BGE-Reranker-v2-M3 模型路径和容器网络。重新启动后
-会按文档 hash 幂等补齐索引。标准日志中 `milvus search start/complete` 能确认是否调用，
-`rag retrieval search` 能区分原始命中与应用过滤后的候选，`rag reranker start/complete`
-能确认是否真正进入重排序；`milvus insert` 的 `asset_counts` 可用于核对采集标注分布。
+Retriever 会从币种级证据回退到空资产标签的通用市场/宏观材料。排查时检查 `ZILLIZ_URI`、
+collection 名称、向量维度（Doubao 为 1024，`DOUBAO_EMBEDDING_DIMENSION`）、`DOUBAO_API_KEY`
+和容器网络。重新启动后会按文档 hash 幂等补齐索引。标准日志中 `milvus search start/complete`
+能确认是否调用，`rag retrieval search` 能区分原始命中与应用过滤后的候选，
+`rag reranker skipped ... reason=disabled` 表示按预期跳过了重排序（本地 reranker 已移除）；
+`milvus insert` 的 `asset_counts` 可用于核对采集标注分布。
 
 若发现某个交易品种长期为 0 条，先查 PostgreSQL `document_summaries.assets` 和日志中的
 `asset_counts`，不要先调大向量召回范围。当前代码已覆盖长尾资产、LLM 漏标 union、多资产展开
@@ -59,8 +60,7 @@ uv run python scripts/reindex_documents.py
 
 脚本只读 PostgreSQL 和旧 collection，向新 collection upsert，不清空源数据或旧 collection。
 回填后检查 `asset_scope`、`schema_version`、每个交易品种的行数；切换 `.env` 的
-`ZILLIZ_COLLECTION` 与 `EMBEDDING_PROVIDER` 后，必须重启长驻 API/worker 进程后才会实际
-加载新 collection。
+`ZILLIZ_COLLECTION` 后，必须重启长驻 API/worker 进程后才会实际加载新 collection。
 
 ### Clerk 登录失败或 API 返回 401
 

@@ -124,7 +124,8 @@ grep -E "milvus (client|collection|search|insert)|rag (retrieval|asset fallback|
 - `milvus search start/complete`：已调用 Milvus；`raw_hits=0` 表示向量库没有返回候选。
 - `rag retrieval search ... candidates=0`：可能是 Milvus 返回为空，也可能是应用层时间/资产/事件过滤后为空。
 - `rag asset fallback`：目标币种没有候选，开始查空资产的通用市场/宏观材料。
-- `rag reranker start/complete`：已经有候选并进入 BGE-Reranker；两级召回都为空时不会执行。
+- `rag reranker skipped ... reason=disabled`：正常现象。本地 reranker 已移除（见
+  `backend/pyproject.toml`），检索直接取向量分数前 N 条；两级召回都为空时连这行都不会有。
 - `milvus insert/upsert ... asset_counts=...`：文档入库或回填批次各资产写入多少行，可直接发现
   标注偏斜；v2 还会记录 `asset_scope`/`schema_version` 到 collection。
 
@@ -139,9 +140,9 @@ uv run python scripts/reindex_documents.py --dry-run
 uv run python scripts/reindex_documents.py
 ```
 
-回填脚本只读取 PostgreSQL 中已 `INDEXED` 且有正文/摘要的文档，用 `EMBEDDING_PROVIDER`
-选定的 provider 重新向量化（当前为 Doubao，1024 维；目标集合默认 `<base>_doubao_vision_v1`），
-写入新 collection，不删除旧 collection；完成后应核对总行数、资产分布和重复键，再修改配置。
+回填脚本只读取 PostgreSQL 中已 `INDEXED` 且有正文/摘要的文档，用 Doubao 重新向量化
+（1024 维；目标集合默认 `<base>_doubao_vision_v1`），写入新 collection，不删除旧 collection；
+完成后应核对总行数、资产分布和重复键，再修改配置。
 长驻 API/worker 进程必须重启后才会加载新的 collection 和代码。
 
 ## 复现回测

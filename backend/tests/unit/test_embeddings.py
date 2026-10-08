@@ -1,6 +1,9 @@
 import json
+import re
 import threading
 import time
+import tomllib
+from pathlib import Path
 
 import httpx
 import pytest
@@ -14,7 +17,6 @@ def _settings(**overrides) -> Settings:
         "DATABASE_URL": "sqlite+pysqlite:///:memory:",
         "ZILLIZ_URI": "http://milvus:19530",
         "ARK_API_KEY": "ark-test-key",
-        "EMBEDDING_PROVIDER": "doubao",
         "DOUBAO_API_KEY": "doubao-test-key",
         "DOUBAO_EMBEDDING_MODEL": "doubao-embedding-vision-251215",
         "DOUBAO_EMBEDDING_DIMENSION": 2,
@@ -22,6 +24,10 @@ def _settings(**overrides) -> Settings:
     }
     values.update(overrides)
     return Settings(**values)
+
+
+def _dependency_name(spec: str) -> str:
+    return re.split(r"[<>=!\[; ]", spec, maxsplit=1)[0]
 
 
 def test_doubao_embedder_posts_text_items_and_preserves_order() -> None:
@@ -50,9 +56,24 @@ def test_doubao_embedder_posts_text_items_and_preserves_order() -> None:
     assert requests[0]["json"]
 
 
-def test_create_embedder_uses_configured_provider() -> None:
+def test_create_embedder_builds_the_doubao_embedder() -> None:
     settings = _settings()
     assert isinstance(create_embedder(settings), DoubaoEmbedder)
+
+
+def test_no_local_model_dependencies_are_declared() -> None:
+    """本地 BGE/reranker 已移除，别让它们溜回来。
+
+    `sentence-transformers` 会把 torch 和 15 个 nvidia 包（实测约 2.87GB）拖进镜像 ——
+    远程服务器 docker build 慢主要就是这个，而它在这里一行都用不到。
+    """
+
+    pyproject = tomllib.loads(
+        (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    declared = {_dependency_name(spec) for spec in pyproject["project"]["dependencies"]}
+
+    assert declared & {"sentence-transformers", "torch", "transformers", "triton"} == set()
 
 
 def _text_of(request: httpx.Request) -> str:

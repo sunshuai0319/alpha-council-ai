@@ -41,8 +41,7 @@ def test_target_settings_switches_only_the_destination_schema() -> None:
     assert settings.zilliz_collection == "alpha_council_documents_bge_m3_v2"
     assert updated.zilliz_collection == "documents_v2"
     assert updated.milvus_schema_version == "v2"
-    assert updated.embedding_provider == "doubao"
-    assert updated.active_embedding_dimension == 1024
+    assert updated.doubao_embedding_dimension == 1024
 
 
 def test_dry_run_plan_reports_source_target_provider_and_dimension() -> None:

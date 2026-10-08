@@ -173,7 +173,7 @@ LLM 的实际调用统一走 `ArkChatClient.complete_json()`，温度为 0；瞬
 **已经使用，但不是所有路径都使用。** 默认 `TradingCycleService._default_graph()` 会组装：
 
 ```text
-BGEEmbedder + MilvusVectorStore + BGEReranker
+DoubaoEmbedder + MilvusVectorStore
                 ↓
              Retriever
                 ↓
@@ -186,9 +186,9 @@ BGEEmbedder + MilvusVectorStore + BGEReranker
 - 非 HOLD 才进入检索：`backend/app/agents/graph.py:698-709`
 - 统一请求、方向化 query 和图注入：`backend/app/agents/graph.py:223-272`、
   `backend/app/rag/query.py`
-- 资产/影响期限/发布时间过滤、向量候选和重排：`backend/app/rag/retriever.py:99-158`
-- 文档入库：RSS/Federal Reserve 文本经清洗、去重、Ark 摘要、分块、BGE-M3 embedding
-  后写入 Milvus，见 `backend/app/workers/pipeline.py:56-156`、`163-244`
+- 资产/影响期限/发布时间过滤、向量候选：`backend/app/rag/retriever.py:99-158`
+- 文档入库：RSS/Federal Reserve 文本经清洗、去重、Ark 摘要、分块、Doubao embedding
+  后写入 Zilliz，见 `backend/app/workers/pipeline.py:56-156`、`163-244`
 
 ### 5.2 RAG 在哪里生效
 
@@ -210,21 +210,21 @@ BGEEmbedder + MilvusVectorStore + BGEReranker
    `RAG_CANDIDATE_LIMIT` 和 `RAG_IMPACT_HORIZON` 配置。
 2. `TradingCycleService` 的默认图和 `run(..., llm=...)` 覆盖路径都通过同一个
    `EvidenceRetriever` 契约构图；后者可显式传 `retriever`，未传时使用默认
-   Milvus + BGE + reranker 工厂，不再出现“默认路径有 RAG、覆盖路径没有 RAG”的分叉。
+   Zilliz + Doubao 工厂，不再出现“默认路径有 RAG、覆盖路径没有 RAG”的分叉。
 
 RAG 失败会返回空证据并追加 `retrieval_failed`，图随后转安全 HOLD；RAG 正常但没有命中时
 不会追加错误，`news_veto_node` 可以返回 `veto_none`。入场只要求规则提案自身带有指标证据，
 不要求 RAG 必须找到材料。结构化行情与账户事实不写入 RAG。
 
-### 5.3 BGE-M3 与 reranker 的实际调用时机
+### 5.3 Doubao 嵌入的实际调用时机
 
-检索顺序是：BGE-M3 将 query 向量化 → Milvus 进行元数据过滤和向量候选召回 →
-BGE-Reranker-v2-M3 对候选文本进行 cross-encoder 重排 → 返回最多 5 条证据。
-两种模型都是 lazy load，且只有非 HOLD 路径进入 RAG；如果币种过滤和通用回退都没有候选，
-会在 reranker 之前直接返回空列表，因此不会触发 reranker。Milvus 与 RAG 路径现在分别记录
-`app.rag.milvus` 和 `app.rag.retriever` 的 INFO 日志：可看到集合是否就绪、search/insert
-的过滤条件、向量维度、原始命中数、过滤后候选数、reranker 是否执行、返回数和耗时；insert
-日志还包含本批次的 `asset_counts`，不记录连接 URI、token 或 query 正文。
+检索顺序是：Doubao 将 query 向量化 → Zilliz 进行元数据过滤和向量候选召回 → 按向量分数
+取前 N 条（不再有 cross-encoder 重排；本地 reranker 已随 BGE 一起移除）→ 返回最多 5 条证据。
+只有非 HOLD 路径进入 RAG；如果币种过滤和通用回退都没有候选，直接返回空列表。
+Zilliz 与 RAG 路径分别记录 `app.rag.milvus` 和 `app.rag.retriever` 的 INFO 日志：
+可看到集合是否就绪、search/insert 的过滤条件、向量维度、原始命中数、过滤后候选数、
+`rag reranker skipped ... reason=disabled`、返回数和耗时；insert 日志还包含本批次的
+`asset_counts`，不记录连接 URI、token 或 query 正文。
 
 ### 5.4 Milvus 数据分布诊断（2026-09-14 实例快照）
 

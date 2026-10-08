@@ -54,7 +54,7 @@ worker 每 5 分钟（`decision_interval_seconds`）对每个启用的虚拟账�
 4. **执行**：`ExecutionService`（`app/execution/service.py`）只接受 `risk_decision.allowed == true` 的提案；下单超时用 `stable_client_order_id` 回查对账，状态未知则返回 `UNKNOWN` 而非重试。
 5. **对账**：`ReconciliationService` 从 balance 快照推导已实现盈亏（虚拟盘无成交流水）。
 
-并行还有一条 `DocumentPipeline`（`app/workers/pipeline.py`）：RSS 新闻 + FRED CSV + 美联储 RSS → 清洗去重 → Ark 摘要 → BGE-M3 分块嵌入写 Milvus。RAG 只作为非 HOLD 入场路径的新闻/宏观 veto 证据，不参与规则方向、风控或下单。FRED 月度序列按 `fred_monthly_interval_seconds` 重抓，失败的序列下一轮立刻重试（`_schedule.mark` 只推进成功的）。
+并行还有一条 `DocumentPipeline`（`app/workers/pipeline.py`）：RSS 新闻 + FRED CSV + 美联储 RSS → 清洗去重 → Ark 摘要 → Doubao 分块嵌入写 Zilliz。RAG 只作为非 HOLD 入场路径的新闻/宏观 veto 证据，不参与规则方向、风控或下单。FRED 月度序列按 `fred_monthly_interval_seconds` 重抓，失败的序列下一轮立刻重试（`_schedule.mark` 只推进成功的）。
 
 ## 关键约定与坑
 
@@ -64,8 +64,8 @@ worker 每 5 分钟（`decision_interval_seconds`）对每个启用的虚拟账�
 - `./backend/.env` — 后端与 worker（本地与容器共用）。
 - `./frontend/.env` — 前端本地开发；容器只取它的 `CLERK_SECRET_KEY`。
 
-`WEEX_VIRTUAL_ONLY` 必须保持 `true`。嵌入走 Doubao（`EMBEDDING_PROVIDER=doubao`），容器里
-不再挂载本地 BGE 模型；要切回 `local` 需按 `docker-compose.yml` 顶部注释加回挂载。
+`WEEX_VIRTUAL_ONLY` 必须保持 `true`。嵌入只有 Doubao 一个 provider（本地 BGE/reranker 已移除，
+见 `backend/pyproject.toml` 注释：它们会拖进约 2.87GB 的 torch + nvidia 包）。
 
 ### WEEX 虚拟盘语义（实测确认，与正式合约盘不同）
 

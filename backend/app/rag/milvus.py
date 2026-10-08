@@ -56,7 +56,7 @@ class MilvusVectorStore:
     ) -> None:
         self.settings = settings or get_settings()
         self.collection = self.settings.zilliz_collection
-        self.embedding_dimension = embedding_dimension or self.settings.active_embedding_dimension
+        self.embedding_dimension = embedding_dimension or self.settings.doubao_embedding_dimension
         self.schema_version = str(
             schema_version or getattr(self.settings, "milvus_schema_version", "v1")
         ).lower()

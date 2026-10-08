@@ -29,18 +29,15 @@ class Settings(BaseSettings):
     #: until the explicit reindex script has populated a new collection.
     milvus_schema_version: str = "v1"
 
-    #: Dense vector provider. ``local`` keeps the existing BGE-M3 behavior;
-    #: ``doubao`` uses the configured Ark-compatible embedding endpoint.
-    embedding_provider: Literal["local", "doubao"] = "local"
-    embedding_model_name: str = "BAAI/bge-m3"
-    embedding_dimension: int = 1024
-    embedding_model_path: str = ""
+    #: 嵌入只有 Doubao 一个 provider。本地 BGE/reranker 已移除 —— 它们会把 torch 和
+    #: 15 个 nvidia 包（实测约 2.87GB）拖进镜像，而 doubao 路径下一行都跑不到。
     doubao_api_key: str = Field(
         default="",
         validation_alias=AliasChoices("DOUBAO_API_KEY", "DOUBAO_EMBEDDING_API_KEY"),
     )
     doubao_embedding_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     doubao_embedding_model: str = "doubao-embedding-vision-251215"
+    #: 也是 Milvus 集合的向量维度（建集合时用）。
     doubao_embedding_dimension: int = 1024
     doubao_embedding_instructions: str = (
         "Target_modality: text.\n"
@@ -52,15 +49,6 @@ class Settings(BaseSettings):
     #: 所以「批量」只能是并发发多条单文本请求 —— 这也是官方文档给的方案。
     #: Ark 该接口的限额是 RPM 15k / TPM 1200k，8 路并发远在预算内。
     doubao_max_concurrency: int = 8
-    reranker_model_path: str = ""
-
-    @property
-    def active_embedding_dimension(self) -> int:
-        return (
-            self.doubao_embedding_dimension
-            if self.embedding_provider == "doubao"
-            else self.embedding_dimension
-        )
 
     ark_api_key: str = Field(validation_alias=AliasChoices("ARK_API_KEY"))
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"

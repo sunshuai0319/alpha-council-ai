@@ -39,6 +39,8 @@ logger = logging.getLogger("reindex_documents")
 
 #: 回填目标固定是 Doubao 集合；旧 BGE 集合保持只读，env 可随时切回去。
 _DOUBAO_COLLECTION_SUFFIX = "doubao_vision_v1"
+#: 本地 BGE 已移除，向量只能由 Doubao 生成。dry-run 里如实报出来。
+EMBEDDING_PROVIDER = "doubao"
 #: 规范集合名形如 `<base>_<provider>_v<N>`，只替换 provider 与版本这一段。
 _PROVIDER_VERSION_SUFFIX = re.compile(r"_(?:bge|bge_m3|doubao_vision)_v\d+$")
 
@@ -70,9 +72,6 @@ def target_settings(settings: Settings, collection: str) -> Settings:
     updates = {
         "zilliz_collection": collection,
         "milvus_schema_version": "v2",
-        # 目标集合由 Doubao 生成向量：active_embedding_dimension 随之取
-        # doubao_embedding_dimension（默认 1024），保证建集合维度与向量一致。
-        "embedding_provider": "doubao",
     }
     return settings.model_copy(update=updates)
 
@@ -84,8 +83,8 @@ def dry_run_plan(settings: Settings, target_collection: str, selected: int) -> d
     return {
         "source_collection": settings.zilliz_collection,
         "target_collection": target_collection,
-        "provider": destination.embedding_provider,
-        "dimension": destination.active_embedding_dimension,
+        "provider": EMBEDDING_PROVIDER,
+        "dimension": destination.doubao_embedding_dimension,
         "selected": selected,
     }
 

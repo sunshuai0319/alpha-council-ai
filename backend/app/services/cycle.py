@@ -158,7 +158,7 @@ class TradingCycleService:
         embedder = create_embedder(self.settings)
         vector_store = MilvusVectorStore(
             self.settings,
-            embedding_dimension=getattr(embedder, "dimension", self.settings.active_embedding_dimension),
+            embedding_dimension=getattr(embedder, "dimension", self.settings.doubao_embedding_dimension),
         )
         return Retriever(vector_store, embedder)
 

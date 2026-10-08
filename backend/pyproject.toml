@@ -11,9 +11,10 @@ dependencies = [
   "psycopg[binary]>=3.2,<4",
   "alembic>=1.16,<2",
   "pymilvus>=2.6,<3",
-  "sentence-transformers>=5,<6",
+  # 本地 BGE 嵌入与 reranker 已移除：sentence-transformers 会把 torch 和 15 个
+  # nvidia 包（实测约 2.87GB）拖进镜像，远程服务器 docker build 慢主要就是这个。
+  # 嵌入走 Doubao（app/rag/embeddings.py），别再加回来。
   "langgraph>=0.6,<1",
-  "langchain-core>=0.3,<1",
   "httpx>=0.28,<1",
   "feedparser>=6.0,<7",
   "cryptography>=44,<47",
@@ -41,5 +42,5 @@ line-length = 100
 ignore = ["B008", "DTZ001"]
 
 [[tool.mypy.overrides]]
-module = ["pymilvus", "pymilvus.*", "sentence_transformers", "sentence_transformers.*"]
+module = ["pymilvus", "pymilvus.*"]
 ignore_missing_imports = true

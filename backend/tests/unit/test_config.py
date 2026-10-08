@@ -112,3 +112,25 @@ def test_zilliz_is_the_only_vector_store() -> None:
 
     for removed in ("milvus_uri", "milvus_collection", "use_zilliz", "vector_store_uri"):
         assert not hasattr(settings, removed), f"{removed} 应当已被移除"
+
+
+def test_local_embedding_settings_are_removed() -> None:
+    """嵌入只剩 Doubao（本地 BGE/reranker 已移除），不该再有 provider 开关和本地模型路径。"""
+
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        ZILLIZ_URI="https://zilliz.example",
+        ARK_API_KEY="test-key",
+    )
+
+    for removed in (
+        "embedding_provider",
+        "embedding_model_name",
+        "embedding_dimension",
+        "embedding_model_path",
+        "reranker_model_path",
+        "active_embedding_dimension",
+    ):
+        assert not hasattr(settings, removed), f"{removed} 应当已被移除"
+
+    assert settings.doubao_embedding_dimension == 1024

@@ -53,7 +53,7 @@ class DocumentPipeline:
         self.embedder = embedder or create_embedder(self.settings)
         self.indexer = indexer or MilvusVectorStore(
             self.settings,
-            embedding_dimension=getattr(self.embedder, "dimension", self.settings.active_embedding_dimension),
+            embedding_dimension=getattr(self.embedder, "dimension", self.settings.doubao_embedding_dimension),
         )
         self._schedule = SourceSchedule(self._fred_intervals(), clock=clock)
 
