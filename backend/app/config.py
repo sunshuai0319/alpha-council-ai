@@ -60,8 +60,34 @@ class Settings(BaseSettings):
             return self.zilliz_collection
         return self.milvus_collection
 
+    #: Dense vector provider. ``local`` keeps the existing BGE-M3 behavior;
+    #: ``doubao`` uses the configured Ark-compatible embedding endpoint.
+    embedding_provider: Literal["local", "doubao"] = "local"
+    embedding_model_name: str = "BAAI/bge-m3"
+    embedding_dimension: int = 1024
     embedding_model_path: str = ""
+    doubao_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("DOUBAO_API_KEY", "DOUBAO_EMBEDDING_API_KEY"),
+    )
+    doubao_embedding_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    doubao_embedding_model: str = "doubao-embedding-vision-251215"
+    doubao_embedding_dimension: int = 1024
+    doubao_embedding_instructions: str = (
+        "Target_modality: text.\n"
+        "Instruction: Represent the text for semantic retrieval.\n"
+        "Query:"
+    )
+    doubao_timeout_seconds: float = 30.0
     reranker_model_path: str = ""
+
+    @property
+    def active_embedding_dimension(self) -> int:
+        return (
+            self.doubao_embedding_dimension
+            if self.embedding_provider == "doubao"
+            else self.embedding_dimension
+        )
 
     ark_api_key: str = Field(validation_alias=AliasChoices("ARK_API_KEY"))
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
