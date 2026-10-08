@@ -3,10 +3,10 @@ from app.config import Settings
 
 def test_settings_require_external_service_urls(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@db/a")
-    monkeypatch.setenv("MILVUS_URI", "http://milvus:19530")
+    monkeypatch.setenv("ZILLIZ_URI", "https://zilliz.example")
     monkeypatch.setenv("ARK_API_KEY", "test-key")
     settings = Settings()
-    assert settings.milvus_uri == "http://milvus:19530"
+    assert settings.zilliz_uri == "https://zilliz.example"
     assert settings.postgres_url.startswith("postgresql+psycopg://")
 
 
@@ -16,7 +16,7 @@ def test_trading_symbols_are_configurable() -> None:
 
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         TRADING_SYMBOLS="BTC-USDT, SOL-USDT ,XRP-USDT",
     )
@@ -28,7 +28,7 @@ def test_default_symbols_are_unchanged() -> None:
 
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
     )
     assert settings.symbol_list == ("BTC-USDT", "ETH-USDT")
@@ -37,7 +37,7 @@ def test_default_symbols_are_unchanged() -> None:
 def test_exchange_take_profit_is_enabled_by_default() -> None:
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
     )
 
@@ -47,7 +47,7 @@ def test_exchange_take_profit_is_enabled_by_default() -> None:
 def test_exchange_take_profit_can_be_disabled_by_configuration() -> None:
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         EXCHANGE_TAKE_PROFIT_ENABLED=False,
     )
@@ -58,12 +58,12 @@ def test_exchange_take_profit_can_be_disabled_by_configuration() -> None:
 def test_trading_defaults_to_lark_notification_mode_and_can_restore_execution() -> None:
     default_settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
     )
     execute_settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         TRADING_EXECUTION_MODE="execute",
     )
@@ -75,12 +75,12 @@ def test_trading_defaults_to_lark_notification_mode_and_can_restore_execution() 
 def test_reentry_cooldown_defaults_to_six_hours_and_is_configurable() -> None:
     default_settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
     )
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         REENTRY_COOLDOWN_SECONDS=900,
     )
@@ -89,45 +89,26 @@ def test_reentry_cooldown_defaults_to_six_hours_and_is_configurable() -> None:
     assert settings.reentry_cooldown_seconds == 900
 
 
-def test_zilliz_vector_store_settings_are_selected_when_enabled() -> None:
+def test_zilliz_is_the_only_vector_store() -> None:
+    """本地 Milvus 配置已整体移除，不再有 MILVUS_* / USE_ZILLIZ 这套开关。"""
+
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
-        MILVUS_USER="local-user",
-        MILVUS_PASSWORD="local-password",
-        MILVUS_DB_NAME="default",
-        MILVUS_COLLECTION="local_collection",
-        ARK_API_KEY="test-key",
-        USE_ZILLIZ=True,
         ZILLIZ_URI="https://zilliz.example",
         ZILLIZ_TOKEN="zilliz-token",
         ZILLIZ_USER="zilliz-user",
         ZILLIZ_PASSWORD="zilliz-password",
         ZILLIZ_DB_NAME="zilliz-db",
         ZILLIZ_COLLECTION="zilliz_collection",
-    )
-
-    assert settings.vector_store_uri == "https://zilliz.example"
-    assert settings.vector_store_token == "zilliz-token"
-    assert settings.vector_store_user == "zilliz-user"
-    assert settings.vector_store_password == "zilliz-password"
-    assert settings.vector_store_db_name == "zilliz-db"
-    assert settings.vector_store_collection == "zilliz_collection"
-
-
-def test_zilliz_vector_store_settings_default_to_local_milvus() -> None:
-    settings = Settings(
-        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
-        MILVUS_TOKEN="local-token",
-        MILVUS_COLLECTION="local_collection",
         ARK_API_KEY="test-key",
-        USE_ZILLIZ=False,
-        ZILLIZ_URI="https://zilliz.example",
-        ZILLIZ_TOKEN="zilliz-token",
-        ZILLIZ_COLLECTION="zilliz_collection",
     )
 
-    assert settings.vector_store_uri == "http://localhost:19530"
-    assert settings.vector_store_token == "local-token"
-    assert settings.vector_store_collection == "local_collection"
+    assert settings.zilliz_uri == "https://zilliz.example"
+    assert settings.zilliz_token == "zilliz-token"
+    assert settings.zilliz_user == "zilliz-user"
+    assert settings.zilliz_password == "zilliz-password"
+    assert settings.zilliz_db_name == "zilliz-db"
+    assert settings.zilliz_collection == "zilliz_collection"
+
+    for removed in ("milvus_uri", "milvus_collection", "use_zilliz", "vector_store_uri"):
+        assert not hasattr(settings, removed), f"{removed} 应当已被移除"

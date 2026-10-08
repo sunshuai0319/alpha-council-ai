@@ -81,7 +81,7 @@ def test_scheduler_reads_symbols_from_settings(monkeypatch) -> None:
         "workers.scheduler.get_settings",
         lambda: Settings(
             DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-            MILVUS_URI="http://localhost:19530",
+            ZILLIZ_URI="http://localhost:19530",
             ARK_API_KEY="test-key",
             TRADING_SYMBOLS="btc-usdt, sol-usdt",
         ),

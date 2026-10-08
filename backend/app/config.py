@@ -17,48 +17,17 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     postgres_url: str = Field(validation_alias=AliasChoices("DATABASE_URL", "POSTGRES_URL"))
-    milvus_uri: str = Field(validation_alias=AliasChoices("MILVUS_URI"))
-    milvus_user: str = ""
-    milvus_password: str = ""
-    milvus_token: str = ""
-    milvus_db_name: str = ""
-    milvus_collection: str = "alpha_council_documents_bge_m3_v1"
-    #: RAG v2 adds asset_scope/schema_version fields; v1 remains the safe default
-    #: until the explicit reindex script has populated a new collection.
-    milvus_schema_version: str = "v1"
-    use_zilliz: bool = False
-    zilliz_uri: str = ""
+    #: 向量库只有 Zilliz 一个。本地 Milvus 的 MILVUS_URI/USE_ZILLIZ 这套开关已移除 ——
+    #: 两套配置并存时，`USE_ZILLIZ` 一改就会静默切到另一个库，排查成本远高于收益。
+    zilliz_uri: str = Field(validation_alias=AliasChoices("ZILLIZ_URI"))
     zilliz_user: str = ""
     zilliz_password: str = ""
     zilliz_token: str = ""
     zilliz_db_name: str = ""
-    zilliz_collection: str = ""
-
-    @property
-    def vector_store_uri(self) -> str:
-        return self.zilliz_uri if self.use_zilliz else self.milvus_uri
-
-    @property
-    def vector_store_user(self) -> str:
-        return self.zilliz_user if self.use_zilliz else self.milvus_user
-
-    @property
-    def vector_store_password(self) -> str:
-        return self.zilliz_password if self.use_zilliz else self.milvus_password
-
-    @property
-    def vector_store_token(self) -> str:
-        return self.zilliz_token if self.use_zilliz else self.milvus_token
-
-    @property
-    def vector_store_db_name(self) -> str:
-        return self.zilliz_db_name if self.use_zilliz else self.milvus_db_name
-
-    @property
-    def vector_store_collection(self) -> str:
-        if self.use_zilliz and self.zilliz_collection:
-            return self.zilliz_collection
-        return self.milvus_collection
+    zilliz_collection: str = "alpha_council_documents_doubao_vision_v1"
+    #: RAG v2 adds asset_scope/schema_version fields; v1 remains the safe default
+    #: until the explicit reindex script has populated a new collection.
+    milvus_schema_version: str = "v1"
 
     #: Dense vector provider. ``local`` keeps the existing BGE-M3 behavior;
     #: ``doubao`` uses the configured Ark-compatible embedding endpoint.
@@ -79,6 +48,10 @@ class Settings(BaseSettings):
         "Query:"
     )
     doubao_timeout_seconds: float = 30.0
+    #: `/embeddings/multimodal` 一次请求只返回一个向量（多条 input 会被融合），
+    #: 所以「批量」只能是并发发多条单文本请求 —— 这也是官方文档给的方案。
+    #: Ark 该接口的限额是 RPM 15k / TPM 1200k，8 路并发远在预算内。
+    doubao_max_concurrency: int = 8
     reranker_model_path: str = ""
 
     @property

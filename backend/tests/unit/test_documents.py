@@ -96,7 +96,7 @@ def test_ark_summary_uses_configured_deepseek_model_and_validates_json() -> None
 
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         ARK_BASE_URL="https://ark.test/api/v3",
     )

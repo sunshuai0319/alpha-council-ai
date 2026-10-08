@@ -11,7 +11,7 @@
 
 1. `GET /api/health` 返回 `status=ok` 且 `weex_mode=virtual`。
 2. PostgreSQL 已执行 `uv run alembic upgrade head`。
-3. `MILVUS_URI`、`MILVUS_COLLECTION` 和本地 embedding/reranker 路径可访问。
+3. `ZILLIZ_URI`、`ZILLIZ_COLLECTION` 可访问（向量库只有 Zilliz，本地 Milvus 已移除）。
 4. Ark 模型为 `deepseek-v4-pro-ga-260813`，API key 只存在后端环境变量。
 5. Clerk publishable key、JWKS URL、issuer 和 webhook signing secret 已配置。
 6. WEEX API key、secret、passphrase 属于 virtual 账户，且未出现在日志或前端环境变量中。
@@ -59,8 +59,8 @@ uv run python scripts/reindex_documents.py
 
 脚本只读 PostgreSQL 和旧 collection，向新 collection upsert，不清空源数据或旧 collection。
 回填后检查 `asset_scope`、`schema_version`、每个交易品种的行数；切换 `.env` 的
-`ZILLIZ_COLLECTION`（或 `MILVUS_COLLECTION`）与 `EMBEDDING_PROVIDER` 后，必须重启长驻
-API/worker 进程后才会实际加载新 collection。
+`ZILLIZ_COLLECTION` 与 `EMBEDDING_PROVIDER` 后，必须重启长驻 API/worker 进程后才会实际
+加载新 collection。
 
 ### Clerk 登录失败或 API 返回 401
 

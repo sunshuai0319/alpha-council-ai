@@ -15,7 +15,7 @@ from app.config import Settings
 def _settings() -> Settings:
     return Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         ARK_BASE_URL="https://ark.test/api/v3",
     )

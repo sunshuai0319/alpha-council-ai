@@ -15,6 +15,7 @@ import argparse
 import logging
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.db.models import DocumentSummary as DocumentSummaryRecord
@@ -66,14 +68,12 @@ def target_settings(settings: Settings, collection: str) -> Settings:
     """Destination settings for the Doubao collection; the source stays untouched."""
 
     updates = {
-        "milvus_collection": collection,
+        "zilliz_collection": collection,
         "milvus_schema_version": "v2",
         # 目标集合由 Doubao 生成向量：active_embedding_dimension 随之取
         # doubao_embedding_dimension（默认 1024），保证建集合维度与向量一致。
         "embedding_provider": "doubao",
     }
-    if settings.use_zilliz:
-        updates["zilliz_collection"] = collection
     return settings.model_copy(update=updates)
 
 
@@ -82,7 +82,7 @@ def dry_run_plan(settings: Settings, target_collection: str, selected: int) -> d
 
     destination = target_settings(settings, target_collection)
     return {
-        "source_collection": settings.vector_store_collection,
+        "source_collection": settings.zilliz_collection,
         "target_collection": target_collection,
         "provider": destination.embedding_provider,
         "dimension": destination.active_embedding_dimension,
@@ -109,15 +109,24 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run(*, settings: Settings, target_collection: str, limit: int = 0, dry_run: bool = False) -> ReindexStats:
+def run(
+    *,
+    settings: Settings,
+    target_collection: str,
+    limit: int = 0,
+    dry_run: bool = False,
+    session_factory: Callable[[], Session] = SessionLocal,
+) -> ReindexStats:
     if limit < 0:
         raise ValueError("limit must not be negative")
-    if target_collection == settings.vector_store_collection:
+    # dry-run 只读，不碰任何集合：回填完成、env 已切到新集合之后，默认目标就等于当前
+    # 集合，若在这里一并拒绝，诊断命令就永远跑不了了。真正写库时才要求目标不同。
+    if not dry_run and target_collection == settings.zilliz_collection:
         raise ValueError("target collection must differ from the current collection")
 
     destination_settings = target_settings(settings, target_collection)
 
-    with SessionLocal() as db:
+    with session_factory() as db:
         statement = (
             select(SourceDocument, DocumentSummaryRecord)
             .join(DocumentSummaryRecord, DocumentSummaryRecord.document_id == SourceDocument.id)
@@ -196,7 +205,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     args = _parser().parse_args()
     settings = get_settings()
-    target_collection = args.target_collection or default_target_collection(settings.vector_store_collection)
+    target_collection = args.target_collection or default_target_collection(settings.zilliz_collection)
     stats = run(
         settings=settings,
         target_collection=target_collection,

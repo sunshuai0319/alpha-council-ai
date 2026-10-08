@@ -6,7 +6,7 @@ from app.domain.schemas import MarketSnapshot, TradingCycleState
 def test_compiled_langgraph_executes_safe_hold_without_external_tools() -> None:
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
     )
     timestamp = 1_700_000_000_000

@@ -36,7 +36,7 @@ def test_from_settings_reads_the_risk_budget_from_the_existing_limits() -> None:
     """风险预算不另开一套字段 —— 与 RiskLimits 共用，避免两个真相来源。"""
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         max_single_trade_risk_pct=0.004,
         max_position_notional_pct=0.15,
@@ -50,7 +50,7 @@ def test_from_settings_reads_the_risk_budget_from_the_existing_limits() -> None:
 def test_from_settings_allows_env_style_overrides_of_signal_params() -> None:
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         STRATEGY_ENTRY_THRESHOLD=0.6,
         STRATEGY_ATR_MULTIPLIER=2.0,
@@ -66,7 +66,7 @@ def test_from_settings_allows_env_style_overrides_of_signal_params() -> None:
 def test_from_settings_reads_position_exit_policy() -> None:
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         STRATEGY_NEAR_TARGET_R=1.7,
         STRATEGY_NEAR_TARGET_TIMEOUT_HOURS=4,
@@ -82,7 +82,7 @@ def test_from_settings_reads_position_exit_policy() -> None:
 def test_from_settings_leaves_unset_params_at_their_defaults() -> None:
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         # Settings 默认会读取仓库 .env；显式传入代码默认值，避免测试被本地运行配置污染。
         STRATEGY_REWARD_RISK=2.0,
@@ -105,7 +105,7 @@ def test_timeframes_are_configurable() -> None:
 def test_from_settings_reads_the_configured_timeframes() -> None:
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         STRATEGY_ENTRY_TIMEFRAME="12h",
         STRATEGY_TREND_TIMEFRAME="1d",
@@ -119,7 +119,7 @@ def test_from_settings_reads_the_configured_timeframes() -> None:
 def test_settings_parses_the_collected_timeframe_list() -> None:
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         MARKET_TIMEFRAMES="12h, 1d",
     )
@@ -130,7 +130,7 @@ def test_default_timeframe_list_is_unchanged() -> None:
     """默认必须还是 5m/1h/4h —— 改这个会动到线上行为。"""
     settings = Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
     )
     assert settings.timeframe_list == ("5m", "1h", "4h")

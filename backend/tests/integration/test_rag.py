@@ -290,8 +290,8 @@ def test_retriever_logs_asset_fallback_and_reranker_path(caplog) -> None:
 def test_milvus_logs_search_and_insert_without_connection_secrets(caplog) -> None:
     settings = Settings(
         DATABASE_URL="sqlite+pysqlite:///:memory:",
-        MILVUS_URI="https://milvus.example.test",
-        MILVUS_TOKEN="secret-token",
+        ZILLIZ_URI="https://milvus.example.test",
+        ZILLIZ_TOKEN="secret-token",
         ARK_API_KEY="test-key",
     )
     client = FakeMilvusClient()
@@ -326,7 +326,7 @@ def test_milvus_logs_search_and_insert_without_connection_secrets(caplog) -> Non
 def test_milvus_v2_persists_asset_scope_and_schema_version() -> None:
     settings = Settings(
         DATABASE_URL="sqlite+pysqlite:///:memory:",
-        MILVUS_URI="https://milvus.example.test",
+        ZILLIZ_URI="https://milvus.example.test",
         ARK_API_KEY="test-key",
         milvus_schema_version="v2",
     )

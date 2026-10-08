@@ -55,7 +55,7 @@ class MilvusVectorStore:
         schema_version: str | None = None,
     ) -> None:
         self.settings = settings or get_settings()
-        self.collection = self.settings.vector_store_collection
+        self.collection = self.settings.zilliz_collection
         self.embedding_dimension = embedding_dimension or self.settings.active_embedding_dimension
         self.schema_version = str(
             schema_version or getattr(self.settings, "milvus_schema_version", "v1")
@@ -69,19 +69,18 @@ class MilvusVectorStore:
         if self._client is None:
             from pymilvus import MilvusClient
 
-            kwargs: dict[str, Any] = {"uri": self.settings.vector_store_uri}
-            if self.settings.vector_store_token:
-                kwargs["token"] = self.settings.vector_store_token
-            elif self.settings.vector_store_user:
-                kwargs["user"] = self.settings.vector_store_user
-                kwargs["password"] = self.settings.vector_store_password
-            if self.settings.vector_store_db_name:
-                kwargs["db_name"] = self.settings.vector_store_db_name
+            kwargs: dict[str, Any] = {"uri": self.settings.zilliz_uri}
+            if self.settings.zilliz_token:
+                kwargs["token"] = self.settings.zilliz_token
+            elif self.settings.zilliz_user:
+                kwargs["user"] = self.settings.zilliz_user
+                kwargs["password"] = self.settings.zilliz_password
+            if self.settings.zilliz_db_name:
+                kwargs["db_name"] = self.settings.zilliz_db_name
             self._client = MilvusClient(**kwargs)
             logger.info(
-                "milvus client initialized: collection=%s mode=%s",
+                "milvus client initialized: collection=%s mode=zilliz",
                 self.collection,
-                "zilliz" if self.settings.use_zilliz else "milvus",
             )
         return self._client
 

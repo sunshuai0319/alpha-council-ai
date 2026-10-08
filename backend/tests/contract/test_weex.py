@@ -29,7 +29,7 @@ from app.exchange.weex import WeexClient, WeexCredentials
 def _settings(virtual_only: bool = True) -> Settings:
     return Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         WEEX_VIRTUAL_ONLY=virtual_only,
     )

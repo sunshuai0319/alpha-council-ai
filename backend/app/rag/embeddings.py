@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -115,10 +116,27 @@ class DoubaoEmbedder:
         )
         return vector
 
+    @property
+    def max_concurrency(self) -> int:
+        return max(1, self.settings.doubao_max_concurrency)
+
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
-        if not texts:
+        """并发嵌入多条文本，返回顺序与输入一致。
+
+        `/embeddings/multimodal` 一次请求只产出一个向量（多条 input 会被融合成一个），
+        所以这里只能一条文本一个请求，提速靠并发 —— 官方文档给的也是这个方案。
+        `ThreadPoolExecutor.map` 既保序，也会把第一个异常原样抛出，
+        不会静默少返回向量（少返回会让 chunk 与向量错位）。
+        """
+
+        items = list(texts)
+        if not items:
             return []
-        return [self._request(text) for text in texts]
+        workers = min(self.max_concurrency, len(items))
+        if workers == 1:
+            return [self._request(text) for text in items]
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="doubao-embed") as pool:
+            return list(pool.map(self._request, items))
 
 
 def create_embedder(settings: Settings | None = None) -> BGEEmbedder | DoubaoEmbedder:

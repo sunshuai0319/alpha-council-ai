@@ -18,7 +18,7 @@ from app.notifications.lark import LarkNotifier, build_trade_signal_card
 def _settings(**overrides) -> Settings:
     values = {
         "DATABASE_URL": "postgresql+psycopg://u:p@localhost/a",
-        "MILVUS_URI": "http://localhost:19530",
+        "ZILLIZ_URI": "http://localhost:19530",
         "ARK_API_KEY": "test-key",
         "LARK_APP_ID": "cli_test",
         "LARK_APP_SECRET": "local-secret",

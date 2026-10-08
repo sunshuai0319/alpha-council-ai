@@ -39,7 +39,7 @@ def _state(captured_at: int = 1_700_000_000_000) -> TradingCycleState:
 def _settings() -> Settings:
     return Settings(
         DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
-        MILVUS_URI="http://localhost:19530",
+        ZILLIZ_URI="http://localhost:19530",
         ARK_API_KEY="test-key",
         MARKET_DATA_MAX_AGE_SECONDS=90,
     )
