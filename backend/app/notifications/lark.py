@@ -280,9 +280,23 @@ class LarkNotifier:
             and state.trade_proposal.action is Action.HOLD
             and not self.settings.lark_notify_hold
         ):
+            logger.info(
+                "lark notification: user=%s symbol=%s action=HOLD result=skipped reason=hold_notifications_disabled",
+                state.user_id,
+                state.symbol,
+            )
             return False
         if not self.configured:
-            logger.info("Lark notification skipped: app credentials or receive id are not configured")
+            logger.warning(
+                "lark notification: user=%s symbol=%s action=%s result=skipped reason=not_configured "
+                "app_id_configured=%s app_secret_configured=%s receive_ids=%d",
+                state.user_id,
+                state.symbol,
+                state.trade_proposal.action.value if state.trade_proposal else "NONE",
+                bool(self.settings.lark_app_id),
+                bool(self.settings.lark_app_secret),
+                len(self._receive_ids()),
+            )
             return False
         card = build_trade_signal_card(state, risk, execution)
         content = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
@@ -299,7 +313,13 @@ class LarkNotifier:
                 json={"receive_id": receive_id, "msg_type": "interactive", "content": content},
             )
             self._raise_for_api_error(response, "send message")
-        logger.info("Lark notification sent: user=%s symbol=%s action=%s", state.user_id, state.symbol, _action_label(state.trade_proposal))
+        logger.info(
+            "lark notification: user=%s symbol=%s action=%s result=sent recipients=%d",
+            state.user_id,
+            state.symbol,
+            state.trade_proposal.action.value if state.trade_proposal else "NONE",
+            len(self._receive_ids()),
+        )
         return True
 
     def _receive_ids(self) -> tuple[str, ...]:

@@ -98,6 +98,17 @@ class TradingScheduler:
 def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
+    lark_receive_ids = tuple(item.strip() for item in settings.lark_receive_id.split(",") if item.strip())
+    lark_configured = bool(settings.lark_app_id and settings.lark_app_secret and lark_receive_ids)
+    logger.info(
+        "worker configuration: execution_mode=%s lark_configured=%s lark_receive_id_type=%s "
+        "lark_receivers=%d lark_notify_hold=%s",
+        settings.trading_execution_mode,
+        lark_configured,
+        settings.lark_receive_id_type,
+        len(lark_receive_ids),
+        settings.lark_notify_hold,
+    )
     with SessionLocal() as db:
         service = TradingCycleService(db=db, settings=settings)
         TradingScheduler(
