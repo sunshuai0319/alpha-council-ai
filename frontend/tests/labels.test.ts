@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { translate } from "@/lib/i18n"
-import { labelText, reasonLabel } from "@/lib/labels"
+import { labelText, reasonLabel, reasonParts } from "@/lib/labels"
 
 const zh = (key: string, params?: Record<string, string>) => translate("zh-CN", key as never, params)
 const en = (key: string, params?: Record<string, string>) => translate("en-US", key as never, params)
@@ -36,6 +36,34 @@ describe("reasonLabel", () => {
 
   it("keeps the legacy evidence-missing key for rows written before the rename", () => {
     expect(render("entry_evidence_missing").zh).toBe("缺少证据引用")
+  })
+
+  it("translates the fail-closed veto prefix", () => {
+    // graph.py 的 fail-closed 走 `_hold_proposal(current, f"veto_fail_closed:{reasons}")`。
+    expect(render("veto_fail_closed:news_macro").zh).toBe("否决链异常，已安全观望：news_macro")
+    expect(render("veto_fail_closed:news_macro").en).toBe("Veto chain failed closed; holding: news_macro")
+  })
+
+  it("localizes the rule-signal direction", () => {
+    // 中文界面上留一个英文 `SHORT` 属于漏译；卡片那边一直用「做空」。
+    expect(render("rule signal SHORT score=-0.5477").zh).toBe("规则信号 做空，分数 -0.55")
+    expect(render("rule signal LONG score=0.31").zh).toBe("规则信号 做多，分数 0.31")
+    expect(render("rule signal SHORT score=-0.5477").en).toBe("Rule signal short, score -0.55")
+  })
+
+  it("takes a semicolon-joined summary apart and translates each code", () => {
+    // 后端的两种拼接写法都要能拆：`_persist` 用 ";", graph.py 用 "; "。
+    const parts = (code: string) =>
+      reasonParts(code).map((part) => labelText(part, zh)).join("、")
+
+    expect(parts("entry_stop_loss_missing;entry_signal_evidence_missing")).toBe(
+      "提案缺少止损、提案缺少入场证据引用",
+    )
+    expect(parts("entry_stop_loss_missing; entry_signal_evidence_missing")).toBe(
+      "提案缺少止损、提案缺少入场证据引用",
+    )
+    // 拆完只剩空白段时要当作没内容，不能多渲染一个分隔符。
+    expect(reasonParts("hold_no_order; ")).toHaveLength(1)
   })
 
   it("shows an unknown code as-is instead of blank", () => {

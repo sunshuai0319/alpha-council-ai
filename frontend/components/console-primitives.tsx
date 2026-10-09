@@ -1,7 +1,7 @@
 import { Check, CircleAlert, Minus, TrendingDown, TrendingUp, X } from "lucide-react"
 
 import { translate, useI18n, type Locale } from "@/lib/i18n"
-import { labelText, modelLabel, eventTypeLabel, reasonLabel, reasonParts, actionLabel, positionStatusLabel } from "@/lib/labels"
+import { labelText, modelLabel, eventTypeLabel, reasonParts, actionLabel, positionStatusLabel } from "@/lib/labels"
 import type { Decision, MarketSnapshot, Position, RiskEvent } from "@/lib/types"
 
 /**
@@ -10,11 +10,25 @@ import type { Decision, MarketSnapshot, Position, RiskEvent } from "@/lib/types"
  * 单点转换：折叠行、决策卡片、委员会页、展开详情全都用它。之前只有详情做了
  * 转换，于是列表行仍在显示 `signal_hold_score_0.18` 这种英文码。
  * 认不出的码（包括 LLM 写的中文摘要）原样返回。
+ *
+ * 按 `;` 拆开逐条翻译：`safe_hold` 写进摘要的就是 `";".join(errors[-3:])`，
+ * 整串匹配不上任何一条精确表，会原样冒英文。
  */
 export function ReasonText({ code, fallback = "—" }: { code?: string | null; fallback?: string }) {
   const { t } = useI18n()
   if (!code) return <>{fallback}</>
-  return <>{labelText(reasonLabel(code), t)}</>
+  const parts = reasonParts(code)
+  if (!parts.length) return <>{fallback}</>
+  return (
+    <>
+      {parts.map((part, index) => (
+        <span key={index}>
+          {index ? t("common.listSeparator") : ""}
+          {labelText(part, t)}
+        </span>
+      ))}
+    </>
+  )
 }
 
 /** 模型版本 → 当前语言文案。 */

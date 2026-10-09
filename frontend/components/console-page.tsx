@@ -5,7 +5,7 @@ import { ChevronRight, CircleAlert, CirclePause, CirclePlay, RefreshCw, ShieldAl
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { ActionMark, DecisionCard, EmptyState, EventList, formatDate, formatNumber, formatPercent, MarketStrip, Metric, Pagination, PortfolioTable, ReasonText, RiskBadge, VirtualBadge } from "@/components/console-primitives"
-import { labelText, modelLabel, reasonLabel, actionLabel } from "@/lib/labels"
+import { labelText, modelLabel, reasonLabel, reasonParts, actionLabel } from "@/lib/labels"
 import { ApiError, apiRequest } from "@/lib/api"
 import { emptyOverviewHint } from "@/lib/console-hints"
 import { useI18n } from "@/lib/i18n"
@@ -351,7 +351,9 @@ function DecisionRow({ decision }: { decision: Decision }) {
   const analyses = decision.analyses
   // 机器码 → 界面文案。后端存的是稳定的英文码（审计要用的标识），
   // 在这里按当前语言翻译，见 lib/labels.ts。
-  const reasonLabelText = (code: string) => labelText(reasonLabel(code), t)
+  // 逐条翻译而不是整串：摘要是 `";".join(...)` 拼的，整串匹配不上精确表。
+  const reasonLabelText = (code: string) =>
+    reasonParts(code).map((part) => labelText(part, t)).join(t("common.listSeparator"))
   const separator = t("common.listSeparator")
   const isEntry = proposal != null && proposal.action !== "HOLD"
   const reasoningText = proposal?.reasoning_summary ? reasonLabelText(proposal.reasoning_summary) : ""

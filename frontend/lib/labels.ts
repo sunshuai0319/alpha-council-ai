@@ -89,6 +89,8 @@ const PREFIX_KEYS: Array<[string, string]> = [
   ["account_unavailable:", "reason.accountUnavailable"],
   ["retrieval_failed:", "reason.retrievalFailed"],
   ["vetoed:", "reason.vetoed"],
+  // 否决链本身坏了（LLM 输出非法/缺失），与「被否决」不是一回事。
+  ["veto_fail_closed:", "reason.vetoFailClosed"],
 ];
 
 /** 风控事件类型。 */
@@ -109,8 +111,16 @@ const MODEL_KEYS: Record<string, string> = {
 
 export type Label = { key: string; params?: Record<string, string> } | { text: string };
 
-/** 规则信号器开仓时的摘要：「rule signal SHORT score=-0.55」。 */
+/**
+ * 规则信号器开仓时的摘要：「rule signal SHORT score=-0.55」。
+ *
+ * 方向也中文化 —— 中文界面上留一个英文 `SHORT` 属于漏译，卡片那边本来就用「做空」。
+ */
 const RULE_SIGNAL = /^rule signal (LONG|SHORT) score=(-?[\d.]+)$/;
+const RULE_SIGNAL_KEYS: Record<string, string> = {
+  LONG: "reason.ruleSignalEntryLong",
+  SHORT: "reason.ruleSignalEntryShort",
+};
 
 /** 盘口点差超标：「spread_bps=62.5>50.0」。后端是 f-string，不是枚举码。 */
 const SPREAD_TOO_WIDE = /^spread_bps=([\d.]+)>([\d.]+)$/;
@@ -148,8 +158,8 @@ export function reasonLabel(code: string): Label {
   const entry = RULE_SIGNAL.exec(code);
   if (entry) {
     return {
-      key: "reason.ruleSignalEntry",
-      params: { direction: entry[1], score: String(Number(Number(entry[2]).toFixed(2))) },
+      key: RULE_SIGNAL_KEYS[entry[1]],
+      params: { score: String(Number(Number(entry[2]).toFixed(2))) },
     };
   }
   const legacyFailure = LEGACY_MARKET_DATA_FAILURE.exec(code);
@@ -195,9 +205,17 @@ export function eventTypeLabel(code: string): Label {
  * 风控事件的原因。后端可能把多条用 `;` 拼成一串
  * （`entry_evidence_missing;hold_no_order`），所以要拆开逐条翻译。
  * 认不出的部分（WEEX 报错、psycopg 异常原文）原样保留。
+ *
+ * 先 trim 再过滤空段：后端两处拼接写法不同 —— `_persist` 用 `";"` ，
+ * `graph.py` 用 `"; "`。后者拆出来是 `" "`，它是 truthy，`filter(Boolean)`
+ * 拦不住，会多渲染一个空白分隔符，而且 `" hold_no_order"` 也匹配不上精确表。
  */
 export function reasonParts(reason: string): Label[] {
-  return reason.split(";").filter(Boolean).map(reasonLabel);
+  return reason
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map(reasonLabel);
 }
 
 /** 模型版本。旧版委员会有 v1 / v1.0 / v1.0.0 三种写法。 */

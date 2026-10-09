@@ -21,7 +21,7 @@ import httpx
 from app.config import Settings
 from app.domain.enums import Action, RiskStatus
 from app.domain.schemas import ExecutionResult, RiskDecision, TradeProposal, TradingCycleState
-from app.notifications.reasons import reason_parts, reason_text
+from app.notifications.reasons import reason_parts
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +175,9 @@ def build_trade_signal_card(
     size_pct = proposal.position_size_pct * 100 if proposal else 0
     leverage = proposal.leverage if proposal else 0
     reasons = _normalize_line_breaks("、".join(reason_parts(reason) for reason in risk.reasons) or "无")
-    reasoning = _normalize_line_breaks(reason_text(proposal.reasoning_summary) if proposal else "未生成交易提案")
+    # 说明文字同样要逐条翻译：`safe_hold` 写的是 `";".join(errors[-3:])`，
+    # 整串丢给 reason_text 会一个码都匹配不上，原样冒英文。
+    reasoning = _normalize_line_breaks(reason_parts(proposal.reasoning_summary) if proposal else "未生成交易提案")
     if len(reasoning) > 240:
         reasoning = f"{reasoning[:237]}..."
     execution_text = _execution_status_label(execution)

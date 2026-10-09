@@ -421,6 +421,42 @@ def test_integer_prices_keep_no_trailing_zeros() -> None:
 # --- 中文化 ---------------------------------------------------------------
 
 
+def test_card_translates_semicolon_joined_reasoning_summary() -> None:
+    """`safe_hold` 永远产出 `";".join(errors[-3:])`，说明文字几乎总是拼接串。
+
+    只翻译整串等于没译：多码拼在一起时一个都匹配不上精确表。
+    """
+
+    card = build_trade_signal_card(
+        _state(reasoning_summary="entry_stop_loss_missing;entry_signal_evidence_missing"),
+        RiskDecision(status=RiskStatus.REJECTED, reasons=["hold_no_order"]),
+    )
+    risk_element = next(
+        element for element in card["body"]["elements"] if element.get("element_id") == "risk"
+    )
+    content = risk_element["text"]["content"]
+
+    assert "提案缺少止损、提案缺少入场证据引用" in content
+    assert "entry_stop_loss_missing" not in content
+
+
+def test_card_translates_veto_fail_closed_prefix() -> None:
+    """`graph.py` 的 fail-closed 走 `_hold_proposal(current, f"veto_fail_closed:{reasons}")`，
+    这个前缀两边的前缀表都漏了。"""
+
+    card = build_trade_signal_card(
+        _state(reasoning_summary="veto_fail_closed:news_macro"),
+        RiskDecision(status=RiskStatus.REJECTED, reasons=["hold_no_order"]),
+    )
+    risk_element = next(
+        element for element in card["body"]["elements"] if element.get("element_id") == "risk"
+    )
+    content = risk_element["text"]["content"]
+
+    assert "否决链异常，已安全观望：news_macro" in content
+    assert "veto_fail_closed" not in content
+
+
 def test_card_translates_machine_codes() -> None:
     card = build_trade_signal_card(
         _state(reasoning_summary="rule signal SHORT score=-0.35"),

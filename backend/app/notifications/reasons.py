@@ -76,6 +76,9 @@ _REASON_TEMPLATES = {
     "account_unavailable:": "账户不可用：{detail}",
     "retrieval_failed:": "证据检索失败：{detail}",
     "vetoed:": "被否决：{detail}",
+    # `agents/graph.py` 的 fail-closed：`_hold_proposal(current, f"veto_fail_closed:{reasons}")`。
+    # 不是 `vetoed:` 的变体 —— 那条是「被否决」，这条是「否决链本身坏了」。
+    "veto_fail_closed:": "否决链异常，已安全观望：{detail}",
 }
 
 #: 规则信号器开仓时的摘要，与 `frontend/lib/labels.ts` 的 `RULE_SIGNAL` 同源。

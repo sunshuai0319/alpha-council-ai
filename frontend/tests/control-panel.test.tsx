@@ -525,7 +525,8 @@ describe("decision filters", () => {
 
 describe("rule signal labels", () => {
   it("translates the entry summary, which is free text rather than a code", () => {
-    expect(labelText(reasonLabel("rule signal SHORT score=-0.5477"), zhT)).toBe("规则信号 SHORT，分数 -0.55")
+    // 方向也中文化：中文界面上留一个英文 `SHORT` 属于漏译，卡片那边本来就用「做空」。
+    expect(labelText(reasonLabel("rule signal SHORT score=-0.5477"), zhT)).toBe("规则信号 做空，分数 -0.55")
   })
 
   it("translates the hold score code", () => {
