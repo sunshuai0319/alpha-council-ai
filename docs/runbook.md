@@ -115,7 +115,9 @@ Lark 国际版 API 使用 `https://open.larksuite.com`。卡片中的交易动�
 
 账户级熔断 / 暂停（日亏损 / 连亏 / 权益非正，即 `risk.halt`，以及熔断之后每轮的 `risk.status == PAUSED`）**永远推送**，不受 `LARK_NOTIFY_HOLD` 与 `LARK_NOTIFY_REJECTED_SIGNALS` 影响 —— 它代表系统已经停手，漏掉最危险。
 
-暂停期的每一轮都会落到这条规则上，但指纹是 `HOLD:PAUSED:paused`、逐轮相同，所以每个品种只推第一条（`trading_enabled=false` 时是 `HOLD:PAUSED:trading_disabled`）—— 熔断瞬间会有「品种数」条并发到达，之后安静。这两类都绕过了「HOLD 不推送」的默认，是刻意的：否则一旦熔断那轮信号本来就是观望，用户就再也收不到任何提示。
+暂停期的每一轮都会落到这条规则上，但指纹是 `HOLD:PAUSED:paused`、逐轮相同，所以每个品种只推第一条（`trading_enabled=false` 时是 `HOLD:PAUSED:trading_disabled`）。实际会有**两波**：熔断触发轮推 `REJECTED:daily_loss_limit`（`halt=True`），下一轮起推 `HOLD:PAUSED:paused`，两波都是每品种一条，之后安静。两波文案不同（「当日亏损触发熔断」→「账户已暂停」），不是重复推送。
+
+这两类都绕过了「HOLD 不推送」的默认，是刻意的：否则一旦熔断那轮信号本来就是观望，用户就再也收不到任何提示。
 
 应用需要启用机器人能力，并申请以下最小权限：
 
