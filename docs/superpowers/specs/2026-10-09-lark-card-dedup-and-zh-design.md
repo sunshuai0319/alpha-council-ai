@@ -69,14 +69,25 @@ ETH-USDT 连续三轮都是 SHORT 时，卡片内容几乎一样 —— 只有�
 模块级纯函数，可独立单测：
 
 ```python
+def _reason_code(reason: str) -> str:
+    """指纹只用码本身，丢掉 `:` 后面的参数。
+
+    `cycle.py:505` 写的是 f"account_unavailable:{exc}" —— 异常原文进了理由，
+    "connection refused" 与 "timed out" 是两条不同字符串，不归一化的话指纹每轮
+    都变、每轮都推。
+    """
+    return reason.split(":", 1)[0].strip()
+
+
 def signal_signature(state: TradingCycleState, risk: RiskDecision) -> str:
     action = state.trade_proposal.action.value if state.trade_proposal else "NONE"
-    reasons = "|".join(sorted(set(risk.reasons)))
-    return f"{action}:{risk.status.value}:{reasons}"
+    codes = "|".join(sorted({_reason_code(reason) for reason in risk.reasons}))
+    return f"{action}:{risk.status.value}:{codes}"
 ```
 
 指纹只含决策语义，不含价格与信号分数。因此「SHORT 的 score 从 -0.37 漂到 -0.36」不重复推，
-「SHORT 翻成 LONG」或「通过 翻成 拒绝」立刻推。`sorted(set(...))` 防御理由顺序抖动。
+「SHORT 翻成 LONG」或「通过 翻成 拒绝」立刻推。`sorted(set(...))` 防御理由顺序抖动，
+`_reason_code` 防御参数抖动。
 
 `LarkNotifier` 新增 `self._last_signatures: dict[tuple[str, str], str]`，
 key 为 `(user_id, symbol)`。
@@ -109,6 +120,11 @@ key 为 `(user_id, symbol)`。
 - 单笔类（`position_already_open`、`max_notional`、`reward_risk_too_low`…）默认不推。
 - 暂停态走 HOLD 路径，已被 hold 过滤拦下。
 - 新增配置 `lark_notify_rejected_signals: bool = False`（`app/config.py`）。
+
+**已知副作用（用户已确认接受）**：账户侧持续持有某品种时（如手动开的 ETH-USDT 仓），
+该品种每轮都是 `position_already_open`，会被本规则全部拦掉，**该品种完全静默** ——
+既无开仓建议也无「被持仓挡住」的提示。这是刻意的：notify 模式下系统本就无法动作，
+推了也没有可执行的事，用户会在网页端看到完整记录。改变主意时把开关打开即可恢复推送。
 
 ### 3. 时间
 
@@ -179,6 +195,8 @@ def reason_parts(text: str) -> str   # 按 ";" 拆开逐条翻译再拼回
 `backend/tests/unit/test_lark.py`（补充）：
 
 - `test_signal_signature_stable_across_price_changes` —— 价格/分数变了、动作没变 → 指纹相同
+- `test_signal_signature_ignores_reason_parameters` —— `account_unavailable:a` 与
+  `account_unavailable:b` 指纹相同
 - `test_duplicate_signal_is_not_sent_again` —— 连发两次相同决策，只发一条消息
 - `test_changed_risk_status_is_sent_again` —— 通过 → 拒绝 要再推
 - `test_failed_send_does_not_update_signature` —— 首次发送失败后，相同决策下次仍会尝试
