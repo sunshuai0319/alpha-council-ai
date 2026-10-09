@@ -207,21 +207,31 @@ def reason_parts(text: str) -> str   # 按 ";" 拆开逐条翻译再拼回
 现有 `test_notifier_gets_one_token_and_sends_to_each_configured_recipient`（LONG 后接
 SHORT）指纹不同，不受影响，保持通过。
 
-## 已知缺口
+## 译表缺口（已补齐）
 
-译表**只覆盖前端 `labels.ts` 已有的码**，而后端有 5 个码两边都没译，卡片会原样显示：
+第一版译表**只覆盖前端 `labels.ts` 已有的码**，事后审计发现后端有 9 个码两边都没译，
+会原样显示成英文：
 
 | 码 | 产生点 | 默认配置下会显示吗 |
 |---|---|---|
-| `exchange_position_missing` | `services/cycle.py:536` | 不会 —— `REJECTED` 且 `halt=False`，被单笔拒绝抑制拦下 |
-| `reentry_cooldown` | `services/cycle.py:546` | 不会 —— 同上 |
-| `entry_signal_evidence_missing` | `agents/graph.py:620` | 不会 —— 进 `state.errors`，经 `safe_hold` 变成 HOLD；`LARK_NOTIFY_HOLD=true` 时会显示 |
+| `exchange_position_missing` | `services/cycle.py:536` | 卡片不会（`REJECTED` 且 `halt=False`，被单笔拒绝抑制拦下），网页会 |
+| `reentry_cooldown` | `services/cycle.py:546` | 同上 |
+| `manual_reduce_only` | `services/cycle.py:1466` | 不走 `notify()`，只出现在网页 |
+| `entry_signal_evidence_missing` | `agents/graph.py:620` | 卡片：`LARK_NOTIFY_HOLD=true` 时会；网页：会 |
 | `entry_stop_loss_missing` | `agents/graph.py:616` | 同上 |
-| `proposal_symbol_mismatch` / `proposal_expired` / `entry_position_size_missing` | `agents/graph.py:604-628` | 同上 |
+| `crossed_book` / `inverted_24h_range` / `last_price_outside_24h_range` / `spread_bps=N>M` | `agents/graph.py:485-493` | 卡片不会（进 `veto_verdicts`），**智囊团页会照原样渲染** |
 
-前端也缺这几个（`labels.ts` 里的 `entry_evidence_missing` 是**后端改名前的旧键**，
-后端现在发的是 `entry_signal_evidence_missing`）。补全需要同时改前后端，否则两边措辞
-又会对不上 —— 留作独立改动。
+`crossed_book` 等三条是**事后才发现**的：第一版只比对了「风控理由」用的码，漏了
+`data_integrity_node` 往 evidence / `reasoning_summary` 里写的这组。教训是别手工挑码。
+
+**收口办法**：`backend/tests/unit/test_reasons.py::test_card_table_never_exceeds_the_web_table`
+解析 `frontend/lib/labels.ts`，断言卡片译表（`_REASON_TEXTS` + `_REASON_TEMPLATES`）是
+网页译表的子集，前端源码不在时 skip（后端镜像里没有 `frontend/`）。
+反向（后端发了码但没人译）无法用测试覆盖 —— 那要枚举所有产生点，太脆 —— 靠 code review。
+
+另外，`labels.ts` 里的 `entry_evidence_missing` 是**后端改名前的旧键**（后端现在发
+`entry_signal_evidence_missing`），前端必须留着：历史行还在库里。后端的译表只用于
+渲染当下这张卡片，从不见历史，所以那一侧已删掉这个死键。
 
 ## 不做的事
 

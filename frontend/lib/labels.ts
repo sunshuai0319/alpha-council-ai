@@ -41,9 +41,24 @@ const REASON_KEYS: Record<string, string> = {
   short_take_profit_must_be_below_entry: "reason.shortTakeProfitBelow",
   reward_risk_too_low: "reason.rewardRiskTooLow",
   entry_position_size_missing: "reason.entrySizeMissing",
+  //: 后端把 `entry_evidence_missing` 改名成 `entry_signal_evidence_missing`（强调
+  //: 它只是「没有召回到反向证据」，不是安全错误）。两个键都留着：历史行还在库里。
   entry_evidence_missing: "reason.entryEvidenceMissing",
+  entry_signal_evidence_missing: "reason.entrySignalEvidenceMissing",
+  entry_stop_loss_missing: "reason.entryStopLossMissing",
   proposal_expired: "reason.proposalExpired",
   proposal_symbol_mismatch: "reason.proposalSymbolMismatch",
+
+  // 持仓对账与再入场冷却（trade_risk 前置检查，见 services/cycle.py）
+  exchange_position_missing: "reason.exchangePositionMissing",
+  reentry_cooldown: "reason.reentryCooldown",
+  manual_reduce_only: "reason.manualReduceOnly",
+
+  // 数据完整性分支（agents/graph.py 的 data_integrity_node）—— 智囊团页照原样渲染
+  // evidence / reasoning_summary，不收的话会直接冒出英文码。
+  crossed_book: "reason.crossedBook",
+  inverted_24h_range: "reason.inverted24hRange",
+  last_price_outside_24h_range: "reason.lastPriceOutside24hRange",
 
   // 委员会 / 信号器
   committee_invalid_json_or_schema: "reason.committeeInvalid",
@@ -97,6 +112,9 @@ export type Label = { key: string; params?: Record<string, string> } | { text: s
 /** 规则信号器开仓时的摘要：「rule signal SHORT score=-0.55」。 */
 const RULE_SIGNAL = /^rule signal (LONG|SHORT) score=(-?[\d.]+)$/;
 
+/** 盘口点差超标：「spread_bps=62.5>50.0」。后端是 f-string，不是枚举码。 */
+const SPREAD_TOO_WIDE = /^spread_bps=([\d.]+)>([\d.]+)$/;
+
 /**
  * 2026-09-11 之前落库的行情采集失败：`ETH-USDT/12h: WEEX request failed: <英文原文>`。
  *
@@ -137,6 +155,10 @@ export function reasonLabel(code: string): Label {
   const legacyFailure = LEGACY_MARKET_DATA_FAILURE.exec(code);
   if (legacyFailure) {
     return { key: "reason.marketDataUnavailableScoped", params: { detail: legacyFailure[1] } };
+  }
+  const spread = SPREAD_TOO_WIDE.exec(code);
+  if (spread) {
+    return { key: "reason.spreadTooWide", params: { spread: spread[1], limit: spread[2] } };
   }
   return labelFor(code, REASON_KEYS);
 }

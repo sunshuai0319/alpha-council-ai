@@ -45,9 +45,21 @@ _REASON_TEXTS = {
     "short_take_profit_must_be_below_entry": "做空止盈必须低于入场价",
     "reward_risk_too_low": "盈亏比低于下限",
     "entry_position_size_missing": "缺少仓位大小",
-    "entry_evidence_missing": "缺少证据引用",
+    # 交易提案校验（`agents/graph.py` 的 validate 节点）—— 与 risk engine 的
+    # `stop_loss_required` 不同：那条是「风控不放行」，这条是「提案本身不完整」。
+    "entry_stop_loss_missing": "提案缺少止损",
+    "entry_signal_evidence_missing": "提案缺少入场证据引用",
+    # 本地账本与交易所对账 / 再入场冷却（`services/cycle.py`）
+    "exchange_position_missing": "本地有持仓、交易所无，暂不开新仓",
+    "reentry_cooldown": "刚平仓，冷却期内不开新仓",
+    "manual_reduce_only": "人工减仓",
     "proposal_expired": "提案已过期",
     "proposal_symbol_mismatch": "提案品种与周期不符",
+    # 数据完整性分支（`agents/graph.py` 的 data_integrity_node）：这些是**算出来的**
+    # 异常，写进 evidence 与 reasoning_summary，智囊团页照着渲染。
+    "crossed_book": "盘口倒挂（买价高于卖价）",
+    "inverted_24h_range": "24 小时最高价低于最低价",
+    "last_price_outside_24h_range": "最新价落在 24 小时区间之外",
     # 委员会 / 信号器
     "committee_invalid_json_or_schema": "模型输出无法解析，已退化为观望",
     "committee_llm_not_configured": "未配置模型，已退化为观望",
@@ -68,6 +80,10 @@ _REASON_TEMPLATES = {
 
 #: 规则信号器开仓时的摘要，与 `frontend/lib/labels.ts` 的 `RULE_SIGNAL` 同源。
 _RULE_SIGNAL = re.compile(r"^rule signal (LONG|SHORT) score=(-?[\d.]+)$")
+
+#: 盘口点差超标（`agents/graph.py` 的 `f"spread_bps={value:.1f}>{MAX_SPREAD_BPS}"`）。
+#: 是个 f-string 而不是枚举码，所以走正则而不是前缀表。
+_SPREAD_TOO_WIDE = re.compile(r"^spread_bps=([\d.]+)>([\d.]+)$")
 
 #: 卡片通篇无英文，方向用中文 —— 表头标签本来也是「做空」。
 _DIRECTIONS = {"LONG": "做多", "SHORT": "做空"}
@@ -97,6 +113,9 @@ def reason_text(code: str) -> str:
     entry = _RULE_SIGNAL.match(code)
     if entry is not None:
         return f"规则信号 {_DIRECTIONS[entry.group(1)]}，分数 {_format_score(entry.group(2))}"
+    spread = _SPREAD_TOO_WIDE.match(code)
+    if spread is not None:
+        return f"盘口点差 {spread.group(1)} bps，超过 {spread.group(2)} bps 上限"
     for prefix, template in _REASON_TEMPLATES.items():
         if code.startswith(prefix):
             detail = code[len(prefix) :]
