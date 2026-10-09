@@ -505,3 +505,41 @@ def test_card_translates_machine_codes() -> None:
     assert "规则信号 做空，分数 -0.35" in content
     assert "position_already_open" not in content
     assert "rule signal" not in content
+
+
+def test_paused_card_does_not_repeat_the_reason_as_the_strategy_note() -> None:
+    """暂停轮是 `_hold_proposal(state, "paused")`，它把 `reasoning_summary` 设成了同一个
+    halt_reason，于是「风控理由」与「策略说明」渲染出同一句话，读起来像卡片卡住了。
+
+    这个重复以前看不到 —— 暂停卡片根本推不出去（见 runbook 的维护提示）。
+    """
+
+    card = build_trade_signal_card(
+        _state(Action.HOLD, reasoning_summary="paused"),
+        RiskDecision(status=RiskStatus.PAUSED, reasons=["paused"]),
+    )
+    risk_element = next(
+        element for element in card["body"]["elements"] if element.get("element_id") == "risk"
+    )
+    content = risk_element["text"]["content"]
+
+    assert content.count("账户已暂停") == 1
+    assert "策略说明" not in content
+
+
+def test_card_still_shows_the_strategy_note_when_it_differs() -> None:
+    """去重只针对「同一句话」。正常的策略说明必须留着 —— 它是 LLM 给的理由，
+    与风控理由（机器码）不是一回事。"""
+
+    card = build_trade_signal_card(
+        _state(reasoning_summary="trend and momentum agree"),
+        RiskDecision(status=RiskStatus.REJECTED, reasons=["position_already_open"]),
+    )
+    risk_element = next(
+        element for element in card["body"]["elements"] if element.get("element_id") == "risk"
+    )
+    content = risk_element["text"]["content"]
+
+    assert "该品种已有持仓，不再加仓" in content
+    assert "策略说明" in content
+    assert "trend and momentum agree" in content

@@ -180,6 +180,11 @@ def build_trade_signal_card(
     reasoning = _normalize_line_breaks(reason_parts(proposal.reasoning_summary) if proposal else "未生成交易提案")
     if len(reasoning) > 240:
         reasoning = f"{reasoning[:237]}..."
+    # 暂停轮走 `_hold_proposal(state, "paused")`，它把 reasoning_summary 设成了同一个
+    # halt_reason，两栏会渲染出同一句话，读起来像卡片卡住了。同句就不重复渲染第二栏。
+    risk_text = f"**风控理由**\n{reasons}"
+    if reasoning and reasoning != reasons:
+        risk_text = f"{risk_text}\n\n**策略说明**\n{reasoning}"
     execution_text = _execution_status_label(execution)
 
     # Card 2.0 follows lark-im's card workflow: one primary focus, grouped
@@ -259,10 +264,7 @@ def build_trade_signal_card(
                     "element_id": "risk",
                     "text": {
                         "tag": "lark_md",
-                        "content": (
-                            f"**风控理由**\n{reasons}\n\n"
-                            f"**策略说明**\n{reasoning}"
-                        ),
+                        "content": risk_text,
                         "text_size": "body",
                         "lines": 6,
                     },
