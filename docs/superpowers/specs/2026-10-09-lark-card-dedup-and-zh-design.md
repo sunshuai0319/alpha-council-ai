@@ -118,12 +118,12 @@ key 为 `(user_id, symbol)`。
 
 - 熔断类（`risk.halt == True`）**永远推** —— 它代表「系统停手了」，漏掉最危险。
 - 单笔类（`position_already_open`、`max_notional`、`reward_risk_too_low`…）默认不推。
-- ~~暂停态走 HOLD 路径，已被 hold 过滤拦下。~~ **这条是错的，已修**：暂停态走 HOLD
-  路径，而 HOLD 过滤只看提案动作，于是熔断之后每一轮都被静默吞掉；熔断当轮如果信号
-  本来就是观望（`halt=True` + HOLD 提案）也一样。结果是一旦熔断，用户再也收不到任何
-  推送。现在 HOLD 过滤放行 `risk.halt` **与** `risk.status is PAUSED` —— 后者不能靠
-  `risk.halt` 覆盖，因为 `evaluate_risk` 在 `paused` 分支早退，那条路径上 `halt` 是
-  `False`。放行不刷屏：指纹 `HOLD:PAUSED:paused` 逐轮相同，每个品种只推第一条。
+- ~~暂停态走 HOLD 路径，已被 hold 过滤拦下。~~ **这条是错的，已修**：暂停态确实走
+  HOLD 路径，但真正的问题在更前面 —— 暂停轮**根本不调用 `notify()`**（通知块嵌在
+  非暂停分支里），过滤条件再宽松也拦不到没进来的调用。修法见下面「第三轮」：
+  通知块提到 `if/else` 之外，同时让 HOLD 过滤放行 `risk.status is PAUSED`
+  （暂停分支造的正是 `action=HOLD` + `status=PAUSED`，不放行就会被吞掉）。
+  放行不刷屏：指纹 `HOLD:PAUSED:paused` 逐轮相同，每个品种只推第一条。
 - 新增配置 `lark_notify_rejected_signals: bool = False`（`app/config.py`）。
 
 **已知副作用（用户已确认接受）**：账户侧持续持有某品种时（如手动开的 ETH-USDT 仓），
@@ -271,8 +271,32 @@ SHORT）指纹不同，不受影响，保持通过。
 
 ### 第三轮：熔断静默（不是翻译问题）
 
-审计时顺带发现的独立缺陷：暂停态被 HOLD 过滤吞掉，详见「2. 拒绝卡片的抑制规则」。
-它不属于译表缺口 —— 卡片文案是对的，是**根本没推出去**。
+审计时顺带发现的独立缺陷：**账户进入 PAUSED 之后，通知彻底停止**。它不属于译表缺口 ——
+卡片文案是对的，是**根本没推出去**。
+
+第一版修在了错误的地方，值得记下来。当时的推理是：「暂停轮造 HOLD 提案，被 HOLD 过滤
+吞掉」，于是给 HOLD 过滤加了 `risk.status is PAUSED` 放行。代码评审发现这是 **no-op**：
+
+`LarkNotifier.notify` 在整条生产链路上**只有一个调用点**（`cycle.py` 的
+`_best_effort("lark_notification", …)`），而它嵌在 `if halt_reason is not None: … else:`
+的 **else 分支内部**。暂停轮走的是 `if` 分支，造完 `RiskDecision(status=PAUSED)` 就把
+`execution` 置 `None` 收工，**从不调用 `notify()`**。过滤条件再宽松也拦不到没进来的调用。
+
+于是真正的修法是两处：
+
+1. **调用方**（根因）：把通知块移出 `else`，提到 `if/else` 之外 —— 与紧邻其后的对账
+   同理，「暂停」不该成为不通知的理由。`trading_enabled=false` 走同一分支，此前
+   更是一条都发不出来。
+2. **过滤条件**：暂停分支造的正是 `action=HOLD` + `status=PAUSED`，不提这个条件就会被
+   HOLD 过滤吞掉，所以两处都要改。
+
+`risk.halt` 那一支保留为防御（HOLD 提案在 `_evaluate_proposal` 里提前返回
+`hold_no_order`，`halt=True` + HOLD 当前不可达）：HOLD 过滤不该有权决定熔断要不要播报。
+
+**测试教训**：第一版的两个测试直接调 `notify()`，于是修复前后都是绿的 —— 缺口在调用方，
+绕过调用方的测试天然测不到。能捕获回归的是穿 `TradingCycleService.run()` 的集成测试
+（`tests/api/test_cycle_service.py::test_paused_account_still_notifies_that_trading_is_stopped`，
+已确认在只回退 `cycle.py` 时 `assert 0 == 1` 失败）。
 
 ## 不做的事
 

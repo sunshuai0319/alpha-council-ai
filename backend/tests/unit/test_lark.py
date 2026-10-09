@@ -325,39 +325,32 @@ def test_halting_rejection_after_allowed_signal_is_sent() -> None:
     assert len(_sent_messages(requests)) == 2
 
 
-def test_halting_round_is_sent_even_when_the_proposal_is_hold() -> None:
-    """信号本来就观望、同期又踩到日亏损上限：这轮 `halt=True` 但提案是 HOLD。
+def test_hold_filter_lets_account_level_stops_through() -> None:
+    """HOLD 过滤的契约：账户级停手不受「HOLD 不推送」约束。
 
-    熔断提示不能因为「这轮本来也没打算下单」而消失 —— 该提示的含义是「系统停手了」，
-    与这一轮想不想开仓无关。
+    生产端让这条真正生效的是 `TradingCycleService.run` 的暂停分支 —— 它造的正是
+    `action=HOLD` + `status=PAUSED`。缺口在**调用方**（那个分支原来根本不调 `notify()`），
+    所以由 `tests/api/test_cycle_service.py::test_paused_account_still_notifies_that_
+    trading_is_stopped` 穿整条链路钉住；这里只钉 `notify()` 这一层，防止过滤条件
+    再被单独改坏。
+
+    `halt=True` + HOLD 提案这一支在生产链路上到不了这里（`_evaluate_proposal` 对 HOLD
+    提前返回 `hold_no_order`），保留它是防御性的：HOLD 过滤不该有权决定熔断要不要播报。
     """
 
     notifier, requests = _recording_notifier()
-    risk = RiskDecision(status=RiskStatus.REJECTED, reasons=["daily_loss_limit"], halt=True)
 
-    assert notifier.notify(_state(Action.HOLD), risk) is True
+    # 暂停轮：每个品种只推第一条，后续同指纹不再刷屏。
+    paused = RiskDecision(status=RiskStatus.PAUSED, reasons=["paused"])
+    assert notifier.notify(_state(Action.HOLD), paused) is True
+    assert notifier.notify(_state(Action.HOLD), paused) is False
 
-    assert len(_sent_messages(requests)) == 1
-
-
-def test_paused_account_is_announced_once() -> None:
-    """熔断之后每轮都是 HOLD 提案，但「系统已经停手」这件事必须让用户知道一次。
-
-    `cycle.py` 的暂停分支强制造一个 HOLD 提案（`_hold_proposal(state, "paused")`），
-    风控返回 `status=PAUSED` 且 `halt=False`（`evaluate_risk` 走 `paused` 早退分支）。
-    这个 HOLD 会被默认的 HOLD 过滤整个吞掉：触发熔断那轮若信号本来就是观望，
-    用户一条提示都收不到，而且之后再也不会收到 —— 一直静默到有人发现权益在跌。
-    """
-
-    notifier, requests = _recording_notifier()
-    risk = RiskDecision(status=RiskStatus.PAUSED, reasons=["paused"])
-
-    assert notifier.notify(_state(Action.HOLD), risk) is True
-    # 指纹没变，后续暂停轮不再刷屏。
-    assert notifier.notify(_state(Action.HOLD), risk) is False
+    # 熔断当轮恰好是观望 —— 当前不可达，防御性保留。
+    halting = RiskDecision(status=RiskStatus.REJECTED, reasons=["daily_loss_limit"], halt=True)
+    assert notifier.notify(_state(Action.HOLD), halting) is True
 
     sent = _sent_messages(requests)
-    assert len(sent) == 1
+    assert len(sent) == 2
     # 推的那条得说清楚「暂停」，不能只是一张普通观望卡。
     card = json.loads(json.loads(sent[0].content)["content"])
     risk_element = next(

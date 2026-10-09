@@ -1678,3 +1678,46 @@ def test_notify_mode_never_places_an_order_and_notifies_with_reference_price() -
     assert result.execution_result.status == "NOT_EXECUTED"
     assert notifier.calls[0][0].market_snapshot.last_price == 100
     assert not hasattr(exchange, "requests")
+
+
+def test_paused_account_still_notifies_that_trading_is_stopped() -> None:
+    """暂停轮同样要推卡片 —— 「系统停手了」而用户没收到卡片是最坏的一种静默。
+
+    通知块原先嵌在 `else:`（非暂停）分支里，而 `notify()` 全仓库只有那一个调用点，
+    于是账户一旦 PAUSED，后续每一轮都不发通知：用户只看得到首轮那条熔断卡，之后
+    再无音讯。`trading_enabled=false` 走同一分支，更是一条都发不出来。
+
+    这个测试必须穿 `run()` 而不是直接调 `notify()` —— 缺口在调用方，
+    直接调 `notify()` 的单元测试在修复前也是绿的。
+    """
+
+    class NeverInvokedGraph:
+        def invoke(self, state):  # pragma: no cover - 暂停分支不应进入决策图
+            raise AssertionError("暂停轮不应进入决策图")
+
+    class CapturingNotifier:
+        def __init__(self):
+            self.calls = []
+
+        def notify(self, state, risk, execution):
+            self.calls.append((state, risk, execution))
+            return True
+
+    notifier = CapturingNotifier()
+    service = TradingCycleService(
+        settings=Settings(trading_execution_mode="notify"),
+        exchange_factory=lambda: FakeExchange(),
+        graph_factory=NeverInvokedGraph,
+        lark_notifier=notifier,
+    )
+    service.pause("u-1")
+
+    result = service.run(user_id="u-1")
+
+    assert result.risk_decision.status is RiskStatus.PAUSED
+    assert len(notifier.calls) == 1
+    state, risk, execution = notifier.calls[0]
+    assert state.trade_proposal is not None
+    assert state.trade_proposal.action is Action.HOLD
+    assert risk.status is RiskStatus.PAUSED
+    assert execution is None

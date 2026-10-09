@@ -117,6 +117,8 @@ Lark 国际版 API 使用 `https://open.larksuite.com`。卡片中的交易动�
 
 暂停期的每一轮都会落到这条规则上，但指纹是 `HOLD:PAUSED:paused`、逐轮相同，所以每个品种只推第一条（`trading_enabled=false` 时是 `HOLD:PAUSED:trading_disabled`）。实际会有**两波**：熔断触发轮推 `REJECTED:daily_loss_limit`（`halt=True`），下一轮起推 `HOLD:PAUSED:paused`，两波都是每品种一条，之后安静。两波文案不同（「当日亏损触发熔断」→「账户已暂停」），不是重复推送。
 
+⚠️ 维护提示：上面这段成立的前提是 `cycle.py` 里那个通知块位于 `if halt_reason is not None: … else:` **之外**。它原来嵌在 `else` 分支里，而 `notify()` 全仓库只有那一个调用点 —— 暂停轮于是连通知都不发，账户一旦 PAUSED 就彻底静默。把通知挪回非暂停分支会立刻恢复这个故障，`tests/api/test_cycle_service.py::test_paused_account_still_notifies_that_trading_is_stopped` 会红。
+
 这两类都绕过了「HOLD 不推送」的默认，是刻意的：否则一旦熔断那轮信号本来就是观望，用户就再也收不到任何提示。
 
 应用需要启用机器人能力，并申请以下最小权限：
