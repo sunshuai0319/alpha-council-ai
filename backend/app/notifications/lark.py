@@ -51,7 +51,10 @@ def _format_number(value: Any, places: int | None = None) -> str:
         number = Decimal(str(value))
     except Exception:  # noqa: BLE001 - card rendering must not break a decision
         return str(value)
-    if places is not None:
+    # `quantize` 对 Infinity/NaN 抛 InvalidOperation。放它们走到 format 只会渲染成
+    # "Infinity"（改动前就是这个行为），但异常会一路冒到 cycle 的 _best_effort →
+    # record_failure 计进熔断计数器 —— 一个通知格式问题不该把账户停掉。
+    if places is not None and number.is_finite():
         number = number.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
     rendered = format(number, "f")
     if "." in rendered:

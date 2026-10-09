@@ -74,7 +74,10 @@ _DIRECTIONS = {"LONG": "做多", "SHORT": "做空"}
 
 
 def _format_score(value: str) -> str:
-    """分数统一两位小数并去掉尾随零：0.26000000000001 → 0.26。"""
+    """分数统一两位小数并去掉尾随零：0.26000000000001 → 0.26。
+
+    小数点保证去尾零不会吃进整数部分，nan/inf 也照常渲染成 `nan`/`inf`。
+    """
 
     try:
         rendered = f"{float(value):.2f}"

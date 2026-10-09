@@ -327,6 +327,24 @@ def test_position_size_and_prices_are_rounded() -> None:
     assert any("参考止盈价" in content and "2336.49" in content for content in contents)
 
 
+def test_non_finite_numbers_do_not_break_rendering() -> None:
+    """畸形价格不能炸掉卡片渲染。
+
+    `quantize` 对 Infinity/NaN 抛 InvalidOperation，而渲染异常会经 cycle 的
+    `_best_effort` → `record_failure` 计进熔断计数器 —— 一个通知格式问题不该把账户停掉。
+    """
+
+    card = build_trade_signal_card(
+        _state(last_price=float("inf"), stop_loss=float("nan"), take_profit=106),
+        RiskDecision(status=RiskStatus.ALLOWED),
+    )
+    details = next(element for element in card["body"]["elements"] if element.get("element_id") == "details")
+    contents = [field["text"]["content"] for field in details["fields"]]
+
+    assert any("参考下单价格" in content and "Infinity" in content for content in contents)
+    assert any("参考止损价" in content and "NaN" in content for content in contents)
+
+
 def test_integer_prices_keep_no_trailing_zeros() -> None:
     card = build_trade_signal_card(
         _state(stop_loss=97, take_profit=106), RiskDecision(status=RiskStatus.ALLOWED)
