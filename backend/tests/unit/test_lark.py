@@ -325,6 +325,47 @@ def test_halting_rejection_after_allowed_signal_is_sent() -> None:
     assert len(_sent_messages(requests)) == 2
 
 
+def test_halting_round_is_sent_even_when_the_proposal_is_hold() -> None:
+    """信号本来就观望、同期又踩到日亏损上限：这轮 `halt=True` 但提案是 HOLD。
+
+    熔断提示不能因为「这轮本来也没打算下单」而消失 —— 该提示的含义是「系统停手了」，
+    与这一轮想不想开仓无关。
+    """
+
+    notifier, requests = _recording_notifier()
+    risk = RiskDecision(status=RiskStatus.REJECTED, reasons=["daily_loss_limit"], halt=True)
+
+    assert notifier.notify(_state(Action.HOLD), risk) is True
+
+    assert len(_sent_messages(requests)) == 1
+
+
+def test_paused_account_is_announced_once() -> None:
+    """熔断之后每轮都是 HOLD 提案，但「系统已经停手」这件事必须让用户知道一次。
+
+    `cycle.py` 的暂停分支强制造一个 HOLD 提案（`_hold_proposal(state, "paused")`），
+    风控返回 `status=PAUSED` 且 `halt=False`（`evaluate_risk` 走 `paused` 早退分支）。
+    这个 HOLD 会被默认的 HOLD 过滤整个吞掉：触发熔断那轮若信号本来就是观望，
+    用户一条提示都收不到，而且之后再也不会收到 —— 一直静默到有人发现权益在跌。
+    """
+
+    notifier, requests = _recording_notifier()
+    risk = RiskDecision(status=RiskStatus.PAUSED, reasons=["paused"])
+
+    assert notifier.notify(_state(Action.HOLD), risk) is True
+    # 指纹没变，后续暂停轮不再刷屏。
+    assert notifier.notify(_state(Action.HOLD), risk) is False
+
+    sent = _sent_messages(requests)
+    assert len(sent) == 1
+    # 推的那条得说清楚「暂停」，不能只是一张普通观望卡。
+    card = json.loads(json.loads(sent[0].content)["content"])
+    risk_element = next(
+        element for element in card["body"]["elements"] if element.get("element_id") == "risk"
+    )
+    assert "账户已暂停" in risk_element["text"]["content"]
+
+
 def test_allowed_signal_then_single_trade_rejection_stays_silent() -> None:
     """截图里的场景：01:24 通过推了一条，01:30 变成 position_already_open。
 

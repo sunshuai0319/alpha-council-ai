@@ -342,10 +342,16 @@ class LarkNotifier:
         execution: ExecutionResult | None = None,
     ) -> bool:
         action = state.trade_proposal.action.value if state.trade_proposal else "NONE"
+        # 熔断/暂停代表「系统已经停手」，比任何单笔信号都重要，不能被 HOLD 过滤吞掉。
+        # 两种都要认：触发熔断那轮提案可能恰好是观望（`halt=True`），熔断之后每轮
+        # 都是 `status=PAUSED` 的 HOLD 提案 —— 后者拦不住，因为 `evaluate_risk`
+        # 在 `paused` 分支早退，`halt` 是 False。漏掉它的后果是暂停后再无任何推送。
+        account_stopped = risk.halt or risk.status is RiskStatus.PAUSED
         if (
             state.trade_proposal is not None
             and state.trade_proposal.action is Action.HOLD
             and not self.settings.lark_notify_hold
+            and not account_stopped
         ):
             logger.info(
                 "lark notification: user=%s symbol=%s action=HOLD result=skipped reason=hold_notifications_disabled",
