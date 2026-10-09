@@ -184,29 +184,44 @@ def reason_parts(text: str) -> str   # 按 ";" 拆开逐条翻译再拼回
 
 先写测试（失败），再实现。
 
-`backend/tests/unit/test_reasons.py`（新增）：
+`backend/tests/unit/test_reasons.py`（新增，实际 8 条）：精确表命中、前缀表带参数、
+`signal_hold_score` 四舍五入、规则信号正则、未知码原样返回、`;` 拆分、中文散文穿透、
+空输入。
 
-- 精确表命中：`position_already_open` → 中文
-- 前缀表命中且参数正确：`signal_hold_score_0.26000000000001` → 「信号分 0.26，…」
-- 规则信号正则：`rule signal SHORT score=-0.5477` → 「规则信号 做空，分数 -0.55」
-- 未知码原样返回
-- `reason_parts` 按 `;` 拆分并逐条翻译
+`backend/tests/unit/test_lark.py`（补充，实际名称以文件为准）：
 
-`backend/tests/unit/test_lark.py`（补充）：
+| 计划中的名字 | 实际实现 |
+|---|---|
+| `test_signal_signature_stable_across_price_changes` | `test_signal_signature_ignores_price_and_level_changes` |
+| `test_signal_signature_ignores_reason_parameters` | 同名 |
+| `test_duplicate_signal_is_not_sent_again` | `test_duplicate_signal_is_sent_once` |
+| `test_changed_risk_status_is_sent_again` | 拆成 `test_halting_rejection_after_allowed_signal_is_sent`（通过 → 熔断）与 `test_allowed_signal_then_single_trade_rejection_stays_silent`（通过 → 单笔，即截图场景） |
+| `test_failed_send_does_not_update_signature` | 同名 |
+| `test_rejected_single_trade_reason_is_suppressed` | `test_single_trade_rejection_is_suppressed` |
+| `test_rejected_halting_reason_is_sent` | `test_halting_rejection_is_sent` |
+| `test_rejected_signal_sent_when_switch_enabled` | `test_single_trade_rejection_is_sent_when_switch_enabled` |
+| `test_format_time_includes_beijing_time` | `test_subtitle_shows_utc_and_beijing_time` + `test_subtitle_beijing_time_carries_the_next_day` |
+| `test_position_size_pct_is_rounded` / `test_prices_are_rounded_to_two_places` | 合并为 `test_position_size_and_prices_are_rounded` |
+| —（计划外） | `test_integer_prices_keep_no_trailing_zeros`、`test_non_finite_numbers_do_not_break_rendering`、`test_card_translates_machine_codes` |
 
-- `test_signal_signature_stable_across_price_changes` —— 价格/分数变了、动作没变 → 指纹相同
-- `test_signal_signature_ignores_reason_parameters` —— `account_unavailable:a` 与
-  `account_unavailable:b` 指纹相同
-- `test_duplicate_signal_is_not_sent_again` —— 连发两次相同决策，只发一条消息
-- `test_changed_risk_status_is_sent_again` —— 通过 → 拒绝 要再推
-- `test_failed_send_does_not_update_signature` —— 首次发送失败后，相同决策下次仍会尝试
-- `test_rejected_single_trade_reason_is_suppressed` —— `position_already_open` 默认不推
-- `test_rejected_halting_reason_is_sent` —— `halt=True` 的拒绝仍然推
-- `test_rejected_signal_sent_when_switch_enabled` —— 开关打开后单笔拒绝照推
-- `test_format_time_includes_beijing_time` —— 含 UTC 与北京时间，覆盖跨日用例
-- `test_position_size_pct_is_rounded` / `test_prices_are_rounded_to_two_places`
-- 现有 `test_notifier_gets_one_token_and_sends_to_each_configured_recipient`（LONG 后接
-  SHORT）指纹不同，不受影响，应保持通过
+现有 `test_notifier_gets_one_token_and_sends_to_each_configured_recipient`（LONG 后接
+SHORT）指纹不同，不受影响，保持通过。
+
+## 已知缺口
+
+译表**只覆盖前端 `labels.ts` 已有的码**，而后端有 5 个码两边都没译，卡片会原样显示：
+
+| 码 | 产生点 | 默认配置下会显示吗 |
+|---|---|---|
+| `exchange_position_missing` | `services/cycle.py:536` | 不会 —— `REJECTED` 且 `halt=False`，被单笔拒绝抑制拦下 |
+| `reentry_cooldown` | `services/cycle.py:546` | 不会 —— 同上 |
+| `entry_signal_evidence_missing` | `agents/graph.py:620` | 不会 —— 进 `state.errors`，经 `safe_hold` 变成 HOLD；`LARK_NOTIFY_HOLD=true` 时会显示 |
+| `entry_stop_loss_missing` | `agents/graph.py:616` | 同上 |
+| `proposal_symbol_mismatch` / `proposal_expired` / `entry_position_size_missing` | `agents/graph.py:604-628` | 同上 |
+
+前端也缺这几个（`labels.ts` 里的 `entry_evidence_missing` 是**后端改名前的旧键**，
+后端现在发的是 `entry_signal_evidence_missing`）。补全需要同时改前后端，否则两边措辞
+又会对不上 —— 留作独立改动。
 
 ## 不做的事
 

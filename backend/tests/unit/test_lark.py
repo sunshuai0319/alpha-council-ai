@@ -281,6 +281,24 @@ def test_halting_rejection_after_allowed_signal_is_sent() -> None:
     assert len(_sent_messages(requests)) == 2
 
 
+def test_allowed_signal_then_single_trade_rejection_stays_silent() -> None:
+    """截图里的场景：01:24 通过推了一条，01:30 变成 position_already_open。
+
+    状态确实变了（指纹也变了），但单笔层面的拒绝被抑制，所以仍然只推一条。
+    """
+
+    notifier, requests = _recording_notifier()
+
+    assert notifier.notify(
+        _state(Action.SHORT), RiskDecision(status=RiskStatus.ALLOWED, reasons=[])
+    ) is True
+    assert notifier.notify(
+        _state(Action.SHORT), RiskDecision(status=RiskStatus.REJECTED, reasons=["position_already_open"])
+    ) is False
+
+    assert len(_sent_messages(requests)) == 1
+
+
 def test_single_trade_rejection_is_sent_when_switch_enabled() -> None:
     notifier, requests = _recording_notifier(LARK_NOTIFY_REJECTED_SIGNALS=True)
     risk = RiskDecision(status=RiskStatus.REJECTED, reasons=["position_already_open"])
