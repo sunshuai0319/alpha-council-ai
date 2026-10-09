@@ -154,6 +154,50 @@ def test_notifier_gets_one_token_and_sends_to_each_configured_recipient() -> Non
     assert message_requests[0].url.params["receive_id_type"] == "chat_id"
 
 
+def test_constructing_a_notifier_does_not_open_a_connection_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`get_cycle_service` 没有缓存，API 的每个请求都会构造一次 TradingCycleService。
+
+    以前 `LarkNotifier.__init__` 直接建 `httpx.Client(...)`，而 `close()` 全仓库没有
+    调用点 —— 每个请求都留下一个没人关闭的连接池。连接要等到真发通知时才建。
+    """
+
+    built: list[httpx.Client] = []
+    real_client = httpx.Client
+
+    def counting_client(*args: object, **kwargs: object) -> httpx.Client:
+        client = real_client(*args, **kwargs)
+        built.append(client)
+        return client
+
+    monkeypatch.setattr(httpx, "Client", counting_client)
+    notifier = LarkNotifier(_settings())
+
+    assert built == []
+    assert notifier.client is notifier.client
+    assert len(built) == 1
+    notifier.close()
+
+
+def test_suppressed_notification_does_not_open_a_connection_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HOLD 被跳过时连一次 TCP 都不该开。"""
+
+    built: list[httpx.Client] = []
+    real_client = httpx.Client
+
+    def counting_client(*args: object, **kwargs: object) -> httpx.Client:
+        client = real_client(*args, **kwargs)
+        built.append(client)
+        return client
+
+    monkeypatch.setattr(httpx, "Client", counting_client)
+    notifier = LarkNotifier(_settings(LARK_RECEIVE_ID="oc_one"))
+
+    assert notifier.notify(
+        _state(Action.HOLD), RiskDecision(status=RiskStatus.ALLOWED, reasons=["hold"])
+    ) is False
+    assert built == []
+
+
 def test_hold_is_not_sent_by_default() -> None:
     calls = 0
 

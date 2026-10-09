@@ -295,13 +295,30 @@ class LarkNotifier:
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.settings = settings
-        self.client = client or httpx.Client(timeout=settings.lark_timeout_seconds)
-        self._owns_client = client is None
+        self._injected_client = client
+        self._client: httpx.Client | None = None
         self._clock = clock
         self._token: _Token | None = None
         #: 每个 (用户, 品种) 最后一次**推送成功**的决策指纹，用来消掉重复刷屏。
         #: 进程内存即可：worker 常驻，重启后最多多发一条，不值得为它加一张表。
         self._last_signatures: dict[tuple[str, str], str] = {}
+
+    @property
+    def client(self) -> httpx.Client:
+        """惰性建连：没真发通知就不该占一个连接池。
+
+        `get_cycle_service`（`app/api/dependencies.py`）没有缓存，API 的每个请求都会
+        新建一个 `TradingCycleService`，而 API 进程从不发通知。以前在 `__init__` 里
+        直接建 `httpx.Client`，于是每个请求都留下一个没人关闭的连接池。
+        """
+
+        if self._client is None:
+            self._client = (
+                self._injected_client
+                if self._injected_client is not None
+                else httpx.Client(timeout=self.settings.lark_timeout_seconds)
+            )
+        return self._client
 
     @property
     def configured(self) -> bool:
@@ -312,8 +329,9 @@ class LarkNotifier:
         )
 
     def close(self) -> None:
-        if self._owns_client:
-            self.client.close()
+        # 调用方注入的 client 归调用方所有，不能替它关。
+        if self._client is not None and self._injected_client is None:
+            self._client.close()
 
     def notify(
         self,
