@@ -118,7 +118,12 @@ key 为 `(user_id, symbol)`。
 
 - 熔断类（`risk.halt == True`）**永远推** —— 它代表「系统停手了」，漏掉最危险。
 - 单笔类（`position_already_open`、`max_notional`、`reward_risk_too_low`…）默认不推。
-- 暂停态走 HOLD 路径，已被 hold 过滤拦下。
+- ~~暂停态走 HOLD 路径，已被 hold 过滤拦下。~~ **这条是错的，已修**：暂停态走 HOLD
+  路径，而 HOLD 过滤只看提案动作，于是熔断之后每一轮都被静默吞掉；熔断当轮如果信号
+  本来就是观望（`halt=True` + HOLD 提案）也一样。结果是一旦熔断，用户再也收不到任何
+  推送。现在 HOLD 过滤放行 `risk.halt` **与** `risk.status is PAUSED` —— 后者不能靠
+  `risk.halt` 覆盖，因为 `evaluate_risk` 在 `paused` 分支早退，那条路径上 `halt` 是
+  `False`。放行不刷屏：指纹 `HOLD:PAUSED:paused` 逐轮相同，每个品种只推第一条。
 - 新增配置 `lark_notify_rejected_signals: bool = False`（`app/config.py`）。
 
 **已知副作用（用户已确认接受）**：账户侧持续持有某品种时（如手动开的 ETH-USDT 仓），
@@ -168,17 +173,33 @@ def reason_parts(text: str) -> str   # 按 ";" 拆开逐条翻译再拼回
    - `signal_hold_score_0.26` → 信号分 0.26，未达开仓阈值
    - `market_data_unavailable:ETH-USDT/12h` → 行情获取失败：ETH-USDT/12h
    - `account_unavailable:` / `retrieval_failed:` / `vetoed:` 同理
+   - `veto_fail_closed:` → 否决链异常，已安全观望：{detail}。来自 `agents/graph.py` 的
+     `_hold_proposal(current, f"veto_fail_closed:{reasons}")`，语义是「否决链本身坏了」，
+     与 `vetoed:`（「被否决」）不是一回事，所以单列。
 3. **正则**（照抄 `labels.ts` 的 `RULE_SIGNAL`）
    - `rule signal SHORT score=-0.35` → **规则信号 做空，分数 -0.35**
-   - 与前端唯一的措辞差异：前端保留英文 `SHORT`，卡片用「做空」—— 卡片通篇无英文，
-     且表头标签已经是「做空」，统一更顺。这是有意为之。
+   - ~~与前端唯一的措辞差异：前端保留英文 `SHORT`~~ **已统一**：前端也改成「做多 / 做空」
+     （`reason.ruleSignalEntryLong` / `…Short`）。中文界面留一个英文 `SHORT` 属于漏译，
+     没理由保留。
 
 **认不出的码原样显示**，照搬前端那条原则：显示陌生码远好过显示空白，而且它本身就是
-排查线索。因此 `inverted_24h_range` 这类未收录码保持原样，不臆造译文。
+排查线索。
+
+但「认不出」不能靠**手工挑码**判断 —— 上表第一版就是这么漏掉 9 个码的，`veto_fail_closed:`
+更是因为只枚举了 `reasons=[...]` 形式、没覆盖 f-string 形式而漏掉。所以改成机器对齐：
+`backend/tests/unit/test_reasons.py` 的 `test_card_table_never_exceeds_the_web_table`
+从 `frontend/lib/labels.ts` 正则抽出 `REASON_KEYS` / `PREFIX_KEYS`，断言卡片译表不超出它。
 
 接入点：`风控理由` 用 `reason_parts("、".join(risk.reasons))`，`策略说明` 用
-`reason_text(proposal.reasoning_summary)`。LLM 生成的文本已由 `_language_instruction`
+`reason_parts(proposal.reasoning_summary)` —— **也必须是 `reason_parts` 而不是
+`reason_text`**：`safe_hold` 写进摘要的永远是 `";".join(errors[-3:])`，整串丢给
+`reason_text` 一个码都匹配不上，原样冒英文。LLM 生成的文本已由 `_language_instruction`
 要求写简体中文，不需要处理。
+
+`reason_parts` / `reasonParts` 都先 `trim()` 再过滤空段：后端两处拼接写法不同
+（`cycle.py` 的 `_persist` 用 `";"`，`graph.py` 用 `"; "`），后者拆出来是 `" "`，
+它是 truthy，`filter(Boolean)` 拦不住，既会多渲染一个分隔符，`" hold_no_order"` 也
+匹配不上精确表。
 
 ## 测试计划
 
@@ -233,9 +254,32 @@ SHORT）指纹不同，不受影响，保持通过。
 `entry_signal_evidence_missing`），前端必须留着：历史行还在库里。后端的译表只用于
 渲染当下这张卡片，从不见历史，所以那一侧已删掉这个死键。
 
+### 第二轮：不是「缺码」，而是「匹配方式不对」
+
+第一轮补的是**枚举码**，补完仍然漏英文，因为漏的不是码，是匹配方式：
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| `策略说明` 整段冒英文 | `safe_hold` 写的是 `";".join(errors[-3:])`，整串丢给精确表一条都命中不了 | `build_trade_signal_card` / `ReasonText` / `reasonLabelText` 全部改用 `reason_parts` / `reasonParts` 拆开逐条翻译 |
+| `veto_fail_closed:news_macro` 原样显示 | 前缀表没登记；第一轮的穷举只匹配 `reasons=[...]`，漏了 `f"veto_fail_closed:{reasons}"` 这种 f-string 构造 | 前缀表加 `veto_fail_closed:`，两边各一条文案 |
+| 网页上 `规则信号 SHORT` | 前端 `RULE_SIGNAL` 把方向当参数原样插值，没收进译表 | 拆成 `ruleSignalEntryLong` / `…Short` 两条，与卡片统一 |
+| `hold_no_order; ` 多一个分隔符 | `"; "` 拆出来是 `" "`，truthy，`filter(Boolean)` 拦不住 | 拆完先 `trim()` 再过滤 |
+
+教训与前一轮同源：**漏译这件事不能靠人眼穷举匹配点**。第一轮漏了 3 条，第二轮又漏了
+`veto_fail_closed:` —— 每次都是「我以为枚举全了」。所以对齐测试是唯一的止血办法，
+新增译表必须同步进 `labels.ts`，否则 `test_card_table_never_exceeds_the_web_table` 红。
+
+### 第三轮：熔断静默（不是翻译问题）
+
+审计时顺带发现的独立缺陷：暂停态被 HOLD 过滤吞掉，详见「2. 拒绝卡片的抑制规则」。
+它不属于译表缺口 —— 卡片文案是对的，是**根本没推出去**。
+
 ## 不做的事
 
 - 不改后端落库的机器码（审计标识）
-- 不改前端（前端翻译层已完备）
 - 不做「原地更新同一张卡片」（需存 message_id，且丢失历史变化）
 - 不加静默期定时重推（去重后已足够安静，YAGNI）
+- `_reason_code` 不做冒号截断（当前不可达）
+- `close()` 不重置 `_client`（当前无调用点）
+- 不给「每个决策都记指纹」—— 那会正好在信号抖动于阈值附近时破坏去重，
+  而抖动正是当初要去重的原因
