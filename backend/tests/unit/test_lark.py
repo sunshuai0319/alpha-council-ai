@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime
 
 import httpx
+import pytest
 
 from app.config import Settings
 from app.domain.enums import Action, RiskStatus
@@ -12,7 +13,12 @@ from app.domain.schemas import (
     TradeProposal,
     TradingCycleState,
 )
-from app.notifications.lark import LarkNotifier, build_trade_signal_card
+from app.notifications.lark import (
+    LarkNotificationError,
+    LarkNotifier,
+    build_trade_signal_card,
+    signal_signature,
+)
 
 
 def _settings(**overrides) -> Settings:
@@ -28,34 +34,66 @@ def _settings(**overrides) -> Settings:
     return Settings(**values)
 
 
-def _state(action: Action = Action.LONG) -> TradingCycleState:
+def _state(
+    action: Action = Action.LONG,
+    *,
+    started_at: datetime = datetime(2026, 10, 6, 3, tzinfo=UTC),
+    last_price: float = 100,
+    position_size_pct: float = 0.1,
+    stop_loss: float = 97,
+    take_profit: float = 106,
+    reasoning_summary: str = "trend and momentum agree",
+) -> TradingCycleState:
     return TradingCycleState(
         user_id="u-1",
         cycle_id="cycle-1",
-        started_at=int(datetime(2026, 10, 6, 3, tzinfo=UTC).timestamp() * 1000),
+        started_at=int(started_at.timestamp() * 1000),
         symbol="BTC-USDT",
         market_snapshot=MarketSnapshot(
             symbol="BTC-USDT",
             captured_at=1_791_236_000_000,
-            last_price=100,
+            last_price=last_price,
         ),
         trade_proposal=TradeProposal(
             proposal_id="proposal-1",
             action=action,
             symbol="BTC-USDT",
             side="BUY" if action is Action.LONG else None,
-            position_size_pct=0.1,
+            position_size_pct=position_size_pct,
             leverage=5,
-            stop_loss=97,
-            take_profit=106,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
             valid_until=9_999_999_999_999,
             confidence=0.8,
-            reasoning_summary="trend and momentum agree",
+            reasoning_summary=reasoning_summary,
             evidence_refs=["indicator:trend"],
             model_version="test",
             trace_id="trace-1",
         ),
     )
+
+
+def _recording_notifier(**overrides: object) -> tuple[LarkNotifier, list[httpx.Request]]:
+    """返回一个只在内存里收请求的 notifier，以及它收到的消息请求列表。"""
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(200, json={"code": 0, "tenant_access_token": "token-1", "expire": 7200})
+        return httpx.Response(200, json={"code": 0, "data": {"message_id": "om-1"}})
+
+    notifier = LarkNotifier(
+        _settings(LARK_RECEIVE_ID="oc_one", **overrides),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        clock=lambda: 1000.0,
+    )
+    return notifier, requests
+
+
+def _sent_messages(requests: list[httpx.Request]) -> list[httpx.Request]:
+    return [request for request in requests if request.url.path.endswith("/messages")]
 
 
 def test_card_2_schema_contains_reference_order_fields() -> None:
@@ -133,3 +171,187 @@ def test_hold_is_not_sent_by_default() -> None:
         _state(Action.HOLD), RiskDecision(status=RiskStatus.ALLOWED, reasons=["hold"])
     ) is False
     assert calls == 0
+
+
+# --- 决策指纹 -------------------------------------------------------------
+
+
+def test_signal_signature_ignores_price_and_level_changes() -> None:
+    """价格每轮都在动，决策没变就不该重新打扰。"""
+
+    risk = RiskDecision(status=RiskStatus.ALLOWED, reasons=[])
+    before = _state(last_price=2473.66, stop_loss=2565.1, take_profit=2336.48)
+    after = _state(last_price=2477.73, stop_loss=2569.17, take_profit=2340.55)
+
+    assert signal_signature(before, risk) == signal_signature(after, risk)
+
+
+def test_signal_signature_ignores_reason_parameters() -> None:
+    """`account_unavailable:{exc}` 里是异常原文，逐字比较会让指纹每轮都变。"""
+
+    def signature(reason: str) -> str:
+        return signal_signature(_state(), RiskDecision(status=RiskStatus.REJECTED, reasons=[reason]))
+
+    assert signature("account_unavailable:connection refused") == signature("account_unavailable:timed out")
+    assert signature("max_notional") != signature("max_position_notional")
+
+
+def test_duplicate_signal_is_sent_once() -> None:
+    notifier, requests = _recording_notifier()
+    risk = RiskDecision(status=RiskStatus.ALLOWED, reasons=[])
+
+    assert notifier.notify(_state(), risk) is True
+    assert notifier.notify(_state(), risk) is False
+    assert notifier.notify(_state(), risk) is False
+
+    assert len(_sent_messages(requests)) == 1
+
+
+def test_changed_action_is_sent_again() -> None:
+    notifier, requests = _recording_notifier()
+    risk = RiskDecision(status=RiskStatus.ALLOWED, reasons=[])
+
+    assert notifier.notify(_state(Action.SHORT), risk) is True
+    assert notifier.notify(_state(Action.LONG), risk) is True
+
+    assert len(_sent_messages(requests)) == 2
+
+
+def test_failed_send_does_not_update_signature() -> None:
+    """发送失败时不能记账，否则一次网络抖动就把新信号永久吞掉。"""
+
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(200, json={"code": 0, "tenant_access_token": "token-1", "expire": 7200})
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(500, text="boom")
+        return httpx.Response(200, json={"code": 0, "data": {"message_id": "om-1"}})
+
+    notifier = LarkNotifier(
+        _settings(LARK_RECEIVE_ID="oc_one"),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        clock=lambda: 1000.0,
+    )
+    risk = RiskDecision(status=RiskStatus.ALLOWED, reasons=[])
+
+    with pytest.raises(LarkNotificationError):
+        notifier.notify(_state(), risk)
+    assert notifier.notify(_state(), risk) is True
+
+
+# --- 拒绝信号的抑制 -------------------------------------------------------
+
+
+def test_single_trade_rejection_is_suppressed() -> None:
+    """`position_already_open` 这类「这轮没下单」的常规拒绝不该刷屏。"""
+
+    notifier, requests = _recording_notifier()
+    risk = RiskDecision(status=RiskStatus.REJECTED, reasons=["position_already_open"])
+
+    assert notifier.notify(_state(), risk) is False
+    assert notifier.notify(_state(), risk) is False
+
+    assert _sent_messages(requests) == []
+
+
+def test_halting_rejection_is_sent() -> None:
+    """熔断代表「系统停手了」，漏掉最危险，必须推。"""
+
+    notifier, requests = _recording_notifier()
+    risk = RiskDecision(status=RiskStatus.REJECTED, reasons=["daily_loss_limit"], halt=True)
+
+    assert notifier.notify(_state(), risk) is True
+    assert notifier.notify(_state(), risk) is False
+
+    assert len(_sent_messages(requests)) == 1
+
+
+def test_halting_rejection_after_allowed_signal_is_sent() -> None:
+    notifier, requests = _recording_notifier()
+
+    assert notifier.notify(_state(), RiskDecision(status=RiskStatus.ALLOWED, reasons=[])) is True
+    assert notifier.notify(
+        _state(), RiskDecision(status=RiskStatus.REJECTED, reasons=["daily_loss_limit"], halt=True)
+    ) is True
+
+    assert len(_sent_messages(requests)) == 2
+
+
+def test_single_trade_rejection_is_sent_when_switch_enabled() -> None:
+    notifier, requests = _recording_notifier(LARK_NOTIFY_REJECTED_SIGNALS=True)
+    risk = RiskDecision(status=RiskStatus.REJECTED, reasons=["position_already_open"])
+
+    assert notifier.notify(_state(), risk) is True
+    assert notifier.notify(_state(), risk) is False
+
+    assert len(_sent_messages(requests)) == 1
+
+
+# --- 时间与数字格式 -------------------------------------------------------
+
+
+def test_subtitle_shows_utc_and_beijing_time() -> None:
+    card = build_trade_signal_card(
+        _state(started_at=datetime(2026, 10, 6, 3, tzinfo=UTC)),
+        RiskDecision(status=RiskStatus.ALLOWED),
+    )
+
+    assert card["header"]["subtitle"]["content"] == "10-06 03:00 UTC（北京 10-06 11:00）"
+
+
+def test_subtitle_beijing_time_carries_the_next_day() -> None:
+    """UTC 16:00 之后北京已跨日，只写时分会被读成当天已经过去的凌晨。"""
+
+    card = build_trade_signal_card(
+        _state(started_at=datetime(2026, 10, 9, 20, tzinfo=UTC)),
+        RiskDecision(status=RiskStatus.ALLOWED),
+    )
+
+    assert card["header"]["subtitle"]["content"] == "10-09 20:00 UTC（北京 10-10 04:00）"
+
+
+def test_position_size_and_prices_are_rounded() -> None:
+    card = build_trade_signal_card(
+        _state(position_size_pct=0.27073999999999998, stop_loss=2565.108051, take_profit=2336.487922),
+        RiskDecision(status=RiskStatus.ALLOWED),
+    )
+    details = next(element for element in card["body"]["elements"] if element.get("element_id") == "details")
+    contents = [field["text"]["content"] for field in details["fields"]]
+
+    assert any("仓位比例" in content and "27.07%" in content for content in contents)
+    assert any("参考止损价" in content and "2565.11" in content for content in contents)
+    assert any("参考止盈价" in content and "2336.49" in content for content in contents)
+
+
+def test_integer_prices_keep_no_trailing_zeros() -> None:
+    card = build_trade_signal_card(
+        _state(stop_loss=97, take_profit=106), RiskDecision(status=RiskStatus.ALLOWED)
+    )
+    details = next(element for element in card["body"]["elements"] if element.get("element_id") == "details")
+    contents = [field["text"]["content"] for field in details["fields"]]
+
+    assert any("参考止损价" in content and content.endswith("\n97") for content in contents)
+    assert any("参考止盈价" in content and content.endswith("\n106") for content in contents)
+
+
+# --- 中文化 ---------------------------------------------------------------
+
+
+def test_card_translates_machine_codes() -> None:
+    card = build_trade_signal_card(
+        _state(reasoning_summary="rule signal SHORT score=-0.35"),
+        RiskDecision(status=RiskStatus.REJECTED, reasons=["position_already_open"], halt=True),
+    )
+    risk_element = next(
+        element for element in card["body"]["elements"] if element.get("element_id") == "risk"
+    )
+    content = risk_element["text"]["content"]
+
+    assert "该品种已有持仓，不再加仓" in content
+    assert "规则信号 做空，分数 -0.35" in content
+    assert "position_already_open" not in content
+    assert "rule signal" not in content

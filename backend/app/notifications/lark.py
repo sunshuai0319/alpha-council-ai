@@ -12,8 +12,8 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from decimal import Decimal
+from datetime import UTC, datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 import httpx
@@ -21,8 +21,11 @@ import httpx
 from app.config import Settings
 from app.domain.enums import Action, RiskStatus
 from app.domain.schemas import ExecutionResult, RiskDecision, TradeProposal, TradingCycleState
+from app.notifications.reasons import reason_parts, reason_text
 
 logger = logging.getLogger(__name__)
+
+_BEIJING = timezone(timedelta(hours=8))
 
 
 class LarkNotificationError(RuntimeError):
@@ -35,13 +38,21 @@ class _Token:
     expires_at: float
 
 
-def _format_number(value: Any) -> str:
+def _format_number(value: Any, places: int | None = None) -> str:
+    """渲染数字；`places` 给定时先舍入到该位数，再统一去掉尾随零。
+
+    仓位比例与价格都是浮点算出来的（0.27073999999999998），不量化就会在卡片上
+    露出十五位小数。
+    """
+
     if value is None:
         return "-"
     try:
         number = Decimal(str(value))
     except Exception:  # noqa: BLE001 - card rendering must not break a decision
         return str(value)
+    if places is not None:
+        number = number.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
     rendered = format(number, "f")
     if "." in rendered:
         rendered = rendered.rstrip("0").rstrip(".")
@@ -49,7 +60,14 @@ def _format_number(value: Any) -> str:
 
 
 def _format_time(milliseconds: int) -> str:
-    return datetime.fromtimestamp(milliseconds / 1000, tz=UTC).strftime("%m-%d %H:%M UTC")
+    """UTC 与北京时间并列 —— 卡片读者在国内，UTC 要心算 +8。
+
+    北京时间**带日期**：UTC 16:00 之后北京已跨日，只写时分会被读成当天已经过去的凌晨。
+    """
+
+    moment = datetime.fromtimestamp(milliseconds / 1000, tz=UTC)
+    beijing = moment.astimezone(_BEIJING)
+    return f"{moment.strftime('%m-%d %H:%M')} UTC（北京 {beijing.strftime('%m-%d %H:%M')}）"
 
 
 def _normalize_line_breaks(value: str) -> str:
@@ -115,6 +133,28 @@ def _md_field(label: str, value: str) -> dict[str, Any]:
     return {"is_short": True, "text": {"tag": "lark_md", "content": f"**{label}**\n{value}"}}
 
 
+def _reason_code(reason: str) -> str:
+    """指纹只用码本身，丢掉 `:` 后面的参数。
+
+    `cycle.py` 里写的是 `f"account_unavailable:{exc}"` —— 异常原文进了理由，
+    "connection refused" 与 "timed out" 是两条不同字符串，不归一化的话指纹每轮都变、
+    每轮都推。
+    """
+
+    return reason.split(":", 1)[0].strip()
+
+
+def signal_signature(state: TradingCycleState, risk: RiskDecision) -> str:
+    """决策指纹：动作 + 风控状态 + 风控理由码。
+
+    只含决策语义，**不含价格与信号分数** —— 价格每轮都在动，算进去等于不去重。
+    """
+
+    action = state.trade_proposal.action.value if state.trade_proposal else "NONE"
+    codes = "|".join(sorted({_reason_code(reason) for reason in risk.reasons}))
+    return f"{action}:{risk.status.value}:{codes}"
+
+
 def build_trade_signal_card(
     state: TradingCycleState,
     risk: RiskDecision,
@@ -131,8 +171,8 @@ def build_trade_signal_card(
     take_profit = proposal.take_profit if proposal else None
     size_pct = proposal.position_size_pct * 100 if proposal else 0
     leverage = proposal.leverage if proposal else 0
-    reasons = _normalize_line_breaks("、".join(risk.reasons) if risk.reasons else "无")
-    reasoning = _normalize_line_breaks(proposal.reasoning_summary if proposal else "未生成交易提案")
+    reasons = _normalize_line_breaks("、".join(reason_parts(reason) for reason in risk.reasons) or "无")
+    reasoning = _normalize_line_breaks(reason_text(proposal.reasoning_summary) if proposal else "未生成交易提案")
     if len(reasoning) > 240:
         reasoning = f"{reasoning[:237]}..."
     execution_text = _execution_status_label(execution)
@@ -200,11 +240,11 @@ def build_trade_signal_card(
                     "tag": "div",
                     "element_id": "details",
                     "fields": [
-                        _md_field("参考下单价格", _format_number(market_price)),
+                        _md_field("参考下单价格", _format_number(market_price, places=2)),
                         _md_field("风控状态", _risk_status_label(risk.status)),
-                        _md_field("参考止损价", _format_number(stop_loss)),
-                        _md_field("参考止盈价", _format_number(take_profit)),
-                        _md_field("仓位比例", f"{_format_number(size_pct)}%"),
+                        _md_field("参考止损价", _format_number(stop_loss, places=2)),
+                        _md_field("参考止盈价", _format_number(take_profit, places=2)),
+                        _md_field("仓位比例", f"{_format_number(size_pct, places=2)}%"),
                         _md_field("杠杆", f"{leverage}x"),
                     ],
                 },
@@ -256,6 +296,9 @@ class LarkNotifier:
         self._owns_client = client is None
         self._clock = clock
         self._token: _Token | None = None
+        #: 每个 (用户, 品种) 最后一次**推送成功**的决策指纹，用来消掉重复刷屏。
+        #: 进程内存即可：worker 常驻，重启后最多多发一条，不值得为它加一张表。
+        self._last_signatures: dict[tuple[str, str], str] = {}
 
     @property
     def configured(self) -> bool:
@@ -275,6 +318,7 @@ class LarkNotifier:
         risk: RiskDecision,
         execution: ExecutionResult | None = None,
     ) -> bool:
+        action = state.trade_proposal.action.value if state.trade_proposal else "NONE"
         if (
             state.trade_proposal is not None
             and state.trade_proposal.action is Action.HOLD
@@ -292,10 +336,35 @@ class LarkNotifier:
                 "app_id_configured=%s app_secret_configured=%s receive_ids=%d",
                 state.user_id,
                 state.symbol,
-                state.trade_proposal.action.value if state.trade_proposal else "NONE",
+                action,
                 bool(self.settings.lark_app_id),
                 bool(self.settings.lark_app_secret),
                 len(self._receive_ids()),
+            )
+            return False
+        # 单笔层面的拒绝（position_already_open、max_notional…）只是「这轮没下单」的常规
+        # 噪声，默认不打扰。账户级熔断（risk.halt）必须推 —— 它代表系统已经停手，漏掉最危险。
+        if (
+            risk.status is RiskStatus.REJECTED
+            and not risk.halt
+            and not self.settings.lark_notify_rejected_signals
+        ):
+            logger.info(
+                "lark notification: user=%s symbol=%s action=%s result=skipped "
+                "reason=rejected_signal_suppressed",
+                state.user_id,
+                state.symbol,
+                action,
+            )
+            return False
+        key = (state.user_id, state.symbol)
+        signature = signal_signature(state, risk)
+        if self._last_signatures.get(key) == signature:
+            logger.info(
+                "lark notification: user=%s symbol=%s action=%s result=skipped reason=duplicate_signal",
+                state.user_id,
+                state.symbol,
+                action,
             )
             return False
         card = build_trade_signal_card(state, risk, execution)
@@ -313,11 +382,13 @@ class LarkNotifier:
                 json={"receive_id": receive_id, "msg_type": "interactive", "content": content},
             )
             self._raise_for_api_error(response, "send message")
+        # 全部收件人都成功后才记账：任一条失败都不该把这个信号永久静音。
+        self._last_signatures[key] = signature
         logger.info(
             "lark notification: user=%s symbol=%s action=%s result=sent recipients=%d",
             state.user_id,
             state.symbol,
-            state.trade_proposal.action.value if state.trade_proposal else "NONE",
+            action,
             len(self._receive_ids()),
         )
         return True

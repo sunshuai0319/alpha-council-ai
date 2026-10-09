@@ -101,7 +101,19 @@ Dashboard 的 Pause/Resume 会以当前 Clerk 用户为范围写入进程内控�
 
 worker 默认使用 `TRADING_EXECUTION_MODE=notify`：继续采集行情、生成信号、执行风控并把决策落库，但不会发送 WEEX 开仓/平仓订单，也不会运行软件层自动止盈止损。配置 `LARK_APP_ID`、`LARK_APP_SECRET`、`LARK_RECEIVE_ID_TYPE` 和 `LARK_RECEIVE_ID` 后，LONG/SHORT/CLOSE 信号会通过 Lark 国际版 interactive 卡片推送；`LARK_NOTIFY_HOLD=true` 才会额外推送 HOLD。
 
-Lark 国际版 API 使用 `https://open.larksuite.com`。卡片中的交易动作会显示为中文：`做多`、`做空`、`平仓`、`观望`。
+Lark 国际版 API 使用 `https://open.larksuite.com`。卡片中的交易动作会显示为中文：`做多`、`做空`、`平仓`、`观望`；风控理由与策略说明里的后端机器码（`position_already_open`、`rule signal SHORT score=-0.35`…）也在卡片层翻译成中文（译表见 `backend/app/notifications/reasons.py`，措辞与前端 `frontend/lib/i18n.tsx` 一致）。副标题同时给出 UTC 与北京时间。
+
+**什么时候不推送**（都是刻意的，日志里能看到原因）：
+
+| 情况 | 日志 `reason=` | 开关 |
+|---|---|---|
+| HOLD 信号 | `hold_notifications_disabled` | `LARK_NOTIFY_HOLD=true` 可开 |
+| 单笔层面的风控拒绝（`position_already_open`、`max_notional`…） | `rejected_signal_suppressed` | `LARK_NOTIFY_REJECTED_SIGNALS=true` 可开 |
+| 与上次**推送成功**的决策指纹相同 | `duplicate_signal` | 无（这是去重本身） |
+
+决策指纹 = 动作 + 风控状态 + 风控理由码，**不含价格**，所以同一信号每轮不再重复刷屏；价格微动不会重新推送，动作翻转或风控状态变化会立刻推。指纹只存在 worker 进程内存里，重启后第一轮会重发一条。
+
+账户级熔断（日亏损 / 连亏 / 权益非正，即 `risk.halt`）**永远推送**，不受 `LARK_NOTIFY_REJECTED_SIGNALS` 影响 —— 它代表系统已经停手，漏掉最危险。
 
 应用需要启用机器人能力，并申请以下最小权限：
 
