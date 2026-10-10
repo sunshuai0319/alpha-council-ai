@@ -635,11 +635,33 @@ def test_notional_cap_counts_exposure_across_symbols() -> None:
     max_notional 分支。总上限从 20% 放宽到 60% 是为了能同时持多个品种。
     """
     exchange = MultiPositionExchange(btc_notional=Decimal(0), eth_notional=Decimal(5500))
-    service = TradingCycleService(exchange_factory=lambda: exchange)
+    service = TradingCycleService(
+        settings=Settings(trading_execution_mode="execute"),
+        exchange_factory=lambda: exchange,
+    )
 
     decision = service._evaluate_proposal(exchange, _long_state())
 
     assert "max_notional" in decision.reasons
+
+
+def test_notify_mode_ignores_other_symbol_manual_exposure() -> None:
+    """通知模式只评估信号本身，别的币对手动仓位不能吞掉推送资格。"""
+    exchange = MultiPositionExchange(btc_notional=Decimal(0), eth_notional=Decimal(5500))
+    service = TradingCycleService(
+        settings=Settings(
+            trading_execution_mode="notify",
+            max_total_notional_pct=0.60,
+            max_position_notional_pct=0.20,
+            max_single_trade_risk_pct=0.01,
+        ),
+        exchange_factory=lambda: exchange,
+    )
+
+    decision = service._evaluate_proposal(exchange, _long_state())
+
+    assert decision.status is RiskStatus.ALLOWED
+    assert "max_notional" not in decision.reasons
 
 
 def test_daily_trades_counts_only_filled_entries(tmp_path) -> None:
@@ -719,7 +741,8 @@ def test_risk_uses_exchange_reported_leverage_over_the_proposal() -> None:
     exchange = ClosingExchange(exit_price=Decimal(100), leverage=20, symbol="ETH-USDT")
     # 显式钉住上限，避免测试结果随开发机 .env 变化
     service = TradingCycleService(
-        settings=Settings(max_leverage=10), exchange_factory=lambda exchange=exchange: exchange
+        settings=Settings(max_leverage=10, trading_execution_mode="execute"),
+        exchange_factory=lambda exchange=exchange: exchange,
     )
 
     decision = service._evaluate_proposal(exchange, _long_state())  # 提案声明 leverage=1

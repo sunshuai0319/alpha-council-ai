@@ -516,8 +516,12 @@ class TradingCycleService:
             position.symbol == proposal.symbol for position in positions
         ):
             return RiskDecision(status=RiskStatus.REJECTED, reasons=["position_already_open"], checked_at=now_ms)
+        # 通知模式只生成用户可执行的信号，不会向交易所下单。此时交易所里的仓位
+        # 都可能是用户手动开的，不能用它们的名义敞口把其它币对的通知资格吞掉。
+        # 自动执行模式仍使用完整的账户敞口，保持原有硬风控。
+        risk_positions = positions if self.settings.trading_execution_mode == "execute" else []
         # 账户总敞口，跨品种合计：按品种各算一次上限，两个品种就能到两倍。
-        current_notional = sum((abs(position.entry_value) for position in positions), Decimal(0))
+        current_notional = sum((abs(position.entry_value) for position in risk_positions), Decimal(0))
         proposed_notional = balance.balance * Decimal(str(proposal.position_size_pct))
         is_reducing = proposal.action is Action.CLOSE
         current_equity = balance.balance + balance.unrealized_pnl
@@ -527,6 +531,10 @@ class TradingCycleService:
             (position.leverage for position in positions if position.leverage > 0),
             proposal.leverage,
         )
+        if self.settings.trading_execution_mode == "notify":
+            # 没有系统下单记录可供读取时，使用提案杠杆评估信号本身；手动仓位的
+            # 实际杠杆不应让其它币对的通知被 max_leverage 间接拦截。
+            leverage = proposal.leverage
         account = self._account_for_user(state.user_id)
         if not is_reducing and account is not None and not any(
             position.symbol == proposal.symbol for position in positions
