@@ -20,9 +20,16 @@ def _risk(**overrides):
     return evaluate_risk(**{**base, **overrides})
 
 
+def test_daily_loss_rejects_entries_without_pausing_account() -> None:
+    """单日亏损只拒绝当前开仓，不能让其他品种一起进入暂停。"""
+    decision = _risk(daily_loss_pct=0.06)
+    assert decision.allowed is False
+    assert "daily_loss_limit" in decision.reasons
+    assert decision.halt is False
+
+
 def test_account_level_breakers_request_a_halt() -> None:
-    """日亏损/连亏是账户级状态，要升级成暂停，而不只是拒掉这一单。"""
-    assert _risk(daily_loss_pct=0.06).halt is True
+    """连亏和权益非正仍属于账户级熔断。"""
     assert _risk(consecutive_losses=3).halt is True
     assert _risk(equity=0).halt is True
 
@@ -40,7 +47,7 @@ def test_reducing_orders_are_allowed_through_loss_breakers() -> None:
 
     assert decision.allowed is True
     assert decision.reasons == []
-    assert decision.halt is True  # 仍然要求暂停开新仓
+    assert decision.halt is True  # 连亏仍要求暂停开新仓
 
 
 def test_daily_trade_limit_blocks_further_entries() -> None:

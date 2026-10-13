@@ -87,9 +87,8 @@ class Settings(BaseSettings):
     lark_timeout_seconds: float = 10.0
     #: HOLD 信号默认不发卡，避免多品种每轮产生大量无操作通知。
     lark_notify_hold: bool = False
-    #: 单笔层面的风控拒绝（position_already_open、max_notional…）默认不发卡：那是
-    #: 「这轮没下单」的常规噪声，每轮都推会刷屏。账户级熔断（日亏损/连亏/权益非正）
-    #: 不受这个开关影响，永远推送。
+    #: 单笔层面的风控拒绝（position_already_open、max_notional、daily_loss_limit…）默认不发卡：
+    #: 那是「这轮没下单」的常规噪声，每轮都推会刷屏。真正导致账户停手的熔断仍会推送。
     lark_notify_rejected_signals: bool = False
     #: 平台硬上限。虚拟盘实际杠杆固定 20x 且不可调，上限必须与之对齐，
     #: 否则虚拟盘一开仓就再也无法加仓（max_leverage 会拒掉）。

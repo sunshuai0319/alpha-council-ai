@@ -111,7 +111,7 @@ def daily_loss_pct(
     day_start_equity: Decimal | float,
     current_equity: Decimal | float,
 ) -> Decimal:
-    """当日回撤比例，用于 ``max_daily_loss_pct`` 熔断。
+    """当日回撤比例，用于 ``max_daily_loss_pct`` 开仓限制。
 
     以当天观测到的第一笔权益为基准；盈利或持平时为 0（熔断只看亏损）。
     基准非正时无法计算比例，返回 0 —— 不猜。
@@ -167,11 +167,12 @@ def evaluate_risk(
         halting_reasons.append("equity_non_positive")
     if age_value > active_limits.market_data_max_age_seconds:
         reasons.append("market_data_stale")
-    # 熔断信号只看账户状态，与订单方向无关：平仓单被放行不代表亏损没发生。
-    # 但这些亏损类理由以及敞口/杠杆上限只拦开新仓 —— 拦平仓会把仓位锁死，
-    # 反而加大风险。
-    if loss_value >= active_limits.max_daily_loss_pct:
-        halting_reasons.append("daily_loss_limit")
+    # 连亏熔断只看账户状态，与订单方向无关：平仓单被放行不代表亏损没发生。
+    # 但亏损类理由以及敞口/杠杆上限只拦开新仓 —— 拦平仓会把仓位锁死，
+    # 反而加大风险。单日亏损只拒绝当前开仓，不暂停整个账户；这样其他品种
+    # 仍能继续产生独立信号，操作者也能手动管理风险。
+    if loss_value >= active_limits.max_daily_loss_pct and not is_reducing:
+        reasons.append("daily_loss_limit")
     if consecutive_losses >= active_limits.max_consecutive_losses:
         halting_reasons.append("consecutive_loss_cooldown")
     if not is_reducing:
