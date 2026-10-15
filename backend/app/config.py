@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     #: 没有可用账户时的重扫间隔（秒）。进程不退出 —— 退出会被 restart 策略
     #: 拉起来变成崩溃循环，日志里只剩重启噪音。
     streams_rescan_seconds: float = 300.0
+    #: REST 兜底对账的间隔（秒）。每轮一次 HTTP 调用，很便宜。
+    #: 窗口是最近 100 条终态订单，5 分钟内产生 100 笔订单不现实。
+    streams_reconcile_seconds: float = 300.0
 
     clerk_jwks_url: str = ""
     clerk_issuer: str = ""
