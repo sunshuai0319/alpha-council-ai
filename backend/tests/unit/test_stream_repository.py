@@ -30,7 +30,7 @@ def _fill(**overrides) -> FillEvent:
         "symbol": "",
         "position_side": "SHORT",
         "order_side": "BUY",
-        "quantity": Decimal("100"),
+        "quantity": Decimal(100),
         "value": Decimal("7.99"),
         "fee": Decimal("0.006392"),
         "realize_pnl": Decimal("0.01"),
@@ -56,12 +56,12 @@ def _order(**overrides) -> OrderEvent:
         "reduce_only": True,
         "position_tpsl": True,
         "trigger_price": Decimal("0.0799"),
-        "quantity": Decimal("100"),
-        "cum_fill_quantity": Decimal("100"),
+        "quantity": Decimal(100),
+        "cum_fill_quantity": Decimal(100),
         "cum_fill_value": Decimal("7.99"),
         "cum_fill_fee": Decimal("0.006392"),
         "cum_realize_pnl": Decimal("0.01"),
-        "cum_liquidate_fee": Decimal("0"),
+        "cum_liquidate_fee": Decimal(0),
         "taker_fee_rate": Decimal("0.0008"),
         "maker_fee_rate": Decimal("0.0002"),
         "created_at": datetime(2026, 10, 15, 12, 58, 6, tzinfo=UTC),
@@ -77,10 +77,10 @@ def _sample(**overrides) -> AccountSample:
     values = {
         "coin": "SUSDT",
         "amount": Decimal("59010.73"),
-        "cum_deposit": Decimal("0"),
-        "cum_withdraw": Decimal("0"),
-        "cum_transfer_in": Decimal("40000"),
-        "cum_transfer_out": Decimal("0"),
+        "cum_deposit": Decimal(0),
+        "cum_withdraw": Decimal(0),
+        "cum_transfer_in": Decimal(40000),
+        "cum_transfer_out": Decimal(0),
         "cum_fill_fee": Decimal("0.006392"),
         "cum_funding_fee": Decimal("-56.35171893"),
         "liquidating": False,
@@ -123,7 +123,7 @@ def test_order_event_upserts_in_place(db):
     """同一订单推多次（PENDING → FILLED），按 order_id 覆盖而不是追加。"""
 
     repo = _repo(db)
-    repo.record(_order(status="PENDING", cum_realize_pnl=Decimal("0")))
+    repo.record(_order(status="PENDING", cum_realize_pnl=Decimal(0)))
     db.commit()
     repo.record(_order(status="FILLED"))
     db.commit()

@@ -62,7 +62,7 @@
 
 ---
 
-## Task 1: 提取凭证解析到 `app/exchange/credentials.py`
+## Task 1: 提取凭证解析到 `app/exchange/credentials.py` — ✅ 已完成
 
 `app/services/cycle.py:1025-1045` 的 `_exchange_for_user` 里有一段从
 `TradingAccount` 构造 `WeexCredentials` 的逻辑。监听器需要同一段逻辑，但它是私有方法
@@ -228,7 +228,7 @@ _exchange_for_user 里从 TradingAccount 构造 WeexCredentials 的那段逻辑�
 
 ---
 
-## Task 2: 新增配置项
+## Task 2: 新增配置项 — ✅ 已完成
 
 **Files:**
 - Modify: `backend/app/config.py`（在 `weex_base_url` 附近，约 64 行）
@@ -303,7 +303,7 @@ git commit -m "feat(config): 加私有 WS 采集层的配置项
 
 ---
 
-## Task 3: 协议层 —— 签名与消息分类
+## Task 3: 协议层 —— 签名与消息分类 — ✅ 已完成
 
 **Files:**
 - Create: `backend/app/streams/__init__.py`
@@ -556,7 +556,7 @@ classify 把畸形输入归为 unknown 而不抛异常：一条坏消息不该�
 
 ---
 
-## Task 4: 协议层 —— 推送映射为领域事件
+## Task 4: 协议层 —— 推送映射为领域事件 — ✅ 已完成
 
 **Files:**
 - Modify: `backend/app/streams/protocol.py`（追加）
@@ -1035,7 +1035,7 @@ exit_reason() 按 orderSource 枚举逐个判，而不是「是不是 WEB」—�
 
 ---
 
-## Task 5: 数据模型与迁移
+## Task 5: 数据模型与迁移 — ✅ 已完成
 
 **Files:**
 - Modify: `backend/app/db/models.py`（在 `Fill` 之后追加）
@@ -1258,7 +1258,7 @@ exchange_account_samples 用 (账户, 版本, 币种) 做幂等键。account.v �
 
 ---
 
-## Task 6: 仓储层
+## Task 6: 仓储层 — ✅ 已完成
 
 **Files:**
 - Create: `backend/app/streams/repository.py`
@@ -2055,7 +2055,7 @@ socket 通过 connect 参数注入，测试塞假 Transport 就能覆盖订阅�
 
 ---
 
-## Task 8: 监听进程与进程入口
+## Task 8: 监听进程与进程入口 — ✅ 已完成（真实账户验证暴露了 symbol 缺口，见 Task 9）
 
 **Files:**
 - Create: `backend/app/streams/listener.py`
@@ -2423,7 +2423,675 @@ PendingRollbackError，整条连接就废了。
 
 ---
 
-## Task 9: 部署编排
+## Task 9: REST 兜底对账（符号回填 + 漏单检测）
+
+**为什么加这一步**：Task 8 的真实账户验证暴露了两件事。
+
+1. **`fill` 和 `orders` 两个频道的推送里都没有 `symbol`。** 实测的行只有
+   `coin: "SUSDT"` 与 `orderId`/`id`。WEEX 文档在 `Order-Channel` 与 `Fill-Channel`
+   里都列了 `symbol` 字段（「交易对（大写，如 BTCUSDT）」），**虚拟盘不推** ——
+   又一处文档与实测的出入。于是原设计里「靠 orders 频道按 orderId 回填 symbol」
+   的机制没有数据源，`exchange_fills.symbol` 全是 NULL。
+   而 REST `order/history` **是带 symbol 的**（实测 `{"symbol":"LINKSUSDT",...}`）。
+2. **WS 断线期间的成交不会重放。** REST 能看到最近 100 条终态订单，
+   凡是我们没通过 WS 见过的，就是漏掉的。
+
+**能补什么、不能补什么**（写清楚免得把兜底当万能）：
+
+| | |
+|---|---|
+| **能补** | `symbol` —— 按 orderId 回填到已有的成交行 |
+| **不能补** | 漏掉的成交带来的**盈亏**。REST 没有 `realizePnl`，漏一笔就是永久缺一笔 |
+
+所以漏单只能**标记出来**，让下游知道这段记录不完整 —— 这也是 spec §12.2
+说的 `observation_gap`。
+
+**Files:**
+- Modify: `backend/app/exchange/base.py`（Protocol 加 `list_orders`）
+- Modify: `backend/app/exchange/weex.py`
+- Modify: `backend/app/exchange/fixtures.py`
+- Modify: `backend/app/db/collector_errors.py`（提取归并函数）
+- Modify: `backend/app/config.py`（加对账间隔）
+- Modify: `backend/app/streams/listener.py`
+- Create: `backend/app/streams/reconciler.py`
+- Test: `backend/tests/unit/test_stream_reconciler.py`
+
+- [ ] **Step 1: 给交易所协议加 `list_orders`**
+
+采集层要按 orderId 查 symbol，需要「列出订单」的能力。**不要让它去够
+`WeexClient._order_history`** —— 那会把私有实现变成事实上的公开契约。
+
+在 `backend/app/exchange/base.py` 的 `ExchangeClient` 里，紧跟 `get_order_by_client_id` 之后加：
+
+```python
+    def list_orders(self, symbol: str | None = None, limit: int = 100) -> list[ExchangeOrder]: ...
+```
+
+在 `backend/app/exchange/weex.py` 的 `get_order_by_client_id` 之后加：
+
+```python
+    def list_orders(self, symbol: str | None = None, limit: int = 100) -> list[ExchangeOrder]:
+        """最近的终态订单。
+
+        虚拟盘**没有分页**（实测：``page`` 参数被忽略），``limit`` 上限 100 ——
+        所以这是一个滑动窗口，不是完整历史。调用方要按这个前提设计。
+        """
+
+        return [self._parse_order(item) for item in self._order_history(symbol=symbol)[:limit]]
+```
+
+在 `backend/app/exchange/fixtures.py` 的 `FixtureExchangeClient.get_order_by_client_id` 之后加：
+
+```python
+    def list_orders(self, symbol: str | None = None, limit: int = 100) -> list[ExchangeOrder]:
+        orders = [order for order in self._orders.values() if symbol is None or order.symbol == symbol]
+        return orders[:limit]
+```
+
+- [ ] **Step 2: 写失败的测试**
+
+创建 `backend/tests/unit/test_stream_reconciler.py`：
+
+```python
+"""REST 兜底对账：补 symbol、标记漏单。
+
+能补的只有 symbol；漏掉的成交带来的盈亏补不回来（REST 没有 realizePnl），
+所以漏单只能标记。
+"""
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
+
+from app.db.models import Base, CollectorError, ExchangeFillRecord, ExchangeOrderEvent
+from app.exchange.base import ExchangeOrder
+from app.streams.reconciler import GAP_COLLECTOR, OrderHistoryReconciler
+from app.streams.repository import StreamRepository
+from app.streams.protocol import FillEvent, OrderEvent
+
+ACCOUNT = "acct-1"
+NOW = datetime(2026, 10, 15, 13, 0, 0, tzinfo=UTC)
+
+
+class FakeExchange:
+    def __init__(self, orders):
+        self._orders = orders
+        self.calls: list[dict] = []
+
+    def list_orders(self, symbol=None, limit=100):
+        self.calls.append({"symbol": symbol, "limit": limit})
+        return list(self._orders)[:limit]
+
+
+def _exchange_order(order_id: str, symbol: str, *, minutes_ago: int) -> ExchangeOrder:
+    created = NOW - timedelta(minutes=minutes_ago)
+    return ExchangeOrder(
+        order_id=order_id,
+        client_order_id=f"cid-{order_id}",
+        symbol=symbol,
+        side="BUY",
+        position_side="LONG",
+        status="FILLED",
+        order_type="MARKET",
+        quantity=Decimal(100),
+        executed_quantity=Decimal(100),
+        price=Decimal("0.08"),
+        average_price=Decimal("0.08"),
+        time_in_force="IOC",
+        created_at=created,
+        updated_at=created,
+        reduce_only=False,
+    )
+
+
+@pytest.fixture
+def db(tmp_path):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'recon.db'}")
+    Base.metadata.create_all(engine)
+    session = Session(engine)
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+def _seed_fill(db: Session, *, fill_id: str, order_id: str) -> None:
+    repo = StreamRepository(db, user_id="u-1", trading_account_id=ACCOUNT)
+    repo.record(
+        FillEvent(
+            exchange_fill_id=fill_id,
+            exchange_order_id=order_id,
+            symbol="",  # 推送里没有 symbol
+            position_side="LONG",
+            order_side="BUY",
+            quantity=Decimal(100),
+            value=Decimal("7.99"),
+            fee=Decimal("0.006392"),
+            realize_pnl=Decimal("0.01"),
+            direction="TAKER",
+            filled_at=NOW,
+            account_version=1,
+            raw={},
+        )
+    )
+    db.commit()
+
+
+def _seed_order(db: Session, order_id: str, *, minutes_ago: int = 1) -> None:
+    repo = StreamRepository(db, user_id="u-1", trading_account_id=ACCOUNT)
+    repo.record(
+        OrderEvent(
+            exchange_order_id=order_id,
+            client_order_id=f"cid-{order_id}",
+            symbol="",  # 推送里也没有 symbol
+            position_side="LONG",
+            order_side="BUY",
+            order_type="MARKET",
+            status="FILLED",
+            order_source="WEB",
+            reduce_only=False,
+            position_tpsl=False,
+            trigger_price=Decimal(0),
+            quantity=Decimal(100),
+            cum_fill_quantity=Decimal(100),
+            cum_fill_value=Decimal("7.99"),
+            cum_fill_fee=Decimal("0.006392"),
+            cum_realize_pnl=Decimal("0.01"),
+            cum_liquidate_fee=Decimal(0),
+            taker_fee_rate=Decimal("0.0008"),
+            maker_fee_rate=Decimal("0.0002"),
+            created_at=NOW - timedelta(minutes=minutes_ago),
+            updated_at=NOW - timedelta(minutes=minutes_ago),
+            account_version=1,
+            raw={},
+        )
+    )
+    db.commit()
+
+
+def _reconciler(db: Session, orders) -> tuple[OrderHistoryReconciler, FakeExchange]:
+    exchange = FakeExchange(orders)
+    return OrderHistoryReconciler(db, trading_account_id=ACCOUNT, exchange=exchange), exchange
+
+
+def test_backfills_fill_symbol_from_rest(db):
+    """推送没有 symbol，只有 REST 有 —— 这是它唯一的补法。"""
+
+    _seed_fill(db, fill_id="f-1", order_id="o-1")
+    assert db.scalar(select(ExchangeFillRecord)).symbol is None
+
+    reconciler, exchange = _reconciler(db, [_exchange_order("o-1", "DOGESUSDT", minutes_ago=5)])
+    outcome = reconciler.run_once()
+    db.commit()
+
+    assert outcome.symbols_backfilled == 1
+    assert db.scalar(select(ExchangeFillRecord)).symbol == "DOGESUSDT"
+    assert exchange.calls == [{"symbol": None, "limit": 100}]
+
+
+def test_backfills_all_orders_of_one_symbol(db):
+    _seed_fill(db, fill_id="f-1", order_id="o-1")
+    _seed_fill(db, fill_id="f-2", order_id="o-2")
+
+    reconciler, _ = _reconciler(
+        db,
+        [
+            _exchange_order("o-1", "DOGESUSDT", minutes_ago=5),
+            _exchange_order("o-2", "DOGESUSDT", minutes_ago=4),
+        ],
+    )
+    outcome = reconciler.run_once()
+    db.commit()
+
+    assert outcome.symbols_backfilled == 2
+    assert {row.symbol for row in db.scalars(select(ExchangeFillRecord))} == {"DOGESUSDT"}
+
+
+def test_does_not_touch_fills_that_already_have_a_symbol(db):
+    _seed_fill(db, fill_id="f-1", order_id="o-1")
+    row = db.scalar(select(ExchangeFillRecord))
+    row.symbol = "XRPUSDT"
+    db.commit()
+
+    reconciler, _ = _reconciler(db, [_exchange_order("o-1", "DOGESUSDT", minutes_ago=5)])
+    outcome = reconciler.run_once()
+
+    assert outcome.symbols_backfilled == 0
+    assert db.scalar(select(ExchangeFillRecord)).symbol == "XRPUSDT"
+
+
+def test_reports_orders_missed_by_the_stream(db):
+    """比「我们最早见过的订单」新、却没见过的，就是 WS 漏掉的。"""
+
+    _seed_order(db, "o-1", minutes_ago=10)
+
+    reconciler, _ = _reconciler(
+        db,
+        [
+            _exchange_order("o-9", "DOGESUSDT", minutes_ago=5),  # 没见过 → 漏单
+            _exchange_order("o-1", "DOGESUSDT", minutes_ago=10),  # 见过
+        ],
+    )
+    outcome = reconciler.run_once()
+
+    assert outcome.missed_order_ids == ("o-9",)
+    assert outcome.has_gap is True
+
+
+def test_ignores_orders_older_than_our_earliest_record(db):
+    """监听开始之前的订单本来就没人看着，不算漏单。"""
+
+    _seed_order(db, "o-5", minutes_ago=10)
+
+    reconciler, _ = _reconciler(
+        db,
+        [
+            _exchange_order("o-1", "DOGESUSDT", minutes_ago=600),  # 远早于我们开始
+            _exchange_order("o-5", "DOGESUSDT", minutes_ago=10),
+        ],
+    )
+    outcome = reconciler.run_once()
+
+    assert outcome.missed_order_ids == ()
+
+
+def test_reports_no_gap_when_there_is_no_baseline(db):
+    """一条订单事件都没有时没有基准可言 —— 不能把全部历史都报成漏单。"""
+
+    reconciler, _ = _reconciler(db, [_exchange_order("o-1", "DOGESUSDT", minutes_ago=600)])
+    outcome = reconciler.run_once()
+
+    assert outcome.missed_order_ids == ()
+
+
+def test_records_the_gap_in_the_merged_error_table(db):
+    """漏单要留痕，不能只打日志 —— 否则「这段记录不完整」这件事事后无从查证。"""
+
+    _seed_order(db, "o-1", minutes_ago=10)
+    reconciler, _ = _reconciler(db, [_exchange_order("o-9", "DOGESUSDT", minutes_ago=5)])
+    reconciler.run_once()
+    db.commit()
+
+    row = db.scalar(select(CollectorError).where(CollectorError.collector == GAP_COLLECTOR))
+    assert row is not None
+    assert row.message == "observation_gap"
+    assert row.occurrences == 1
+
+
+def test_gap_counter_merges_across_runs(db):
+    """归并计数：反复看到同一个问题只累加 occurrences，不撑爆表。"""
+
+    _seed_order(db, "o-1", minutes_ago=10)
+    orders = [_exchange_order("o-9", "DOGESUSDT", minutes_ago=5)]
+
+    reconciler, _ = _reconciler(db, orders)
+    reconciler.run_once()
+    db.commit()
+    second, _ = _reconciler(db, orders)
+    second.run_once()
+    db.commit()
+
+    rows = db.scalars(select(CollectorError).where(CollectorError.collector == GAP_COLLECTOR)).all()
+    assert len(rows) == 1
+    assert rows[0].occurrences == 2
+
+
+def test_returns_inspected_count(db):
+    reconciler, _ = _reconciler(
+        db,
+        [
+            _exchange_order("o-1", "DOGESUSDT", minutes_ago=5),
+            _exchange_order("o-2", "XRPUSDT", minutes_ago=4),
+        ],
+    )
+
+    assert reconciler.run_once().inspected == 2
+```
+
+- [ ] **Step 3: 运行测试确认失败**
+
+Run: `cd backend && uv run pytest tests/unit/test_stream_reconciler.py -q`
+
+Expected: FAIL — `ModuleNotFoundError: No module named 'app.streams.reconciler'`
+
+- [ ] **Step 4: 提取归并计数函数**
+
+`record_collector_errors` 里的「查到就加一、没有就插入」正是漏单计数要用的。
+提出来复用，别复制一遍。
+
+把 `backend/app/db/collector_errors.py` 的 `record_collector_errors` 替换成：
+
+```python
+def record_merged_error(db: Session, *, collector: str, message: str) -> None:
+    """按 (collector, message) 归并计数一条错误。
+
+    只打日志的话「这个故障到底发生过几次」数不出来；每轮写一行又会撑爆表。
+    归并计数是这两者之间的折中。
+    """
+
+    now = datetime.now(UTC)
+    row = db.scalar(
+        select(CollectorError).where(
+            CollectorError.collector == collector,
+            CollectorError.message == message,
+        )
+    )
+    if row is None:
+        db.add(
+            CollectorError(
+                collector=collector,
+                message=message,
+                occurrences=1,
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+        )
+    else:
+        row.occurrences += 1
+        row.last_seen_at = now
+
+
+def record_collector_errors(db: Session | None, *results: Any) -> None:
+    """把每个 ``CollectorResult`` 的 errors 按 (collector, message) 归并计数。
+
+    存的是**原始错误串**（含异常原文）—— 这是排查用的，与展示用的稳定码
+    （``app/collectors/codes.py``）分工不同。
+    """
+
+    if db is None:
+        return
+    for result in results:
+        for message in result.errors:
+            record_merged_error(db, collector=result.source, message=message)
+```
+
+- [ ] **Step 5: 跑已有测试确认提取没改行为**
+
+Run: `cd backend && uv run pytest tests/unit -q -k collector`
+
+Expected: 全部通过（若没有匹配的测试，跑 `uv run pytest tests/unit -q` 全量确认）
+
+- [ ] **Step 6: 写对账实现**
+
+创建 `backend/app/streams/reconciler.py`：
+
+```python
+"""REST ``order/history`` 兜底对账。
+
+WS 有两个已知缺口，都只能靠 REST 补：
+
+1. **推送里没有 symbol。** 实测：``fill`` 与 ``orders`` 两个频道的行都只有
+   ``coin`` 与 ``orderId``，没有 ``symbol``（WEEX 文档列了这个字段，虚拟盘不推）。
+   REST ``order/history`` 带 —— 用它按 orderId 回填。
+2. **WS 断线期间的成交不会重放。** REST 能看到最近 100 条终态订单，
+   凡是我们没通过 WS 见过的，就是漏掉的。
+
+**能补什么、不能补什么**（别把兜底当万能）：
+
+- 能补：``symbol``
+- **不能补**：漏掉的成交带来的盈亏 —— REST 没有 ``realizePnl``，漏一笔就是
+  永久缺一笔。所以漏单只能**标记**，让下游知道这段记录不完整。
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.db.collector_errors import record_merged_error
+from app.db.models import ExchangeFillRecord, ExchangeOrderEvent
+from app.exchange.base import ExchangeClient
+
+logger = logging.getLogger(__name__)
+
+#: 漏单计数在 collector_errors 里的来源标识。
+GAP_COLLECTOR = "weex_private_streams"
+
+#: 归并用的稳定消息。**不要**把 orderId 拼进来 —— 那会让每次漏单都产生新行，
+#: 归并计数就失效了。具体漏了哪些订单打到日志里。
+GAP_MESSAGE = "observation_gap"
+
+#: REST 窗口上限。虚拟盘没有分页（实测 page 被忽略），这就是能看到的全部。
+REST_WINDOW = 100
+
+
+@dataclass
+class ReconcileOutcome:
+    inspected: int = 0
+    symbols_backfilled: int = 0
+    missed_order_ids: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def has_gap(self) -> bool:
+        return bool(self.missed_order_ids)
+
+
+class OrderHistoryReconciler:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        trading_account_id: str,
+        exchange: ExchangeClient,
+    ) -> None:
+        self.db = db
+        self.trading_account_id = trading_account_id
+        self.exchange = exchange
+
+    def run_once(self) -> ReconcileOutcome:
+        orders = self.exchange.list_orders(limit=REST_WINDOW)
+        outcome = ReconcileOutcome(inspected=len(orders), missed_order_ids=self._missed(orders))
+        outcome.symbols_backfilled = self._backfill_symbols(orders)
+        if outcome.has_gap:
+            # 具体漏了哪些放到日志；库里只累加计数。
+            logger.error(
+                "private stream missed %d order(s), their PnL is unrecoverable: %s",
+                len(outcome.missed_order_ids),
+                list(outcome.missed_order_ids[:10]),
+            )
+            record_merged_error(self.db, collector=GAP_COLLECTOR, message=GAP_MESSAGE)
+        return outcome
+
+    def _backfill_symbols(self, orders: list) -> int:
+        """把 REST 里的 symbol 补到 symbol 为 NULL 的成交行。
+
+        只补 NULL 的 —— 已有值的不动，免得把更可信的来源覆盖掉。
+        """
+
+        symbols = {order.order_id: order.symbol for order in orders if order.symbol}
+        if not symbols:
+            return 0
+        rows = self.db.scalars(
+            select(ExchangeFillRecord).where(
+                ExchangeFillRecord.trading_account_id == self.trading_account_id,
+                ExchangeFillRecord.symbol.is_(None),
+                ExchangeFillRecord.exchange_order_id.in_(list(symbols)),
+            )
+        ).all()
+        for row in rows:
+            row.symbol = symbols[row.exchange_order_id]
+        return len(rows)
+
+    def _missed(self, orders: list) -> tuple[str, ...]:
+        """REST 里有、我们却没见过的订单。
+
+        基准取**我们最早见过的那条订单事件**：比它更早的订单发生在监听上线之前，
+        本来就没人看着，不能算漏。一条订单事件都没有时没有基准可言，一律不报。
+        """
+
+        earliest = self.db.scalar(
+            select(func.min(ExchangeOrderEvent.exchange_created_at)).where(
+                ExchangeOrderEvent.trading_account_id == self.trading_account_id
+            )
+        )
+        if earliest is None:
+            return ()
+        # SQLite 取回来是 naive 的（Postgres 是 aware）—— 统一按 UTC 处理，
+        # 否则与 REST 的 aware 时间比较会炸。见 app/positions/manager.py 同样的处理。
+        if earliest.tzinfo is None:
+            earliest = earliest.replace(tzinfo=UTC)
+
+        known = set(
+            self.db.scalars(
+                select(ExchangeOrderEvent.exchange_order_id).where(
+                    ExchangeOrderEvent.trading_account_id == self.trading_account_id
+                )
+            ).all()
+        )
+        return tuple(
+            order.order_id
+            for order in orders
+            if order.order_id not in known
+            and order.created_at is not None
+            and order.created_at >= earliest
+        )
+```
+
+> 这里**只到 `_missed` 为止** —— 会话与线程的管理放在监听器里（Step 8），
+> 让这个模块保持成「给一个 Session，跑一轮对账」的纯逻辑，方便单测。
+
+- [ ] **Step 7: 加对账间隔配置**
+
+在 `backend/app/config.py` 的 `streams_rescan_seconds` 之后加：
+
+```python
+    #: REST 兜底对账的间隔（秒）。每轮一次 HTTP 调用，很便宜。
+    #: 窗口是最近 100 条终态订单，15 分钟内产生 100 笔订单不现实。
+    streams_reconcile_seconds: float = 300.0
+```
+
+- [ ] **Step 8: 接进监听器**
+
+修改 `backend/app/streams/listener.py`：把 `_run_target` 换成下面这样，并加上
+`_reconcile_forever`。
+
+```python
+    async def _run_target(self, target: StreamTarget) -> None:
+        """一个账户：一条 WS 长连接 + 一个周期性 REST 对账。
+
+        每个账户独占 Session 跑 WS 落库（gather 并发时共享会话会互相踩事务）；
+        对账另开会话并放到工作线程 —— 它是**阻塞 HTTP**，直接在事件循环里跑会
+        卡住 WS 的心跳回执，服务端 10 次收不到 PONG 就断开。
+        """
+
+        client = build_client(
+            url=self.settings.streams_ws_url,
+            api_key=target.credentials.api_key,
+            api_secret=target.credentials.api_secret,
+            passphrase=target.credentials.passphrase,
+            initial_backoff=self.settings.streams_reconnect_initial_seconds,
+            max_backoff=self.settings.streams_reconnect_max_seconds,
+        )
+        exchange = WeexClient(self.settings, credentials=target.credentials)
+        with self.session_factory() as db:
+            repository = StreamRepository(
+                db, user_id=target.user_id, trading_account_id=target.trading_account_id
+            )
+            await asyncio.gather(
+                client.run_forever(lambda events: self._persist(repository, events)),
+                self._reconcile_forever(target, exchange),
+            )
+
+    async def _reconcile_forever(self, target: StreamTarget, exchange: WeexClient) -> None:
+        while True:
+            await asyncio.to_thread(self._reconcile_once, target, exchange)
+            await asyncio.sleep(self.settings.streams_reconcile_seconds)
+
+    def _reconcile_once(self, target: StreamTarget, exchange: WeexClient) -> None:
+        with self.session_factory() as db:
+            try:
+                outcome = OrderHistoryReconciler(
+                    db, trading_account_id=target.trading_account_id, exchange=exchange
+                ).run_once()
+                db.commit()
+            except Exception:  # noqa: BLE001 - 对账失败不能中断采集
+                logger.exception("stream reconciliation failed")
+                db.rollback()
+                return
+            logger.info(
+                "stream reconcile: inspected=%d symbols_backfilled=%d missed=%d",
+                outcome.inspected,
+                outcome.symbols_backfilled,
+                len(outcome.missed_order_ids),
+            )
+```
+
+import 区补上：
+
+```python
+from app.exchange.weex import WeexClient
+from app.streams.reconciler import OrderHistoryReconciler
+```
+
+> `reconciler.py` 里那个 `run_reconcile` 辅助函数如果没用上就删掉 —— 上面这个
+> 写法已经把它内联了。别留死代码。
+
+- [ ] **Step 9: 跑测试与静态检查**
+
+Run: `cd backend && uv run pytest tests/unit -q && uv run ruff check app tests workers && uv run mypy app`
+
+Expected: 全绿
+
+- [ ] **Step 10: 真实账户验证（**这一步需要人工开平仓**）**
+
+```bash
+cd backend && uv run python -m workers.streams
+```
+
+去 WEEX 网页手动开一笔仓、再平掉，等一轮对账（默认 5 分钟，想快就把
+`STREAMS_RECONCILE_SECONDS` 临时设成 20）。核对：
+
+```bash
+cd backend && uv run python -c "
+from sqlalchemy import select
+from app.db.session import SessionLocal
+from app.db.models import ExchangeFillRecord
+with SessionLocal() as db:
+    for r in db.scalars(select(ExchangeFillRecord).order_by(ExchangeFillRecord.filled_at)):
+        print(r.filled_at, r.symbol, r.order_side, r.quantity, '净盈亏', r.realize_pnl - r.fee)
+"
+```
+
+Expected: **`symbol` 不再是 None**（这次是 `DOGESUSDT` 之类的真实交易对）。
+这一条是 Task 8 失败的那个验证点，必须看到它翻过来。
+
+- [ ] **Step 11: 提交**
+
+```bash
+git add backend/app/exchange/base.py backend/app/exchange/weex.py backend/app/exchange/fixtures.py \
+  backend/app/db/collector_errors.py backend/app/config.py backend/app/streams/listener.py \
+  backend/app/streams/reconciler.py backend/tests/unit/test_stream_reconciler.py
+git commit -m "feat(streams): REST 兜底对账，补 symbol 并标记漏单
+
+真实账户验证暴露了两件事。
+
+一是 fill 与 orders 两个频道的推送里**都没有 symbol**，只有 coin 与
+orderId。WEEX 文档在两个频道里都列了这个字段，虚拟盘不推 —— 于是原设计
+「靠 orders 频道回填 symbol」的机制没有数据源，exchange_fills.symbol 全是
+NULL。REST order/history 是带的，改从那里补。
+
+二是 WS 断线期间的成交不会重放。REST 能看到最近 100 条终态订单，凡是我们
+没通过 WS 见过的就是漏掉的 —— 检测出来并归并计数落库，让「这段记录不
+完整」这件事事后可查证。
+
+**能补的只有 symbol。** 漏掉的成交带来的盈亏补不回来（REST 没有 realizePnl），
+所以漏单只能标记、不能修复。这一点写进了模块文档，免得把兜底当万能。
+
+两个实现细节：对账的阻塞 HTTP 走 asyncio.to_thread，直接在事件循环里跑会
+卡住 WS 的 PONG 回执，服务端 10 次收不到就断连；对账另开 Session，因为
+SQLAlchemy 的 Session 不是线程安全的，不能与 WS 落库那个会话共用。"
+```
+
+<!-- Task 10 接在此处 -->
+
+## Task 10: 部署编排
 
 **Files:**
 - Modify: `docker-compose.yml`（在 `worker` 服务之后）

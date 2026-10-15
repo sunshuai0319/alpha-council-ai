@@ -181,7 +181,7 @@ def test_parse_fill_event():
     assert fill.exchange_order_id == "805594661514117214"
     assert fill.position_side == "SHORT"
     assert fill.order_side == "BUY"
-    assert fill.quantity == Decimal("100")
+    assert fill.quantity == Decimal(100)
     assert fill.value == Decimal("7.99000")
     assert fill.fee == Decimal("0.00639200")
     assert fill.realize_pnl == Decimal("0.01000000")
