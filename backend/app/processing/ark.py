@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Any, Self
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.config import Settings, get_settings
 from app.processing.documents import (
@@ -23,6 +23,25 @@ class DocumentSummary(BaseModel):
     direction: str
     impact_horizon: str
     confidence: float = Field(ge=0, le=1)
+
+    @field_validator("direction", "event_type", "impact_horizon", mode="before")
+    @classmethod
+    def _flatten_structured_labels(cls, value: Any) -> Any:
+        """模型有时把标签返回成结构而不是字符串 —— 拍平，别拒绝。
+
+        线上实测：``direction`` 回过 ``{'BTC': 'outflows/negative'}``，pydantic
+        直接拒绝整个 summary，那篇文档因此永远进不了库（库里 attempts 一路涨）。
+
+        这些标签随后都会被 ``normalize_*`` 收敛到有界分类，所以把结构拍平不会
+        丢信息 —— **拒绝才会**。拍平后的 ``"BTC outflows/negative"`` 会被
+        ``normalize_direction`` 正确识别成 BEARISH。
+        """
+
+        if isinstance(value, dict):
+            return " ".join(f"{key} {item}" for key, item in value.items())
+        if isinstance(value, (list, tuple, set)):
+            return " ".join(str(item) for item in value)
+        return value
 
 
 class SummaryError(RuntimeError):

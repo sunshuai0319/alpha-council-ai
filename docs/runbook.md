@@ -147,10 +147,10 @@ balance 差分那条路）。
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| 日志刷 `private stream disconnected ... retrying in Xs` | 网络或端点不可达 | 退避上限 60s，通常会自愈；持续超过 10 分钟查该容器到 `ws-contract.weex.com` 的网络 |
+| 日志刷 `private stream disconnected after Ns ... retrying in Xs` | 上游定期掐长连接 | **正常现象，不用管**。实测上游每 1.5–4 分钟断一次；存活超过 30 秒的会话会重置退避，所以重连只花 ~1 秒。若 `after Ns` 一直很小（几秒），那是真连不上，查容器到 `ws-contract.weex.com` 的网络 |
 | 日志刷 `no enabled virtual accounts with credentials` | 没有启用中的虚拟账户，或凭证没配 | 检查 `trading_accounts` 的 `enabled` 与三个 `*_ref` 列 |
 | 有 `subscribed` 但成交后表里没数据 | 频道没推，或推送被跳过 | 用 `backend/scripts/probe_private_ws.py` 单独连一次对比 |
-| 日志出现 `private stream missed N order(s)` | WS 断线期间漏了成交 | **漏掉的盈亏补不回来**（REST 没有 `realizePnl`）。`collector_errors` 里 `weex_private_streams / observation_gap` 的 `occurrences` 记录累计次数 |
+| 日志出现 `private stream missed N order(s)` | WS 断线期间漏了成交 | **漏掉的盈亏补不回来**（REST 没有 `realizePnl`）。`collector_errors` 里 `weex_private_streams / observation_gap` 的 `occurrences` **每次加一代表新发现一次漏采** —— 同一个历史缺口只报一次（漏掉的订单永远不会出现在我们这边，不去重的话会被每轮重报） |
 | `exchange_fills.symbol` 长期为 NULL | 对账还没跑，或该订单已滑出 REST 的 100 条窗口 | 正常情况下一轮对账（默认 5 分钟）就会补上；滑出窗口的补不回来了 |
 
 **三个容易误判的地方：**
