@@ -23,13 +23,15 @@ def credentials_for_account(account: TradingAccount | None) -> WeexCredentials |
 
     if account is None:
         return None
-    refs = (account.api_key_ref, account.api_secret_ref, account.passphrase_ref)
-    if not all(refs):
+    # 逐个绑定而不是走 all(refs)：`all()` 不给 mypy 收窄 str | None 的依据，
+    # 后面构造 WeexCredentials 时它会报 str | None 与 str 不兼容。
+    api_key = account.api_key_ref
+    api_secret = account.api_secret_ref
+    passphrase = account.passphrase_ref
+    if not (api_key and api_secret and passphrase):
         return None
-    if any(ref.startswith(ENV_PLACEHOLDER_PREFIX) for ref in refs):
+    if any(
+        value.startswith(ENV_PLACEHOLDER_PREFIX) for value in (api_key, api_secret, passphrase)
+    ):
         return None
-    return WeexCredentials(
-        api_key=account.api_key_ref,
-        api_secret=account.api_secret_ref,
-        passphrase=account.passphrase_ref,
-    )
+    return WeexCredentials(api_key=api_key, api_secret=api_secret, passphrase=passphrase)

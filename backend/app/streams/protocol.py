@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -269,7 +270,9 @@ def _parse_account(row: dict[str, Any], version: int) -> AccountSample:
 
 #: 频道名 → 行解析器。**positions 不在表里**：它的 symbol 是内部合约 ID，
 #: 需要额外映射，v1 不订阅（见模块头的说明）。
-_ROW_PARSERS = {
+#: 标注类型是必要的：三个解析器返回不同的 dataclass，不标注的话 mypy 会把
+#: 调用结果推成 object，parse_event 里 append 到 list[StreamEvent] 就报错。
+_ROW_PARSERS: dict[str, Callable[[dict[str, Any], int], StreamEvent]] = {
     "fill": _parse_fill,
     "orders": _parse_order,
     "account": _parse_account,
