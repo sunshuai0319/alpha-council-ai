@@ -82,6 +82,17 @@ class FakeSummary:
         )
 
 
+class FreeFormDirectionSummary(FakeSummary):
+    """模型返回自由文本方向 —— 线上真实崩过的那个值。
+
+    ``Summary`` 是 pydantic 模型，不是 dataclass —— 用 ``model_copy``
+    而不是 ``dataclasses.replace``（后者会抛 TypeError）。
+    """
+
+    def summarize(self, document):
+        return super().summarize(document).model_copy(update={"direction": "neutral/uncertain"})
+
+
 class FakeEmbedder:
     def embed(self, texts):
         return [[0.1, 0.2] for _ in texts]
@@ -258,6 +269,39 @@ def test_document_pipeline_persists_summary_macro_observation_and_indexes(tmp_pa
         assert len(db.scalars(select(DocumentSummary)).all()) == 2
         assert len(db.scalars(select(MacroObservationRecord)).all()) == 1
         assert indexer.chunks
+
+
+def test_document_pipeline_stores_a_bounded_direction(tmp_path):
+    """模型返回自由文本方向时必须先收敛再落库。
+
+    线上实测：模型回 ``neutral/uncertain``（17 字符），而
+    ``document_summaries.direction`` 是 VARCHAR(16) —— 抛
+    StringDataRightTruncation 并让**整批**文档回滚（流水线每批只 commit
+    一次，flush 会把所有待写行一起刷）。
+
+    ⚠️ 断言落在存下来的值上，而不是「有没有抛异常」：SQLite **不强制**
+    VARCHAR 长度，所以这条测试在 SQLite 上永远不会自然复现截断 —— 只断言
+    「没炸」的话，归一化被删掉它照样绿。
+    """
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'direction.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        pipeline = DocumentPipeline(
+            db=db,
+            rss=FakeRSS(),
+            macro=FakeMacro(),
+            summary_client=FreeFormDirectionSummary(),
+            embedder=FakeEmbedder(),
+            indexer=FakeIndexer(),
+        )
+        result = pipeline.run_once()
+
+        assert result["processed"] == 2
+        stored = {row.direction for row in db.scalars(select(DocumentSummary)).all()}
+        assert stored == {"NEUTRAL"}
+        for direction in stored:
+            assert len(direction) <= 16
 
 
 def test_document_pipeline_uses_detected_asset_when_summary_omits_assets(tmp_path):

@@ -275,6 +275,47 @@ def normalize_impact_horizon(value: str | None) -> str:
     return "UNKNOWN"
 
 
+def normalize_direction(value: str | None) -> str:
+    """Normalize model/source direction labels to the bounded retrieval taxonomy.
+
+    **Why the taxonomy has to be closed**: ``document_summaries.direction`` is
+    ``VARCHAR(16)`` and the model returns free-form text — in production it
+    answered ``neutral/uncertain`` (17 characters) and the resulting
+    ``StringDataRightTruncation`` took down a whole document batch, because the
+    pipeline commits once per batch and flushes every pending row together.
+    Same failure mode, same remedy as :func:`normalize_impact_horizon`:
+    retaining arbitrary model output both overflows the column and bypasses the
+    shared taxonomy.
+
+    Unrecognised labels collapse to ``UNKNOWN``. The returned value is always
+    one of four short tokens, so no input can overflow the column.
+    """
+
+    raw = str(value or "").strip().upper()
+    if raw in UNKNOWN_VALUES:
+        return "UNKNOWN"
+    # Slashes are replaced too: the value that crashed production was
+    # ``neutral/uncertain``, and leaving the slash would produce the token
+    # ``NEUTRAL/UNCERTAIN``.
+    token = re.sub(r"[\s\-/]+", "_", raw)
+    if token in {"BULLISH", "BULL", "UP", "UPSIDE", "POSITIVE", "LONG"}:
+        return "BULLISH"
+    if token in {"BEARISH", "BEAR", "DOWN", "DOWNSIDE", "NEGATIVE", "SHORT"}:
+        return "BEARISH"
+    if token in {
+        "NEUTRAL",
+        "NEUTRAL_UNCERTAIN",
+        "UNCERTAIN",
+        "MIXED",
+        "SIDEWAYS",
+        "FLAT",
+        "RANGE",
+        "RANGING",
+    }:
+        return "NEUTRAL"
+    return "UNKNOWN"
+
+
 def classify_asset_scope(assets: Iterable[str] | None, source: str, event_type: str) -> str:
     """Classify rows for retrieval fallback and offline distribution analysis."""
 

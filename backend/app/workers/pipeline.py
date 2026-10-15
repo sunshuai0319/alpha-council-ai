@@ -20,6 +20,7 @@ from app.processing.documents import (
     chunk_text,
     classify_asset_scope,
     merge_assets,
+    normalize_direction,
     normalize_event_type,
     normalize_impact_horizon,
     prepare_document,
@@ -213,11 +214,13 @@ class DocumentPipeline:
             assets = merge_assets(prepared.assets, summary.assets, self.settings.asset_list)
             event_type = normalize_event_type(summary.event_type or prepared.event_type)
             impact_horizon = normalize_impact_horizon(summary.impact_horizon)
+            direction = normalize_direction(summary.direction)
             summary = summary.model_copy(
                 update={
                     "assets": list(assets),
                     "event_type": event_type,
                     "impact_horizon": impact_horizon,
+                    "direction": direction,
                 }
             )
             existing_summary = self.db.scalar(
