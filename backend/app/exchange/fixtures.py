@@ -246,6 +246,12 @@ class FixtureExchangeClient:
     def get_order_by_client_id(self, client_order_id: str) -> ExchangeOrder | None:
         return self._orders.get(client_order_id)
 
+    def list_orders(self, symbol: str | None = None, limit: int = 100) -> list[ExchangeOrder]:
+        orders = [
+            order for order in self._orders.values() if symbol is None or order.symbol == symbol
+        ]
+        return orders[:limit]
+
     def get_trades(
         self,
         symbol: str | None = None,

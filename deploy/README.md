@@ -5,6 +5,7 @@
                 ├── /      ▶ web  (Next.js :3000)
                 └── /api/  ▶ api  (uvicorn :8000) ──▶ Postgres / Milvus（外部已有）
                                  worker (workers.scheduler) ──▶ 同上 + WEEX
+                                 streams (workers.streams)   ──▶ 同上 + WEEX（私有 WebSocket）
 ```
 
 前端与后端同源，因此**不需要任何 CORS 配置**；前端用相对路径 `NEXT_PUBLIC_API_BASE_URL=/api` 调用。
@@ -16,7 +17,7 @@
 | 文件 | 谁读 | 装什么 |
 |---|---|---|
 | `.env`（根） | docker compose | 网关端口、前端构建参数 |
-| `backend/.env` | api + worker（本地与容器共用） | 数据库 / Zilliz / Ark / Clerk 后端 / 风控 |
+| `backend/.env` | api + worker + streams（本地与容器共用） | 数据库 / Zilliz / Ark / Clerk 后端 / 风控 |
 | `frontend/.env` | `npm run dev`；容器只取其中的 `CLERK_SECRET_KEY` | 前端本地开发 |
 
 前端公开变量在 `.env`（根）与 `frontend/.env` 中各有一份，这是**机制决定的**：Next 在构建时
@@ -54,6 +55,33 @@ worker 不调用 api，所以 compose 里**刻意没有** `depends_on: api` —�
 ```bash
 docker compose run --rm api alembic upgrade head
 ```
+
+### 加上采集层（streams）
+
+**只起 worker 时采集层不会跑** —— `workers/streams.py` 是独立进程，不在 worker 里。
+它订阅 WEEX 私有 WebSocket，把用户手动交易的成交与盈亏实时落库
+（`exchange_fills` / `exchange_order_events` / `exchange_account_samples`）。
+
+```bash
+docker compose build worker streams
+docker compose up -d worker streams
+docker compose logs -f streams     # 看到 "private stream subscribed" 即连上
+```
+
+三件事要知道：
+
+1. **先跑迁移。** 这三张表由迁移 `012` 建，而迁移挂在 api 的 command 里 ——
+   只起 worker/streams 不会自动建表，`streams` 会因表不存在而报错：
+   ```bash
+   docker compose run --rm worker alembic upgrade head
+   ```
+2. **它与交易路径完全解耦。** 停掉采集不影响下单、风控与对账，只是不再累积新数据。
+   想停：`docker compose stop streams`。**没有 `STREAMS_ENABLED` 之类的开关** ——
+   部署模型就是「选哪些服务起来」，而那种开关与 `restart: unless-stopped` 组合会
+   变成重启循环（进程正常退出也会被拉起来）。
+3. **它停摆期间的成交不会自动补齐** —— WS 不重放历史，靠 REST 对账补，而那个接口
+   只有最近 100 条且不能翻页。漏单会被记进 `collector_errors`，但**盈亏补不回来**。
+   排障见 `docs/runbook.md` 的「私有 WS 采集层」一节。
 
 访问 `http://<主机>:${GATEWAY_PORT:-8888}`。
 

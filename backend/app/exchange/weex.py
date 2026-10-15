@@ -526,6 +526,16 @@ class WeexClient(ExchangeClient):
                 return self._parse_order(item)
         return None
 
+    def list_orders(self, symbol: str | None = None, limit: int = 100) -> list[ExchangeOrder]:
+        """最近的终态订单。
+
+        虚拟盘**没有分页**（实测：``page`` 参数被忽略，两页内容完全相同），
+        ``limit`` 上限 100 —— 所以这是一个滑动窗口，不是完整历史。
+        调用方要按这个前提设计（见 app/streams/reconciler.py）。
+        """
+
+        return [self._parse_order(item) for item in self._order_history(symbol=symbol)[:limit]]
+
     def get_trades(
         self,
         symbol: str | None = None,

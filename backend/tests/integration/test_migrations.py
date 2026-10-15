@@ -219,3 +219,23 @@ def test_document_summary_impact_horizon_is_wide_enough_for_composite_labels(tmp
         if column["name"] == "impact_horizon"
     )
     assert column["type"].length == 128
+
+
+def test_exchange_stream_tables_exist_after_migration(tmp_path) -> None:
+    """采集层的三张表必须由迁移建出来。
+
+    ⚠️ 只改 models.py 是不够的：`001` 的 create_all 只在库处于 001 时跑过一次，
+    已迁移的库不会再执行它。新库因为 001 用的是当前模型才碰巧建出来 —— 这个
+    假象很容易骗过本地测试。
+    """
+
+    url = f"sqlite+pysqlite:///{tmp_path / 'streams.db'}"
+    _upgrade(url)
+
+    engine = create_engine(url)
+    try:
+        names = set(inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+    assert {"exchange_fills", "exchange_order_events", "exchange_account_samples"} <= names

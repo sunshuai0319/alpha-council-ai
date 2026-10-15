@@ -124,6 +124,8 @@ class ExchangeClient(Protocol):
 
     def get_order_by_client_id(self, client_order_id: str) -> ExchangeOrder | None: ...
 
+    def list_orders(self, symbol: str | None = None, limit: int = 100) -> list[ExchangeOrder]: ...
+
     def get_trades(
         self,
         symbol: str | None = None,

@@ -18,6 +18,38 @@ from sqlalchemy.orm import Session
 from app.db.models import CollectorError
 
 
+def record_merged_error(db: Session, *, collector: str, message: str) -> None:
+    """按 (collector, message) 归并计数一条错误。
+
+    只打日志的话「这个故障到底发生过几次」数不出来；每轮写一行又会撑爆表。
+    归并计数是这两者之间的折中。
+
+    ``message`` 必须是**稳定的**串，别把 orderId 这类每次都不同的东西拼进来 ——
+    那会让每次发生都产生新行，归并就失效了。
+    """
+
+    now = datetime.now(UTC)
+    row = db.scalar(
+        select(CollectorError).where(
+            CollectorError.collector == collector,
+            CollectorError.message == message,
+        )
+    )
+    if row is None:
+        db.add(
+            CollectorError(
+                collector=collector,
+                message=message,
+                occurrences=1,
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+        )
+    else:
+        row.occurrences += 1
+        row.last_seen_at = now
+
+
 def record_collector_errors(db: Session | None, *results: Any) -> None:
     """把每个 ``CollectorResult`` 的 errors 按 (collector, message) 归并计数。
 
@@ -27,25 +59,6 @@ def record_collector_errors(db: Session | None, *results: Any) -> None:
 
     if db is None:
         return
-    now = datetime.now(UTC)
     for result in results:
         for message in result.errors:
-            row = db.scalar(
-                select(CollectorError).where(
-                    CollectorError.collector == result.source,
-                    CollectorError.message == message,
-                )
-            )
-            if row is None:
-                db.add(
-                    CollectorError(
-                        collector=result.source,
-                        message=message,
-                        occurrences=1,
-                        first_seen_at=now,
-                        last_seen_at=now,
-                    )
-                )
-            else:
-                row.occurrences += 1
-                row.last_seen_at = now
+            record_merged_error(db, collector=result.source, message=message)

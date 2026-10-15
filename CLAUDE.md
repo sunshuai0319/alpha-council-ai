@@ -52,9 +52,25 @@ worker 每 5 分钟（`decision_interval_seconds`）对每个启用的虚拟账�
 2. **决策图**：LangGraph（`app/agents/graph.py`）当前实际执行“行情新鲜度 → 确定性规则信号/仓位/SL/TP → 非 HOLD 三路扇出 → news 分支做 RAG、structure/data-integrity 分支并行 → 合并/校验”。旧的 market / quant / macro / committee 函数仍保留但不在当前编译图路径上。行情/RAG/校验错误进入安全 HOLD；LLM veto 缺失或非法输出按 fail-closed 记录为 `veto_fail_closed`。
 3. **风控**：`RiskEngine.evaluate`（`app/risk/engine.py`）是不可变硬上限，模型输出无法覆盖。数据过期、杠杆越界、名义敞口超限、缺止损、日亏损、连亏、日交易额度等任一不过 → 拒绝；熔断信号（日亏损/连亏/权益非正）会暂停账户。CLOSE 单只受账户状态类检查约束，不被敞口/杠杆限制拦截（拦平仓会锁死仓位）。
 4. **执行**：`ExecutionService`（`app/execution/service.py`）只接受 `risk_decision.allowed == true` 的提案；下单超时用 `stable_client_order_id` 回查对账，状态未知则返回 `UNKNOWN` 而非重试。
-5. **对账**：`ReconciliationService` 从 balance 快照推导已实现盈亏（虚拟盘无成交流水）。
+5. **对账**：`ReconciliationService` 从 balance 快照推导已实现盈亏（REST 没有成交流水）。
+   ⚠️ 但**私有 WebSocket 的 `fill` 频道直接给 `realizePnl` / `fillFee`**（2026-10-15 实测，
+   见 `docs/weex-virtual-api.md` §2.2）—— 别再把「虚拟盘拿不到成交流水」当定论。
 
 并行还有一条 `DocumentPipeline`（`app/workers/pipeline.py`）：RSS 新闻 + FRED CSV + 美联储 RSS → 清洗去重 → Ark 摘要 → Doubao 分块嵌入写 Zilliz。RAG 只作为非 HOLD 入场路径的新闻/宏观 veto 证据，不参与规则方向、风控或下单。FRED 月度序列按 `fred_monthly_interval_seconds` 重抓，失败的序列下一轮立刻重试（`_schedule.mark` 只推进成功的）。
+
+### 采集层（`app/streams/`，独立进程 `workers/streams.py`）
+
+订阅 WEEX 私有 WebSocket 的 `fill` / `orders` / `account` 三个频道，把**用户手动交易**的
+成交与盈亏实时落库（`exchange_fills` / `exchange_order_events` / `exchange_account_samples`）。
+这是「交易所回报的单笔盈亏」的唯一来源 —— `ReconciliationService` 的 balance 差分是账户级的，
+且 worker 停摆就断档。
+
+- 与交易路径**完全解耦**：它挂了下单与风控不受影响。单独一个 compose 服务，不塞进 worker。
+- 协议层（`protocol.py`）是纯函数，socket 通过可注入的 `connect` 隔开，所以订阅、心跳、
+  重连退避都能用假 Transport 测完，不用起服务器。
+- **`realizePnl` 不含手续费**，净额是 `realize_pnl − fee`。见 `protocol.net_pnl()`。
+- **`fill` 与 `orders` 推送里都没有 `symbol`**，只有 `coin` 与 `orderId`；靠 REST
+  `order/history` 按 orderId 回填（`reconciler.py`）。刚成交那一瞬 `symbol` 可能还是 NULL。
 
 ## 关键约定与坑
 

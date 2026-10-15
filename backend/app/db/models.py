@@ -251,6 +251,115 @@ class Fill(Base):
     filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class ExchangeFillRecord(Base):
+    """WS ``fill`` 频道的成交明细。
+
+    这是系统里第一份**交易所回报的单笔盈亏**。`fills` 表是系统自己下单产生的
+    成交，与用户手动交易无关；这张表两者都收。
+    """
+
+    __tablename__ = "exchange_fills"
+    __table_args__ = (
+        UniqueConstraint("trading_account_id", "exchange_fill_id", name="uq_exchange_fill"),
+        Index("ix_exchange_fills_account_time", "trading_account_id", "filled_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    trading_account_id: Mapped[str] = mapped_column(ForeignKey("trading_accounts.id"), index=True)
+    exchange_fill_id: Mapped[str] = mapped_column(String(128))
+    exchange_order_id: Mapped[str] = mapped_column(String(128), index=True)
+    #: fill 推送里**没有** symbol，靠 orders 频道按 orderId 补。补不上时留 NULL。
+    symbol: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    position_side: Mapped[str] = mapped_column(String(8), default="")
+    order_side: Mapped[str] = mapped_column(String(8), default="")
+    quantity: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    value: Mapped[Decimal] = mapped_column(Numeric(30, 12))
+    fee: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    #: ⚠️ **不含手续费**。净额是 realize_pnl − fee，别直接展示这个字段。
+    realize_pnl: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    direction: Mapped[str] = mapped_column(String(8), default="")
+    account_version: Mapped[int] = mapped_column(Integer, default=0)
+    filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class ExchangeOrderEvent(Base):
+    """WS ``orders`` 频道的委托状态。
+
+    同一订单会推多次（``UNTRIGGERED`` → ``PENDING`` → ``FILLED``），按
+    ``exchange_order_id`` 覆盖为最新状态 —— 终态那一行已经带齐了累计字段
+    （cumFillValue / cumRealizePnl / triggerPrice），保留中间态没有额外信息。
+    """
+
+    __tablename__ = "exchange_order_events"
+    __table_args__ = (
+        UniqueConstraint("trading_account_id", "exchange_order_id", name="uq_exchange_order_event"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    trading_account_id: Mapped[str] = mapped_column(ForeignKey("trading_accounts.id"), index=True)
+    exchange_order_id: Mapped[str] = mapped_column(String(128))
+    client_order_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    symbol: Mapped[str] = mapped_column(String(32), default="", index=True)
+    position_side: Mapped[str] = mapped_column(String(8), default="")
+    order_side: Mapped[str] = mapped_column(String(8), default="")
+    order_type: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(32), default="")
+    #: 枚举不统一（实测）：WEB / UNKNOWN_ORDER_SOURCE / STOP_LOSS / STOP_PROFIT。
+    order_source: Mapped[str] = mapped_column(String(32), default="")
+    reduce_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    position_tpsl: Mapped[bool] = mapped_column(Boolean, default=False)
+    trigger_price: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    cum_fill_quantity: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    cum_fill_value: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    cum_fill_fee: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    cum_realize_pnl: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    cum_liquidate_fee: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    taker_fee_rate: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    maker_fee_rate: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    account_version: Mapped[int] = mapped_column(Integer, default=0)
+    exchange_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    exchange_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class ExchangeAccountSample(Base):
+    """WS ``account`` 频道的资金快照。
+
+    净值曲线的数据源。``cum_deposit`` / ``cum_withdraw`` / ``cum_transfer_in``
+    让第三方能剔除资金进出 —— 这是「净值增长不是靠充值做出来的」的唯一依据。
+    """
+
+    __tablename__ = "exchange_account_samples"
+    __table_args__ = (
+        UniqueConstraint(
+            "trading_account_id", "account_version", "coin", name="uq_exchange_account_sample"
+        ),
+        Index("ix_exchange_account_samples_time", "trading_account_id", "captured_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    trading_account_id: Mapped[str] = mapped_column(ForeignKey("trading_accounts.id"), index=True)
+    coin: Mapped[str] = mapped_column(String(16))
+    amount: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    cum_deposit: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    cum_withdraw: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    cum_transfer_in: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    cum_transfer_out: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    cum_fill_fee: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    cum_funding_fee: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=0)
+    liquidating: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: WS 的 v 字段。**会跳号**（实测 696→697→699→701），不是事件序列号，
+    #: 只用作同一 (账户, 版本, 币种) 的幂等键。
+    account_version: Mapped[int] = mapped_column(Integer, default=0)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
 class CollectorError(Base):
     """采集错误，按 (collector, message) 归并计数。
 
