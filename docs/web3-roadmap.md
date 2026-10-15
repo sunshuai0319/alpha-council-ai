@@ -2,6 +2,12 @@
 
 Web3 在 Alpha Council AI 中首先承担“证明与归属”角色，不承担交易执行、资产托管或收益承诺。
 
+> **本文是方向性文档，不是实现依据。** 具体设计与已落地的部分见
+> [`superpowers/specs/2026-10-15-onchain-trade-attestation-design.md`](superpowers/specs/2026-10-15-onchain-trade-attestation-design.md)：
+> 它定义了上链的数据模型（五类叶子）、Base 合约接口、IPFS manifest、
+> The Graph 索引与去信任验证路径，并记录了 2026-10-15 的实测结论。
+> 数据源那一半（`app/streams/`，私有 WS 采集）已经实现并合并进 `main`。
+
 ## 当前版本
 
 保留链下 `DecisionAttestation` 结构：
