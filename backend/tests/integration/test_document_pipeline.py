@@ -304,6 +304,168 @@ def test_document_pipeline_stores_a_bounded_direction(tmp_path):
             assert len(direction) <= 16
 
 
+class PoisonTitleSummary(FakeSummary):
+    """对某篇标题的文档必失败 —— 用来验证一篇坏文档不会连累整批。"""
+
+    def summarize(self, document):
+        if document.title == "Bitcoin ETF update":
+            raise RuntimeError("poisoned summary")
+        return super().summarize(document)
+
+
+class PoisonColumnSummary(FakeSummary):
+    """让写库本身被数据库拒绝 —— 复现线上那个 bug 的**形状**。
+
+    线上的触发方式是 ``direction`` 超出 VARCHAR(16)；SQLite 不强制 VARCHAR
+    长度，所以这里换成 NOT NULL 违例（SQLite 强制执行）。区别只是拒绝的原因，
+    关键是**失败发生在 flush 而不是在应用代码里** —— 那正是旧代码漏掉的地方：
+    ``flush()`` 的位置在 try 之外，异常一路冒到 ``run_once``，整批回滚。
+    """
+
+    def summarize(self, document):
+        summary = super().summarize(document)
+        if document.title == "Bitcoin ETF update":
+            # pydantic v2 默认不在赋值时校验，所以这里能绕过 Field(ge=0, le=1)
+            summary.confidence = None
+        return summary
+
+
+class FailingIndexer:
+    def insert(self, chunks):
+        raise RuntimeError("milvus unreachable")
+
+
+def test_one_failing_document_does_not_lose_the_rest_of_the_batch(tmp_path):
+    """一篇坏文档只该毁掉它自己。
+
+    原先整批只 commit 一次，而 ``flush()`` 会刷整个会话的待写行 —— 实测一篇
+    文档的 direction 超出列宽就让当天其后**所有**新文档回滚，流水线停了近
+    5 小时（09:29 之后再没写过任何东西）。
+
+    ⚠️ 毒药必须是**数据库层**的拒绝，不能是应用层异常：后者本来就被
+    ``_process`` 的 except 捕获，测不出这个 bug。
+    """
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'isolation.db'}")
+    Base.metadata.create_all(engine)
+    indexer = FakeIndexer()
+    with Session(engine) as db:
+        pipeline = DocumentPipeline(
+            db=db,
+            rss=FakeRSS(),
+            macro=FakeMacro(),
+            summary_client=PoisonColumnSummary(),
+            embedder=FakeEmbedder(),
+            indexer=indexer,
+        )
+        result = pipeline.run_once()
+
+        assert result["failed"] == 1
+        assert result["processed"] == 1
+        indexed = {
+            row.title
+            for row in db.scalars(
+                select(SourceDocument).where(SourceDocument.processing_status == "INDEXED")
+            )
+        }
+        assert indexed == {"Fed statement"}
+        assert indexer.chunks  # 好的那篇确实进了向量库
+
+
+def test_a_rejected_write_leaves_a_failed_record_behind(tmp_path):
+    """被数据库拒绝的文档要留下 FAILED 行，否则下一轮无从知道它试过、试了几次。
+
+    父行必须**先独立落库**才做得到这件事 —— 否则它跟着失败的事务一起回滚，
+    于是既没有失败记录、attempts 也不增长，看起来就像从没处理过。
+    """
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'rejected.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        pipeline = DocumentPipeline(
+            db=db,
+            rss=FakeRSS(),
+            macro=FakeMacro(),
+            summary_client=PoisonColumnSummary(),
+            embedder=FakeEmbedder(),
+            indexer=FakeIndexer(),
+        )
+        pipeline.run_once()
+
+        row = db.scalar(
+            select(SourceDocument).where(SourceDocument.title == "Bitcoin ETF update")
+        )
+        assert row is not None
+        assert row.processing_status == "FAILED"
+        assert row.processing_attempts == 1
+        assert "constraint" in (row.processing_error or "").lower()
+
+
+def test_indexing_failure_marks_the_document_failed_not_indexed(tmp_path):
+    """Postgres 落定之后 Milvus 失败 —— 不能留「已索引但无向量」的假状态。
+
+    这也是为什么写库要排在写向量**之前**：Postgres 是真相来源，Milvus 能从它
+    重建（``scripts/reindex_documents.py``）；反过来「向量在、行不在」是孤儿，
+    没有自动修复路径。
+    """
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'indexing.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        pipeline = DocumentPipeline(
+            db=db,
+            rss=FakeRSS(),
+            macro=FakeMacro(),
+            summary_client=FakeSummary(),
+            embedder=FakeEmbedder(),
+            indexer=FailingIndexer(),
+        )
+        result = pipeline.run_once()
+
+        assert result["processed"] == 0
+        assert result["failed"] == 2
+        statuses = {row.processing_status for row in db.scalars(select(SourceDocument))}
+        assert statuses == {"FAILED"}
+        # summary 行留下了：它是 Postgres 侧的真相，下一轮重试只需要重写向量
+        assert len(db.scalars(select(DocumentSummary)).all()) == 2
+
+
+def test_documents_stop_being_retried_after_the_attempt_cap(tmp_path):
+    """超过上限就不再重试。
+
+    原先没有上限 —— 库里有 attempts=34 的文档，来自一个早已不可达的端点，
+    每 5 分钟重试一次，永远失败。而且那个计数原先和坏值同事务，回滚后归零，
+    所以连「试了多少次」都记不下来。
+    """
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'attempts.db'}")
+    Base.metadata.create_all(engine)
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://u:p@localhost/a",
+        ZILLIZ_URI="http://localhost:19530",
+        ARK_API_KEY="test-key",
+        DOCUMENT_MAX_PROCESSING_ATTEMPTS="2",
+    )
+    with Session(engine) as db:
+        pipeline = DocumentPipeline(
+            db=db,
+            rss=FakeRSS(),
+            macro=FakeMacro(),
+            summary_client=PoisonTitleSummary(),
+            embedder=FakeEmbedder(),
+            indexer=FakeIndexer(),
+            settings=settings,
+        )
+        for _ in range(3):
+            pipeline.run_once()
+
+        row = db.scalar(
+            select(SourceDocument).where(SourceDocument.title == "Bitcoin ETF update")
+        )
+        assert row.processing_status == "FAILED"
+        assert row.processing_attempts == 2  # 第三轮已放弃，没有第三次尝试
+
+
 def test_document_pipeline_uses_detected_asset_when_summary_omits_assets(tmp_path):
     """摘要模型漏标资产时，仍使用文档预处理阶段识别出的币种标签。"""
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'asset_fallback.db'}")

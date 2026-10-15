@@ -5,12 +5,14 @@ import httpx
 from app.config import Settings
 from app.processing.ark import ArkSummaryClient, DocumentProcessor, DocumentSummary
 from app.processing.documents import (
+    EVENT_TYPE_MAX_LENGTH,
     DocumentInput,
     DocumentRepository,
     chunk_text,
     detect_assets,
     normalize_asset,
     normalize_direction,
+    normalize_event_type,
     normalize_impact_horizon,
     prepare_document,
 )
@@ -82,6 +84,88 @@ def test_direction_collapses_the_value_that_used_to_crash_the_pipeline() -> None
     assert normalize_direction("Neutral / Uncertain") == "NEUTRAL"
 
 
+def test_direction_covers_the_labels_seen_in_production() -> None:
+    """线上出现过的每一个标签都要有归宿。
+
+    这张表**来自 document_summaries 的实际取值分布**（506 条）。改分类法时
+    对着它改 —— 漏掉一个就是把那批文档的信号丢成 UNKNOWN。
+
+    唯一落到 UNKNOWN 的是 ``hawkish``：它是宏观立场词，对「文档方向」没有
+    唯一诠释，宁可说不确定也不要猜。
+    """
+
+    expected = {
+        "neutral": "NEUTRAL",
+        "positive": "BULLISH",
+        "bullish": "BULLISH",
+        "negative": "BEARISH",
+        "bearish": "BEARISH",
+        "mixed": "NEUTRAL",
+        "down": "BEARISH",
+        "up": "BULLISH",
+        "unclear": "NEUTRAL",
+        "bullish/upward": "BULLISH",
+        "neutral/unknown": "NEUTRAL",
+        "hawkish": "UNKNOWN",
+    }
+
+    for label, want in expected.items():
+        assert normalize_direction(label) == want, label
+
+
+def test_slash_joined_labels_are_not_flattened_to_unknown() -> None:
+    """整串比对会把这些丢成 UNKNOWN —— 那是丢信号，不是归一化。
+
+    ``neutral/unknown`` 正好 16 字符、``bullish/upward`` 15 —— 这个列本来就在
+    悬崖边上，所以斜杠组合不是罕见形状，是它会稳定产出的形状。
+    """
+
+    assert normalize_direction("bullish/upward") == "BULLISH"
+    assert normalize_direction("UPWARD/BULLISH") == "BULLISH"
+    assert normalize_direction("neutral / unknown") == "NEUTRAL"
+
+
+def test_conflicting_direction_labels_do_not_pick_a_side() -> None:
+    """多空都占的标签归到中性，而不是按出现顺序倒向一边。"""
+
+    assert normalize_direction("bullish/bearish") == "NEUTRAL"
+    assert normalize_direction("positive and negative") == "NEUTRAL"
+
+
+def test_structured_labels_are_flattened_not_rejected() -> None:
+    """模型把标签返回成结构时不能拒绝整个 summary。
+
+    线上实测：``direction`` 回过 ``{'BTC': 'outflows/negative'}``，pydantic 直接
+    拒绝 → 那篇文档永远进不了库（attempts 一路涨）。标签随后都会被 normalize_*
+    收敛，所以拍平不丢信息 —— **拒绝才会**。
+    """
+
+    summary = DocumentSummary(
+        summary="ETF flows turned negative",
+        event_type={"kind": "etf_flows"},
+        direction={"BTC": "outflows/negative"},
+        impact_horizon=["short"],
+        confidence=0.5,
+    )
+
+    assert isinstance(summary.direction, str)
+    assert isinstance(summary.event_type, str)
+    assert isinstance(summary.impact_horizon, str)
+    # 拍平之后仍要能被归一化正确识别 —— 拍成垃圾等于换个方式拒收
+    assert normalize_direction(summary.direction) == "BEARISH"
+    assert normalize_impact_horizon(summary.impact_horizon) == "SHORT"
+
+
+def test_plain_string_labels_still_pass_through() -> None:
+    summary = DocumentSummary(
+        summary="text", event_type="ETF", direction="bullish", impact_horizon="long",
+        confidence=0.5,
+    )
+
+    assert summary.direction == "bullish"
+    assert summary.event_type == "ETF"
+
+
 def test_direction_never_exceeds_the_column_width() -> None:
     """这是这条归一化存在的理由 —— 任何输入都不能产出超过 16 字符的值。
 
@@ -101,6 +185,27 @@ def test_direction_never_exceeds_the_column_width() -> None:
         result = normalize_direction(value)
         assert len(result) <= 16, f"{value!r} → {result!r} 超过列宽"
         assert result in {"BULLISH", "BEARISH", "NEUTRAL", "UNKNOWN"}
+
+
+def test_event_type_is_bounded_to_the_column_width() -> None:
+    """``event_type`` 也直接来自模型，同样没有长度上界 —— 和 direction 同一类风险。
+
+    线上最长 46 字符（列宽 64）侥幸过关，但没有任何东西阻止更长的一个。
+    超长时**截断并告警**而不是抛异常：为一个标签丢掉整篇文档的检索价值不划算。
+    """
+
+    result = normalize_event_type("REGULATORY_" * 20)
+
+    assert len(result) <= EVENT_TYPE_MAX_LENGTH
+    assert not result.endswith("_")  # 尽量切在词边界上
+
+
+def test_event_type_leaves_normal_labels_alone() -> None:
+    assert normalize_event_type("regulatory policy") == "REGULATORY_POLICY"
+    assert normalize_event_type("") == "MARKET"
+    # 线上真实出现过的最长值，46 字符，必须原样保留
+    longest = "GOVERNANCE_VOTE/PROTOCOL_MIGRATION_EXPLORATION"
+    assert normalize_event_type(longest) == longest
 
 
 def test_chunk_text_has_overlap_and_rejects_invalid_configuration() -> None:

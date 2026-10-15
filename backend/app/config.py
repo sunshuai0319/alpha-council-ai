@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     #: 适用于虚拟盘触发行为验证或交易所侧 TP 临时降级。
     exchange_take_profit_enabled: bool = True
 
+    #: 单篇文档的最大处理次数，超过就不再重试。``<= 0`` 表示不限次。
+    #: 原先没有上限，库里有 attempts=34 的文档 —— 来自一个早已不可达的端点，
+    #: 每 5 分钟重试一次，永远失败。
+    document_max_processing_attempts: int = 5
+
     #: 私有频道端点。虚拟盘凭证被正式合约的 WS 域名接受（实测见
     #: docs/weex-virtual-api.md §2.2）—— 不要换成 sim 前缀，那个路径不存在。
     streams_ws_url: str = "wss://ws-contract.weex.com/v3/ws/private"

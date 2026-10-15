@@ -174,7 +174,21 @@ class DocumentPipeline:
         record_collector_errors(self.db, *results)
 
     def _process(self, document: DocumentInput) -> bool | None:
-        """Return True when indexed, None when already indexed, False on failure."""
+        """Return True when indexed, None when already indexed, False on failure.
+
+        **每个文档一个独立事务，且 Postgres 先落定、Milvus 后写。** 这两条都是
+        踩过之后才补上的：
+
+        - 原先整批只 commit 一次，而 ``flush()`` 会刷**整个会话**的待写行，
+          所以一篇文档的坏值（实测 ``direction`` 超出 VARCHAR(16)）会让整批
+          回滚 —— 连着几小时的新文档全都进了又没了。
+        - 回滚撤不掉已经写进 Milvus 的向量，那些成了没有对应 Postgres 行的
+          孤儿，重试还会再写一份。方向必须对：**Postgres 是真相来源，Milvus
+          可以从它重建**（``scripts/reindex_documents.py``）；反过来没有修复路径。
+        - ``processing_attempts`` 原先和坏值同事务，回滚后计数归零 → 无限重试。
+          现在它随父行先落定，才有可能设上限。
+        """
+
         prepared = prepare_document(document, known_assets=self.settings.asset_list)
         record = self.db.scalar(
             select(SourceDocument).where(
@@ -185,6 +199,8 @@ class DocumentPipeline:
             )
         )
         if record is not None and record.processing_status == "INDEXED":
+            return None
+        if record is not None and self._attempts_exhausted(record):
             return None
         if record is None:
             record = SourceDocument(
@@ -199,16 +215,21 @@ class DocumentPipeline:
                 published_at=prepared.published_at,
             )
             self.db.add(record)
-            # autoflush=False 的会话不会在查询时自动写入；先 flush 让父记录落库，
-            # 既保证 document_summaries 外键可解析，也让后续去重能查到本批次记录。
-            self.db.flush()
+        # 用 id 而不是 record 对象往下走：commit / rollback 之后 ORM 对象会过期，
+        # 而字符串不会。
+        document_id = record.id
+        source = record.source
+        record.processing_attempts = (record.processing_attempts or 0) + 1
         if not prepared.cleaned_text:
             # 空内容文档没有可分块可向量化的正文，标记为 SKIPPED 而不是 INDEXED，
             # 避免出现「已索引但 Milvus 无向量」的假状态，也不再重复调 Ark。
-            record.processing_status = "SKIPPED"
-            record.processing_error = None
+            self.db.commit()
+            self._mark(document_id, "SKIPPED", None)
             return None
-        record.processing_attempts = (record.processing_attempts or 0) + 1
+        # 父行先独立落库：后面任一步失败都要能找回它标 FAILED。整行回滚掉的话，
+        # 既没有失败记录、attempts 也不增长 —— 那正是「无限重试且查不出原因」。
+        self.db.commit()
+
         try:
             summary: DocumentSummary = self.summary_client.summarize(prepared)
             assets = merge_assets(prepared.assets, summary.assets, self.settings.asset_list)
@@ -224,11 +245,11 @@ class DocumentPipeline:
                 }
             )
             existing_summary = self.db.scalar(
-                select(DocumentSummaryRecord).where(DocumentSummaryRecord.document_id == record.id)
+                select(DocumentSummaryRecord).where(DocumentSummaryRecord.document_id == document_id)
             )
             summary_row = existing_summary or DocumentSummaryRecord(
                 id=str(uuid4()),
-                document_id=record.id,
+                document_id=document_id,
             )
             summary_row.summary = summary.summary
             summary_row.event_type = summary.event_type
@@ -240,7 +261,7 @@ class DocumentPipeline:
             metadata = dict(summary_row.metadata_json or {})
             metadata.update(
                 {
-                    "asset_scope": classify_asset_scope(assets, record.source, event_type),
+                    "asset_scope": classify_asset_scope(assets, source, event_type),
                     "rag_schema_version": "v2",
                 }
             )
@@ -249,6 +270,15 @@ class DocumentPipeline:
                 self.db.add(summary_row)
             chunks = chunk_text(prepared.cleaned_text)
             vectors = self.embedder.embed(chunks)
+            # Postgres 先落定，Milvus 再写（见 docstring 的方向说明）
+            self.db.commit()
+        except Exception as exc:
+            logger.exception("document summary failed: %s", document_id)
+            self.db.rollback()
+            self._mark(document_id, "FAILED", str(exc))
+            return False
+
+        try:
             self.indexer.insert(
                 build_indexed_chunks(
                     prepared,
@@ -258,10 +288,36 @@ class DocumentPipeline:
                     texts=chunks,
                 )
             )
-            record.processing_status = "INDEXED"
-            record.processing_error = None
-            return True
-        except Exception as exc:  # noqa: BLE001 - retain failed state for the next run
-            record.processing_status = "FAILED"
-            record.processing_error = str(exc)
+        except Exception as exc:
+            # 退回 FAILED 让下一轮重试 —— 不能留「Postgres 说 INDEXED 但 Milvus
+            # 没有向量」的假状态，那正是 SKIPPED 分支刻意避开的东西。
+            logger.exception("document indexing failed: %s", document_id)
+            self._mark(document_id, "FAILED", str(exc))
             return False
+
+        self._mark(document_id, "INDEXED", None)
+        return True
+
+    def _attempts_exhausted(self, record: SourceDocument) -> bool:
+        """超过上限就不再重试。
+
+        原先没有上限 —— 库里有 attempts=34 的文档，来自一个早已不可达的端点，
+        每 5 分钟重试一次，永远失败。``<= 0`` 表示不限次。
+        """
+
+        cap = self.settings.document_max_processing_attempts
+        return cap > 0 and (record.processing_attempts or 0) >= cap
+
+    def _mark(self, document_id: str, status: str, error: str | None) -> None:
+        """在**自己的事务**里写状态。
+
+        失败路径不能复用出错的那个事务：它已经不可用，在它里面写什么也留不下。
+        """
+
+        row = self.db.get(SourceDocument, document_id)
+        if row is None:
+            logger.warning("cannot mark unknown document %s as %s", document_id, status)
+            return
+        row.processing_status = status
+        row.processing_error = error
+        self.db.commit()

@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -10,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.collectors.rss import canonicalize_url
 from app.db.models import SourceDocument
+
+logger = logging.getLogger(__name__)
 
 ASSET_ALIASES: dict[str, tuple[str, ...]] = {
     "BTC": ("BTC", "BITCOIN"),
@@ -221,11 +224,37 @@ def merge_assets(
     return normalize_assets((*tuple(detected or ()), *tuple(reported or ())), known_assets)
 
 
+#: ``document_summaries.event_type`` 是 VARCHAR(64)。事件类型是**开放集合**
+#: （REGULATORY_APPROVAL / PRODUCT_LAUNCH / … 由来源与模型共同决定），不像
+#: direction 那样有闭分类可收敛，所以这里只加长度上界。
+EVENT_TYPE_MAX_LENGTH = 64
+
+
 def normalize_event_type(value: str | None) -> str:
+    """上线成形的事件类型标签。
+
+    长度上界是**必需**的：``event_type`` 同样直接来自模型，和 ``direction``
+    是同一类风险，只是这次侥幸没触发（线上最长 46 字符，列宽 64）。超出就
+    截断并告警 —— 不抛异常，那会为了一个标签丢掉整篇文档的检索价值。
+    """
+
     raw = str(value or "").strip().upper()
     if raw in UNKNOWN_VALUES:
         return "MARKET"
-    return re.sub(r"[\s-]+", "_", raw)
+    token = re.sub(r"[\s-]+", "_", raw)
+    if len(token) <= EVENT_TYPE_MAX_LENGTH:
+        return token
+    clipped = token[:EVENT_TYPE_MAX_LENGTH]
+    # 尽量切在词边界上，别把最后一个词切一半
+    if "_" in clipped:
+        clipped = clipped.rsplit("_", 1)[0] or clipped
+    logger.warning(
+        "event_type longer than %d chars, truncated: %r -> %r",
+        EVENT_TYPE_MAX_LENGTH,
+        token,
+        clipped,
+    )
+    return clipped
 
 
 def normalize_impact_horizon(value: str | None) -> str:
@@ -275,6 +304,20 @@ def normalize_impact_horizon(value: str | None) -> str:
     return "UNKNOWN"
 
 
+#: Direction vocabulary. The model emits single words and slash-joined pairs
+#: (``bullish/upward``, ``neutral/uncertain``), so matching splits on the
+#: separators and classifies by component rather than by whole string.
+_BULLISH_WORDS = frozenset(
+    {"BULLISH", "BULL", "UP", "UPWARD", "UPWARDS", "UPSIDE", "POSITIVE", "LONG", "GAIN", "GAINS"}
+)
+_BEARISH_WORDS = frozenset(
+    {"BEARISH", "BEAR", "DOWN", "DOWNWARD", "DOWNSIDE", "NEGATIVE", "SHORT", "LOSS", "LOSSES"}
+)
+_NEUTRAL_WORDS = frozenset(
+    {"NEUTRAL", "UNCERTAIN", "UNCLEAR", "UNKNOWN", "MIXED", "SIDEWAYS", "FLAT", "RANGE", "RANGING"}
+)
+
+
 def normalize_direction(value: str | None) -> str:
     """Normalize model/source direction labels to the bounded retrieval taxonomy.
 
@@ -287,31 +330,29 @@ def normalize_direction(value: str | None) -> str:
     retaining arbitrary model output both overflows the column and bypasses the
     shared taxonomy.
 
-    Unrecognised labels collapse to ``UNKNOWN``. The returned value is always
-    one of four short tokens, so no input can overflow the column.
+    The column had been running right at the edge: the corpus already held
+    ``neutral/unknown`` (exactly 16) and ``bullish/upward`` (15). Matching whole
+    strings would have collapsed those to ``UNKNOWN`` and thrown away real
+    signal, so components are matched instead.
+
+    Conflicting labels (``bullish/bearish``) become ``NEUTRAL`` rather than
+    picking a side. Unrecognised labels become ``UNKNOWN``. The result is always
+    one of four 7-character tokens, so no input can overflow the column.
     """
 
     raw = str(value or "").strip().upper()
     if raw in UNKNOWN_VALUES:
         return "UNKNOWN"
-    # Slashes are replaced too: the value that crashed production was
-    # ``neutral/uncertain``, and leaving the slash would produce the token
-    # ``NEUTRAL/UNCERTAIN``.
-    token = re.sub(r"[\s\-/]+", "_", raw)
-    if token in {"BULLISH", "BULL", "UP", "UPSIDE", "POSITIVE", "LONG"}:
+    parts = [part for part in re.split(r"[\s\-/,;_]+", raw) if part]
+    bullish = any(part in _BULLISH_WORDS for part in parts)
+    bearish = any(part in _BEARISH_WORDS for part in parts)
+    if bullish and bearish:
+        return "NEUTRAL"
+    if bullish:
         return "BULLISH"
-    if token in {"BEARISH", "BEAR", "DOWN", "DOWNSIDE", "NEGATIVE", "SHORT"}:
+    if bearish:
         return "BEARISH"
-    if token in {
-        "NEUTRAL",
-        "NEUTRAL_UNCERTAIN",
-        "UNCERTAIN",
-        "MIXED",
-        "SIDEWAYS",
-        "FLAT",
-        "RANGE",
-        "RANGING",
-    }:
+    if any(part in _NEUTRAL_WORDS for part in parts):
         return "NEUTRAL"
     return "UNKNOWN"
 
