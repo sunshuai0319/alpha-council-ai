@@ -59,6 +59,16 @@ services:
     command: python -m workers.scheduler
     # worker 只连数据库与交易所，不对外暴露端口
 
+  streams:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    # 采集层与交易路径完全解耦：它崩了不影响下单，重启后靠 REST 对账补漏。
+    # 刻意与 worker 分开 —— 长连接和 5 分钟一轮的短事务混在一个进程里，
+    # 会让 worker 的失败面扩大到网络。
+    command: python -m workers.streams
+
   web:
     build:
       context: ./frontend

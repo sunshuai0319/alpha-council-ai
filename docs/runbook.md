@@ -138,3 +138,31 @@ Lark 国际版 API 使用 `https://open.larksuite.com`。卡片中的交易动�
 如果需要恢复原来的自动开仓、交易所止盈止损和 PositionManager 自动平仓，将 `TRADING_EXECUTION_MODE=execute` 后重启 worker。修改 `.env` 或代码后必须重启长驻 worker 才会加载新设置。
 
 本次需求只发送出站消息，不需要事件订阅。若后续加入卡片按钮回调或消息事件，在没有公网 HTTPS 和域名的本地开发环境应选择 Lark 的“使用长连接接收事件”（WebSocket）；“推送到开发者服务器”需要可从公网访问的 HTTPS 回调地址。
+
+## 私有 WS 采集层（streams）
+
+`docker compose logs -f streams` 是排查它的第一入口。它只做采集，不进交易路径 ——
+这个进程挂了下单、风控、对账都不受影响（`app/reconciliation/service.py` 仍走
+balance 差分那条路）。
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 日志刷 `private stream disconnected ... retrying in Xs` | 网络或端点不可达 | 退避上限 60s，通常会自愈；持续超过 10 分钟查该容器到 `ws-contract.weex.com` 的网络 |
+| 日志刷 `no enabled virtual accounts with credentials` | 没有启用中的虚拟账户，或凭证没配 | 检查 `trading_accounts` 的 `enabled` 与三个 `*_ref` 列 |
+| 有 `subscribed` 但成交后表里没数据 | 频道没推，或推送被跳过 | 用 `backend/scripts/probe_private_ws.py` 单独连一次对比 |
+| 日志出现 `private stream missed N order(s)` | WS 断线期间漏了成交 | **漏掉的盈亏补不回来**（REST 没有 `realizePnl`）。`collector_errors` 里 `weex_private_streams / observation_gap` 的 `occurrences` 记录累计次数 |
+| `exchange_fills.symbol` 长期为 NULL | 对账还没跑，或该订单已滑出 REST 的 100 条窗口 | 正常情况下一轮对账（默认 5 分钟）就会补上；滑出窗口的补不回来了 |
+
+**三个容易误判的地方：**
+
+1. **`realize_pnl` 不含手续费。** 净额是 `realize_pnl − fee`。实测两笔都出现
+   「方向做对了但被 0.16% 往返费用吃掉」：止盈 `+0.010`、双边费 `0.012792`，
+   **净亏 `0.002792`**。看数时别拿 `realize_pnl` 当净盈亏。
+2. **`fill` 与 `orders` 两个频道的推送里都没有 `symbol`。** 只有 `coin` 与
+   `orderId`（WEEX 文档列了这个字段，虚拟盘不推）。品种靠 REST `order/history`
+   按 orderId 回填，所以刚成交那一瞬间 `symbol` 可能还是 NULL，等一轮对账。
+3. **这个进程停摆期间的成交不会自动补齐** —— WS 不重放历史。靠 REST 对账补，
+   而那个接口只有最近 100 条且不能翻页。漏单会被记进 `collector_errors`，
+   但**盈亏补不回来**。
+
+停掉采集不影响交易；想临时停就 `docker compose stop streams`。
