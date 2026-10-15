@@ -85,8 +85,10 @@ class PrivateStreamClient:
         connect: Callable[..., Awaitable[Transport]] = default_connect,
         clock_ms: Callable[[], int] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
         initial_backoff: float = 1.0,
         max_backoff: float = 60.0,
+        reset_after_seconds: float = 30.0,
     ) -> None:
         self.url = url
         self.api_key = api_key
@@ -96,8 +98,13 @@ class PrivateStreamClient:
         self.connect = connect
         self.clock_ms = clock_ms or (lambda: int(time.time() * 1000))
         self.sleep = sleep
+        #: 单调时钟，用来判断「这次连接活了多久」。不能用 clock_ms —— 墙上时钟会跳。
+        self.monotonic = monotonic
         self.initial_backoff = initial_backoff
         self.max_backoff = max_backoff
+        #: 连接存活超过这么久才断，就认为它是「被上游掐断」而不是「连不上」，
+        #: 退避重置。见 run_forever 的说明。
+        self.reset_after_seconds = reset_after_seconds
 
     async def run_once(self, on_events: Callable[[list[StreamEvent]], None]) -> None:
         """连一次、订阅、转发，直到连接断开。
@@ -149,14 +156,25 @@ class PrivateStreamClient:
 
         backoff = self.initial_backoff
         while should_stop is None or not should_stop():
+            session_started = self.monotonic()
             try:
                 await self.run_once(on_events)
                 backoff = self.initial_backoff
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - 任何连接故障都要退避重试，不能终止进程
+                if self.monotonic() - session_started >= self.reset_after_seconds:
+                    # 这次连接**稳定存活过一段**才断 —— 那是上游把长连接掐了，
+                    # 不是「连不上」。退避要从最短重来。
+                    #
+                    # 不重置的话：``run_once`` 永远走异常分支（WS 断开就是异常），
+                    # 那个写在上面的「正常返回就重置」永远到不了，退避会随进程
+                    # 寿命单调爬到上限。实测后果是每轮「连 3 分钟 + 瞎 60 秒」，
+                    # 漏采率 17% —— 而 WS 不重放，漏掉的就是永久丢失。
+                    backoff = self.initial_backoff
                 logger.warning(
-                    "private stream disconnected (%s: %s); retrying in %.1fs",
+                    "private stream disconnected after %.0fs (%s: %s); retrying in %.1fs",
+                    self.monotonic() - session_started,
                     type(exc).__name__,
                     exc,
                     backoff,

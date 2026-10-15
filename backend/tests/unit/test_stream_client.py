@@ -153,6 +153,90 @@ def test_run_forever_backs_off_exponentially_and_caps():
     assert delays == [1.0, 2.0, 4.0, 4.0]
 
 
+class _Clock:
+    """可控的单调时钟。"""
+
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
+def _client_with_lifetime(*, lifetime: float, rounds: int):
+    """构造一个 client：每次连接都存活 ``lifetime`` 秒然后被上游掐断。
+
+    返回 (client, delays, clock)。``delays`` 记录每次重连前的等待时长。
+    """
+
+    clock = _Clock()
+    delays: list[float] = []
+    attempts = {"count": 0}
+
+    class Transport:
+        async def send(self, message: str) -> None:
+            return None
+
+        async def recv(self) -> str:
+            clock.advance(lifetime)
+            raise ConnectionError("upstream dropped us")
+
+        async def close(self) -> None:
+            return None
+
+    async def connect(*, url, headers):
+        attempts["count"] += 1
+        return Transport()
+
+    async def sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    client = PrivateStreamClient(
+        url="wss://example.test/v3/ws/private",
+        api_key="k",
+        api_secret="s",
+        passphrase="p",
+        channels=("fill",),
+        connect=connect,
+        clock_ms=lambda: 1700000000000,
+        sleep=sleep,
+        monotonic=clock,
+        initial_backoff=1.0,
+        max_backoff=60.0,
+        reset_after_seconds=30.0,
+    )
+    return client, delays, attempts
+
+
+def test_backoff_resets_after_a_session_that_stayed_connected():
+    """连上并稳定存活过一段之后被掐断 → 退避重置。
+
+    上游会定期掐长连接（实测每 1.5–4 分钟一次）。**不重置的话退避会一路爬到
+    60 秒**：``run_once`` 断线永远走异常分支，「正常返回就重置」那行永远到不了。
+    实测后果是每轮「连 3 分钟 + 瞎 60 秒」，当天漏采 17% —— 而 WS 不重放，
+    漏掉的成交就是永久丢失。
+    """
+
+    client, delays, attempts = _client_with_lifetime(lifetime=120.0, rounds=3)
+
+    asyncio.run(client.run_forever(lambda events: None, should_stop=lambda: attempts["count"] >= 3))
+
+    assert delays == [1.0, 1.0, 1.0]
+
+
+def test_backoff_still_grows_when_connections_keep_dying_immediately():
+    """连上就断（真的连不通）时退避照常翻倍 —— 重置只针对「存活过一段」的会话。"""
+
+    client, delays, attempts = _client_with_lifetime(lifetime=2.0, rounds=3)
+
+    asyncio.run(client.run_forever(lambda events: None, should_stop=lambda: attempts["count"] >= 3))
+
+    assert delays == [1.0, 2.0, 4.0]
+
+
 def test_run_forever_does_nothing_when_already_stopped():
     async def connect(*, url, headers):  # pragma: no cover - 不该被调用
         raise AssertionError("should not connect")
