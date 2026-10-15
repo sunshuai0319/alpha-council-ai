@@ -48,6 +48,7 @@ REST_WINDOW = 100
 class ReconcileOutcome:
     inspected: int = 0
     symbols_backfilled: int = 0
+    #: **本次新发现**的漏单，不是当前全部未知订单 —— 见 ``reported`` 的说明。
     missed_order_ids: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -62,14 +63,24 @@ class OrderHistoryReconciler:
         *,
         trading_account_id: str,
         exchange: ExchangeClient,
+        reported: set[str] | None = None,
     ) -> None:
         self.db = db
         self.trading_account_id = trading_account_id
         self.exchange = exchange
+        #: 已经报过的漏单，由调用方跨轮次持有。
+        #:
+        #: 漏掉的订单**永远不会**出现在我们这边，所以「REST 里有、我们没有」
+        #: 这个判据每一轮都会为同一笔订单成立。不复用这个集合的话，一个历史
+        #: 缺口会被每 5 分钟重报一次 ERROR，直到它滑出 REST 的 100 条窗口 ——
+        #: 而 `occurrences` 计数也会把「同一个旧洞数了很多遍」记成很多次漏采。
+        #:
+        #: 这会把 ERROR 训练成噪音：真出事时没人看。
+        self.reported = reported if reported is not None else set()
 
     def run_once(self) -> ReconcileOutcome:
         orders = self.exchange.list_orders(limit=REST_WINDOW)
-        outcome = ReconcileOutcome(inspected=len(orders), missed_order_ids=self._missed(orders))
+        outcome = ReconcileOutcome(inspected=len(orders), missed_order_ids=self._newly_missed(orders))
         outcome.symbols_backfilled = self._backfill_symbols(orders)
         if outcome.has_gap:
             # 具体漏了哪些放日志；库里只累加计数。
@@ -120,6 +131,18 @@ class OrderHistoryReconciler:
         updated += len(event_rows)
 
         return updated
+
+    def _newly_missed(self, orders: list[ExchangeOrder]) -> tuple[str, ...]:
+        """本次**新发现**的漏单，并把它记进 ``reported``。
+
+        顺手把 ``reported`` 裁剪到当前 REST 窗口内：滑出窗口的订单不会再出现，
+        没必要一直记着。这样这个集合的大小上界就是窗口大小（100）。
+        """
+
+        self.reported &= {order.order_id for order in orders}
+        fresh = tuple(order_id for order_id in self._missed(orders) if order_id not in self.reported)
+        self.reported.update(fresh)
+        return fresh
 
     def _missed(self, orders: list[ExchangeOrder]) -> tuple[str, ...]:
         """REST 里有、我们却没见过的订单。

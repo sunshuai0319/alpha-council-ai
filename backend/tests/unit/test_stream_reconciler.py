@@ -264,6 +264,82 @@ def test_gap_counter_merges_across_runs(db):
     assert rows[0].occurrences == 2
 
 
+def _run(db: Session, orders, reported: set[str]) -> object:
+    return OrderHistoryReconciler(
+        db, trading_account_id=ACCOUNT, exchange=FakeExchange(orders), reported=reported
+    ).run_once()
+
+
+def test_the_same_gap_is_only_reported_once(db):
+    """漏掉的订单**永远不会**出现在我们这边，所以「REST 有、我们没有」这个判据
+    每轮都会为同一笔订单成立。
+
+    不带已报集合的话，一个历史缺口会被每 5 分钟重报一次 ERROR，直到它滑出
+    REST 的 100 条窗口 —— 而 ``occurrences`` 也会把「同一个旧洞数了很多遍」
+    记成很多次漏采。那会把 ERROR 训练成噪音。
+    """
+
+    _seed_order(db, "o-1", minutes_ago=10)
+    orders = [_exchange_order("o-9", "DOGESUSDT", minutes_ago=5)]
+    reported: set[str] = set()
+
+    first = _run(db, orders, reported)
+    second = _run(db, orders, reported)
+
+    assert first.missed_order_ids == ("o-9",)
+    assert first.has_gap is True
+    assert second.missed_order_ids == ()
+    assert second.has_gap is False
+
+
+def test_a_genuinely_new_gap_is_still_reported(db):
+    _seed_order(db, "o-1", minutes_ago=10)
+    reported: set[str] = set()
+
+    first = _run(db, [_exchange_order("o-9", "DOGESUSDT", minutes_ago=5)], reported)
+    second = _run(
+        db,
+        [
+            _exchange_order("o-9", "DOGESUSDT", minutes_ago=5),
+            _exchange_order("o-8", "DOGESUSDT", minutes_ago=4),
+        ],
+        reported,
+    )
+
+    assert first.missed_order_ids == ("o-9",)
+    assert second.missed_order_ids == ("o-8",)
+
+
+def test_reported_set_is_pruned_to_the_current_window(db):
+    """滑出 REST 窗口的订单不会再出现，没必要一直记着 —— 否则这个集合会随
+    进程寿命无上限地涨。"""
+
+    _seed_order(db, "o-1", minutes_ago=10)
+    reported: set[str] = set()
+
+    _run(db, [_exchange_order("o-9", "DOGESUSDT", minutes_ago=5)], reported)
+    assert reported == {"o-9"}
+
+    # 下一轮的窗口里已经没有 o-9
+    _run(db, [_exchange_order("o-1", "DOGESUSDT", minutes_ago=10)], reported)
+    assert reported == set()
+
+
+def test_gap_counter_counts_new_gaps_not_repeat_sightings(db):
+    """``occurrences`` 要代表「新发现了几次漏采」，不是「同一个旧洞数了几遍」。"""
+
+    _seed_order(db, "o-1", minutes_ago=10)
+    orders = [_exchange_order("o-9", "DOGESUSDT", minutes_ago=5)]
+    reported: set[str] = set()
+
+    for _ in range(3):
+        _run(db, orders, reported)
+        db.commit()
+
+    row = db.scalar(select(CollectorError).where(CollectorError.collector == GAP_COLLECTOR))
+    assert row.occurrences == 1
+
+
 def test_returns_inspected_count(db):
     reconciler, _ = _reconciler(
         db,
