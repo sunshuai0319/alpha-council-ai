@@ -62,7 +62,8 @@
 
 ## 2. 私有端点
 
-只有 4 个：`GET balance`、`GET position/allPosition`、`POST order`、`GET order/history`。
+**REST** 私有端点只有 4 个：`GET balance`、`GET position/allPosition`、`POST order`、
+`GET order/history`。（另有一条私有的 WebSocket 通道，见 §2.2。）
 
 - `GET /capi/v3/sim/order` → **405**（路径存在但只支持 POST），无单笔查单
 - `GET /capi/v3/sim/userTrades` → **404**，无成交流水
@@ -73,7 +74,110 @@
 - `order/history` 只含**终态**订单（FILLED / CANCELED）。**挂单中的订单（含止损触发单）
   查不到**，持仓记录的 `raw` 里也没有止损字段
 
+### 2.1 `order/history` 的完整实测（2026-10-15）
+
+补充上面没写清的几条，都影响「能不能拿它当事件源」：
+
+- **字段只有 18 个，没有任何盈亏/费用字段**：
+  `avgPrice, clientOrderId, cumQuote, executedQty, orderId, origQty, positionSide,
+  price, reduceOnly, side, status, stopPrice, symbol, time, timeInForce, type,
+  updateTime, workingType`。没有 `commission` / `fee` / `realizedPnl`。
+- **`page` 参数被忽略**：`page=0` 与 `page=1` 返回完全相同的数据集。
+  `limit=100` 是硬上限且**无法翻页回溯** —— 停摆一段时间后恢复，中间产生的订单永久丢失。
+- **不带 `symbol` 参数返回全部品种**（实测一次拿到 7 个品种）。
+- **条件单全程不可见**：挂单中查不到（已知），**触发成交后也不留任何记录**。
+  实测 7 个仓位由条件单触发平仓，`order/history` 里 0 条平仓单。
+- **手动单的 `clientOrderId` 是 UUID v4**（如 `dee902d2-baba-411c-8eb3-f7cb7c43e68e`），
+  与系统单的 `alpha-<28位hex>` 形态完全不同，可 100% 区分。
+- **手动平仓单形态**：`side=BUY` / `positionSide=SHORT` / `reduceOnly=True`
+  （`positionSide` 保持持仓方向不变，别用它判断开平仓）。
+- 探测过的其他候选端点（`position/history`、`trade/history`、`fills`、
+  `transaction/history`、`account/history`、`balance/history`）**全部 404**。
+
+复验脚本：`backend/scripts/probe_order_history.py`（只读）。
+
 401 错误码可区分根因：`-1044` key 无效、`-1049` passphrase 不匹配、`-1047` secret 不匹配。
+
+### 2.2 私有 WebSocket —— REST 之外的另一条私有通道（2026-10-15 实测）
+
+**上面「只有 4 个私有端点」指的是 REST。私有 WebSocket 可用，而且推送的字段比 REST
+完整得多。** 早期「虚拟盘拿不到成交流水」的结论只对 REST 成立，对 WS 不成立。
+
+- 端点：`wss://ws-contract.weex.com/v3/ws/private`
+- 虚拟盘凭证**被接受**（正式合约的 WS 域名同样服务虚拟盘账户）
+- 四个频道全部订阅成功并收到真实推送：`fill`、`orders`、`positions`、`account`
+
+**签名与 REST 不同**（这是最容易踩的坑）：
+
+```
+message  = timestamp + "/v3/ws/private"          # 不含 method / query / body
+signature = base64(hmac_sha256(secret, message))
+```
+
+头信息：`User-Agent` / `ACCESS-KEY` / `ACCESS-PASSPHRASE` / `ACCESS-TIMESTAMP` / `ACCESS-SIGN`。
+复用 REST 的签名串（`timestamp+method+path+"?"+query+body`）会鉴权失败。
+
+**服务端 ping 要回**：私有频道消息体是 `{"type":"ping",...}`（公有频道用 `event` 字段），
+客户端回 `{"method":"PONG","id":1}`。超过 10 次不回应会断开。
+
+#### 推送里有关键的盈亏字段
+
+REST 完全没有的字段，WS 全都有：
+
+| 字段 | 频道 | 含义 |
+|---|---|---|
+| `realizePnl` | `fill` | **本次成交已实现盈亏**（交易所回报值） |
+| `fillFee` | `fill` | **本次成交手续费**（真实值，不用按费率推算） |
+| `direction` | `fill` | `MAKER` / `TAKER` |
+| `triggerPrice` | `orders` | **条件单触发价**，挂单时（`UNTRIGGERED`）就可见 |
+| `orderSource` | `orders` | `WEB` / `STOP_LOSS` / `STOP_PROFIT` / `UNKNOWN_ORDER_SOURCE` |
+| `positionTpsl` | `orders` | 是否为仓位级止盈止损委托 |
+| `takerFeeRate` / `makerFeeRate` | `orders` | 真实费率 |
+| `cumOpenFee` / `cumCloseFee` / `cumFundingFee` / `cumLiquidateFee` | `positions` | 费用分解 |
+| `cumDepositAmount` / `cumWithdrawAmount` / `cumTransferInAmount` | `account` | 资金进出，可剔除 |
+
+#### 实测样本（两次完整往返）
+
+手动市价平仓：
+
+```
+[orders] MARKET PENDING → FILLED  source=WEB  reduceOnly=False
+[fill]   SHORT/SELL size=100 value=8.01800 fee=0.00641440 realizePnl=0
+...
+[orders] MARKET PENDING → FILLED  reduceOnly=True
+[fill]   SHORT/BUY  size=100 value=8.02100 fee=0.00641680 realizePnl=-0.00300000
+```
+
+条件单触发平仓（`slTriggerPrice` 那套在 REST 里完全看不到，WS 里全可见）：
+
+```
+[orders] STOP_MARKET        UNTRIGGERED  source=STOP_LOSS    triggerPrice=0.08004  positionTpsl=True
+[orders] TAKE_PROFIT_MARKET UNTRIGGERED  source=STOP_PROFIT  triggerPrice=0.07990  positionTpsl=True
+[orders] TAKE_PROFIT_MARKET PENDING → FILLED   cumRealizePnl=0.01000000
+[fill]   SHORT/BUY size=100 value=7.99000 fee=0.00639200 realizePnl=0.01000000
+[orders] STOP_MARKET CANCELED  source=STOP_LOSS      ← 另一侧条件单自动撤销，与 §3 实验 B 一致
+```
+
+两笔的 `realizePnl` 都与「开仓成交额 − 平仓成交额」逐位吻合。
+
+#### 三条必须记住的语义
+
+1. **`realizePnl` 不含手续费。** 上例止盈 `realizePnl=+0.010`，`fillFee` 双边合计
+   `0.006400 + 0.006392 = 0.012792`，**净额是 −0.002792**。直接拿 `realizePnl`
+   当净盈亏会系统性高估 —— 实测两次都是「方向做对了但被 0.16% 往返费用吃掉」。
+2. **`orderSource` 枚举不统一。** 手动开仓是 `WEB`，手动平仓是 `UNKNOWN_ORDER_SOURCE`，
+   条件单是 `STOP_LOSS` / `STOP_PROFIT`。判断手动/系统下单要同时看 `orderSource`
+   与 `clientOrderId`（系统单是 `alpha-<28位hex>`，手动单是 UUID v4）。
+3. **`positions` 频道的 `symbol` 是内部合约 ID**（实测 `20000067`），不是交易对；
+   `orders` / `fill` 频道给的才是 `DOGESUSDT`。需要从 `exchangeInfo` 建映射。
+
+#### 不能用来检测漏推的东西
+
+`account` 频道的 `v`（账户版本号）看着单调递增（实测 `696→697→699→701→702→703→704`），
+但**会跳号** —— 它是账户级序列号，而我们只订阅 4 个频道，别的事件也占号。
+**别拿它当「跳跃 = 丢事件」的依据**，兜底只能靠 REST 对账。
+
+复验脚本：`backend/scripts/probe_private_ws.py`（只读，只 SUBSCRIBE）。
 
 ## 3. 止损触发单的生命周期
 
@@ -178,3 +282,5 @@ last=77300.1  止损=77307.8（上方 +7.7）
 | `CLAUDE.md` | 「虚拟盘无衍生品数据」 | 资金费率、持仓量、盘口、成交流水**都能拿到**（§1） |
 | `CLAUDE.md` | 「只有 4 个端点」 | 指的是**私有**端点；公开行情端点有 6 个可用（§1） |
 | `app/exchange/weex.py` `get_market_snapshot` | 只读 lastPrice / volume | ticker 还有 7 个字段可用（§1.2） |
+| `CLAUDE.md` / `app/exchange/weex.py:537` | 「虚拟盘没有成交流水，只能从余额差分推已实现盈亏」 | 对 **REST** 成立；**私有 WebSocket 的 `fill` 频道直接给 `realizePnl` 与 `fillFee`**（§2.2） |
+| `CLAUDE.md` / `docs` | 隐含「`order/history` 是完整的订单流水」 | 只有**终态且非条件单**的订单；`page` 被忽略、`limit=100` 不可回溯、条件单全程不可见（§2.1） |

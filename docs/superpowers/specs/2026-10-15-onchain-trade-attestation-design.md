@@ -1,8 +1,8 @@
 # 手动交易与盈亏的链上存证设计
 
 - 日期：2026-10-15
-- 状态：待实现
-- 技术栈：IPFS（Pinata）+ Base + The Graph + 双层 Merkle Tree
+- 状态：设计已定，第 0 步实测已完成（见 §15）
+- 技术栈：WEEX 私有 WebSocket + IPFS（Pinata）+ Base + The Graph + 双层 Merkle Tree
 
 ## 1. 背景与目标
 
@@ -11,6 +11,9 @@
 （`app/services/cycle.py:410`），通知模式下这条路径永不触发。
 
 本设计把「信号 → 用户手动执行 → 实际盈亏」这条链路做成**可被第三方独立验证**的链上存证。
+
+可行性建立在 2026-10-15 的实测之上（见 §15）：**虚拟盘私有 WebSocket 可用，单笔盈亏与
+手续费都是交易所回报值**。这个发现推翻了早期版本基于 REST 的整套推导模型。
 
 ### 1.1 目标拆成两个命题
 
@@ -33,15 +36,73 @@
 - 不发行 token
 - 不把链上组件接入交易路径（旁路服务，见 §9）
 
-## 2. 数据可得性结论（已从代码与实测文档确认）
+## 2. 数据可得性（2026-10-15 实测确认）
 
-| 层 | 可得性 | 依据 |
-|---|---|---|
-| 交易事件（价格、数量、方向、时间） | 可得 | `order/history` 是账户级终态订单流水，含用户手动下的单 |
-| 单笔已实现盈亏 | **不可得** | 虚拟盘无 `userTrades`（`app/exchange/weex.py:537` 直接 raise），`order/history` 不含 `realizedPnl` |
-| 账户级已实现盈亏 | 仅区间聚合 | Δbalance（`app/reconciliation/service.py:210`），含手续费与资金费，**无法归属到单笔** |
+### 2.1 结论先行
 
-**结论：链上 PnL 必然是推导值，必须标注算法来源与版本，并携带足以复算的证据。**
+**虚拟盘私有 WebSocket 可用，且推送的字段比 REST 完整得多。** 单笔盈亏是交易所回报值，
+不是推导值。这一条推翻了本设计早期版本的整个推导模型。
+
+### 2.2 私有 WebSocket 实测
+
+端点 `wss://ws-contract.weex.com/v3/ws/private`，虚拟盘凭证被接受。四个私有频道全部可用：
+
+| 频道 | 推送内容 |
+|---|---|
+| `fill` | 成交明细：`realizePnl` / `fillFee` / `fillSize` / `fillValue` / `direction` |
+| `orders` | 委托生命周期：`triggerPrice` / `orderSource` / `positionTpsl` / `status` / `takerFeeRate` |
+| `positions` | 持仓变动：`cumOpenFee` / `cumCloseFee` / `cumFundingFee` / `cumLiquidateFee` |
+| `account` | 账户资金：`amount` / `cumDepositAmount` / `cumTransferInAmount` / `liquidating` |
+
+签名与 REST **不同**：WS 是 `base64(hmac_sha256(secret, timestamp + requestPath))`，
+`requestPath = /v3/ws/private`，不含 method / query / body。复用 `WeexClient.signature`
+会鉴权失败。探测实现见 `backend/scripts/probe_private_ws.py`。
+
+### 2.3 实测证据（两次完整往返）
+
+**手动市价平仓**（12:51:46 开 → 12:52:14 平）：
+
+```
+[fill] SHORT/BUY size=100 value=8.02100 fee=0.00641680 realizePnl=-0.00300000 dir=TAKER
+```
+`8.01800 − 8.02100 = −0.00300` 与 `realizePnl` 逐位吻合。
+
+**条件单触发平仓**（12:56:11 开 → 12:58:06 止盈触发）：
+
+```
+[orders] STOP_MARKET        UNTRIGGERED  source=STOP_LOSS    triggerPrice=0.08004  positionTpsl=True
+[orders] TAKE_PROFIT_MARKET UNTRIGGERED  source=STOP_PROFIT  triggerPrice=0.07990  positionTpsl=True
+[orders] TAKE_PROFIT_MARKET PENDING → FILLED   cumRealizePnl=0.01000000
+[fill]   SHORT/BUY size=100 value=7.99000 fee=0.00639200 realizePnl=0.01000000 dir=TAKER
+[orders] STOP_MARKET CANCELED  source=STOP_LOSS      ← 另一侧条件单自动撤销
+```
+`8.00000 − 7.99000 = 0.01000000` 与 `realizePnl` 逐位吻合。
+
+### 2.4 两条必须记住的语义
+
+1. **`realizePnl` 不含手续费**。上例平仓 `realizePnl=0.010`，`fillFee=0.006392`，
+   净额是 `0.010 − (0.006400 + 0.006392) = −0.002792`。**直接把 realizePnl 当净盈亏上链是错的。**
+   两次实验都是「方向做对了但被 0.16% 往返费用吃掉」。
+2. **`orderSource` 枚举不统一**：手动开仓是 `WEB`，手动平仓是 `UNKNOWN_ORDER_SOURCE`，
+   条件单是 `STOP_LOSS` / `STOP_PROFIT`。判断手动/系统必须同时看 `orderSource` 与
+   `clientOrderId` 前缀（系统单是 `alpha-<28位hex>`）。
+
+### 2.5 REST `order/history` 的实测局限（作为兜底通道仍要知道）
+
+- 字段只有 18 个，**没有任何盈亏/费用字段**
+- **`page` 参数被忽略**，`limit=100` 是硬上限且无法翻页回溯
+- **条件单完全不可见**（挂单中查不到，触发成交后也不留记录）
+- `stopPrice` 恒为 0
+
+所以 REST 只适合做「WS 断线期间的兜底」，且必须检测观测断档（见 §12.3）。
+
+### 2.6 已知盲区
+
+| 事件 | 状态 |
+|---|---|
+| WS 断线期间发生的成交 | ⚠️ 只能靠 REST 100 条窗口 + Δbalance 兜底 |
+| 爆仓 | ❓ 未验证；`account.liquidating` 字段存在，推测有推送 |
+| `positions` 频道的 `symbol` 是内部合约 ID（如 `20000067`），不是交易对 | ⚠️ 需要 `exchangeInfo` 映射表 |
 
 ## 3. 关键决策（已确认）
 
@@ -58,7 +119,7 @@
 
 ## 4. 上链数据模型
 
-### 4.1 四类叶子
+### 4.1 五类叶子
 
 所有叶子追加式，永不修改。
 
@@ -79,23 +140,36 @@ signal_id, symbol, action, entry_price, stop_loss, take_profit,
 valid_until, decided_at, model_version, reasoning_hash
 ```
 
-`entry_price` 是信号建议的入场价，`valid_until` 是信号有效期 —— 两者是 §4.1 ③
-模拟结算与 §4.3 归因窗口判定的输入。
+`entry_price` 是信号建议的入场价，`valid_until` 是信号有效期 —— 两者是 ③ 模拟结算
+与 §4.3 归因窗口判定的输入。
 
 **② 实际结果**（用户平仓后入队）
+
+全部字段来自 WS 推送，**除标注外都是交易所回报值，不是推导值**：
 
 ```
 signal_hash              # 引用①，建立因果；用户自发交易时为 null
 followed                 # true / false
 attribution              # "matched" | "ambiguous" | "none"
+
 symbol, side, qty
-open_avg, close_avg, open_at, close_at
-fee, pnl_gross, pnl_net
-pnl_source               # "derived-avg-cost-v1"
-fee_source               # "derived-taker" | "exchange-reported"
-entry_source             # "observed" | "unobserved"
-exit_reason              # "manual" | "exchange_stop" | "unknown"
+open_avg, close_avg      # 由 cumFillValue / cumFillSize 得到
+open_at, close_at        # fill.createdTime，毫秒级精确
+open_fill_id, close_fill_id   # 交易所成交 ID，可回查
+order_source             # "WEB" | "UNKNOWN_ORDER_SOURCE" | "STOP_LOSS" | "STOP_PROFIT" | ...
+client_order_id          # 系统单为 alpha-<hex>，手动单为 UUID
+exit_reason              # "manual" | "take_profit" | "stop_loss" | "liquidation" | "unknown"
+trigger_price            # 条件单触发价；手动平仓时为 null
+
+fee                      # 双边 fillFee 之和（交易所回报）
+realize_pnl              # 平仓 fill.realizePnl（交易所回报，不含手续费）
+pnl_net                  # realize_pnl − fee
+fee_rate_taker, fee_rate_maker   # orders.takerFeeRate / makerFeeRate
+pnl_source               # "exchange-reported"
 ```
+
+**`pnl_source` 恒为 `exchange-reported`** —— 实测确认虚拟盘 WS 直接给
+`realizePnl` 与 `fillFee`，无需任何推导。这是本设计与早期版本最大的区别。
 
 **③ 信号结算**（信号有效期结束后入队）
 
@@ -115,9 +189,21 @@ price_path_cid           # 用到的 klines 区间引用
 
 ```
 supersedes_leaf_hash
-reason_code              # "fee-model-fix" | "pairing-fix" | "source-change"
+reason_code              # "source-change" | "attribution-fix" | "missing-window"
 corrected_payload_cid
 ```
+
+**⑤ 净值曲线**（每个采样窗口入队，见 §12.4）
+
+```
+captured_at, equity, balance, unrealized_pnl
+cum_deposit, cum_withdraw, cum_transfer_in    # 来自 account 频道，用于剔除资金进出
+cum_fill_fee, cum_funding_fee                 # 费用累计，用于解释净值变化
+account_version                               # WS 的 v 字段
+```
+
+这是 P1 的主力证据：**不管用户用哪种方式平仓，净值变化都会反映在里面**，
+且 `cum_deposit` / `cum_withdraw` 让第三方能排除「靠充值做出来的净值增长」。
 
 ### 4.2 叶子必须携带证据的理由
 
@@ -129,8 +215,9 @@ corrected_payload_cid
 | symbol / side / qty | 没有它算不出盈亏 |
 | open_avg / close_avg | 同上 |
 | open_at / close_at | 同上，且证明「信号在前、结果在后」 |
-| fee | 往返 0.16%（`weex-virtual-api.md` §5），小额交易里能吃掉全部利润 |
+| fee | 往返 0.16%，实测两次都是「方向对了但被费用吃掉」 |
 | signal_hash | 因果链 |
+| open_fill_id / close_fill_id | 让第三方能回到交易所侧核对成交 |
 
 **开仓与平仓不单独成叶子**，合并为一笔闭合交易 —— 未平仓的仓位没有盈亏可证，
 不必上链。代价是开仓到平仓期间链上无记录，可接受。
@@ -144,6 +231,10 @@ corrected_payload_cid
 | 既有跟随信号、又有自发交易 | `attribution: "ambiguous"`，不强行归因 |
 
 只上非 HOLD 的信号（与 Lark 推送口径一致）。HOLD 不入链，否则一天 288 次 × 2 symbols 全是噪音。
+
+**额外可用信号**：WS 的 `orders` 频道在用户**挂条件单时就推送 `triggerPrice`**，
+所以能拿到用户自己设的止盈止损价位，据此判断他是否按系统建议设置。
+这个字段进 ② 叶子（`trigger_price`），是归因的辅助证据。
 
 ### 4.4 加密方案与未连钱包的降级
 
@@ -342,20 +433,27 @@ Graph Studio 免费额度够实验平台用。Studio 是中心化索引服务，
 
 ### 8.2 余额对账
 
-每批（或每日）做账户级校验：`Σ(推导 pnl_net)` vs `Δbalance` → `reconciliation_delta`。
+每批（或每日）做账户级校验：
 
-差额的合法来源：资金费（8h 一期，未计入推导）、系统上线前的存量仓位、
-虚拟盘可能的手动调余额、maker/taker 费用假设误差。
+```
+Σ(叶子里的 pnl_net)  vs  Δ(剔除资金进出后的净值)  →  reconciliation_delta
+```
+
+净值变化取自 WS `account` 频道（`amount` 与 `cumDepositAmount` / `cumWithdrawAmount` /
+`cumTransferInAmount`），**所以资金进出可以精确剔除**，这是早期版本做不到的。
+
+差额的合法来源：资金费（`positions.cumFundingFee`，已可观测，可单独列出而非当误差）、
+监听器上线前的存量仓位、爆仓清算费、WS 断线期间的漏记。
 
 **处置**：差额写进独立对账记录，**绝不静默摊到各笔交易上**。
 
 **告警条件**（双条件，避免小额交易因几分钱的误差刷屏）：
 
 ```
-|delta| > max(5% × |Δbalance|, 1 USDT)
+|delta| > max(5% × |Δ净值|, 1 USDT)
 ```
 
-这条把「推导模型悄悄失准」变成主动告警，否则误差会积累到某天被发现全部记录都不可信。
+这条把「采集悄悄失准」变成主动告警，否则误差会积累到某天被发现全部记录都不可信。
 
 ## 9. 安全边界（不可越）
 
@@ -372,9 +470,12 @@ Graph Studio 免费额度够实验平台用。Studio 是中心化索引服务，
 1. **链上只能证明「运营方在 T 时刻之后没改过这条记录」，不能证明盈亏为真**
 2. **虚拟盘行情疑似合成**（`weex-virtual-api.md` §6），所以 §4.1 ③ 的模拟准确率
    可信度上限 = 行情可信度
-3. **PnL 是推导值**，不是交易所回报值。费用按 taker 0.08%/边推算
-4. **未平仓的仓位不上链**，开仓到平仓期间无链上痕迹
-5. **合约有 owner**，运营方可以选择停止提交（但停止会留下可见的批次空档）
+3. **盈亏是交易所（虚拟盘）回报值，但虚拟盘本身是模拟环境** —— `realizePnl` 真实
+   来自交易所，不代表真实市场可复现
+4. **WS 断线期间的成交可能缺失**，只能靠 REST 兜底，而 REST 的窗口只有 100 条且不可翻页
+5. **未平仓的仓位不上链**，开仓到平仓期间无链上痕迹
+6. **合约有 owner**，运营方可以选择停止提交（但停止会留下可见的批次空档）
+7. **`realizePnl` 不含手续费**，对外展示的净盈亏必须扣除 `fillFee`，否则会系统性高估
 
 对外表述只能用「**可验证的记录**」，不能用「**可验证的盈利能力**」。
 
@@ -389,51 +490,88 @@ backend/app/web3/
   queue.py        # 待上链队列（DB 表 + 状态机）
   committer.py    # 独立提交进程
   contracts/AttestationRegistry.sol
-backend/scripts/probe_order_history.py   # 前置只读探测
+backend/app/streams/
+  client.py       # 私有 WS 客户端（连接/签名/重连/订阅）
+  events.py       # 推送 → 领域事件（含 positions 的合约 ID 映射）
+  listener.py     # 常驻监听进程，落库 + 生成叶子
+  reconciler.py   # REST order/history 兜底对账
+backend/scripts/probe_private_ws.py      # 前置只读探测（已完成）
+backend/scripts/probe_order_history.py   # REST 兜底探测（已完成）
 ```
 
-`web3.py` + `eth-account` 已在 venv 中，无需新装大依赖。
+`websockets`（uvicorn[standard] 间接依赖）、`web3.py`、`eth-account` 都已在 venv 中，
+无需新装大依赖。
 
 ### 11.1 新增数据表
 
-- `attestation_leaves` —— 待上链叶子（signal / result / settlement / correction），
+- `attestation_leaves` —— 待上链叶子（signal / result / settlement / correction / equity），
   状态机 `pending → pinned → committed`
 - `attestation_batches` —— batchId / root / cid / txHash / 状态
 - `wallet_endorsements` —— 用户补签
+- `exchange_fills` —— WS `fill` 频道落库（含 `realizePnl` / `fillFee`）
+- `exchange_order_events` —— WS `orders` 频道落库（含 `triggerPrice` / `orderSource`）
+- `equity_samples` —— WS `account` + `positions` 落库的净值采样
 
 按 `CLAUDE.md` 约定：**新表改两处**（`app/db/models.py` + 一条
 `create_all(checkfirst=True)` 同步迁移），不写 `op.create_table`。
 
-## 12. 采集层改造
+## 12. 采集层
 
-现状：`app/services/cycle.py:410` 只在有系统执行时才拉 `order/history`。改为**每轮无条件拉取**。
+### 12.1 主通道：常驻私有 WS 监听器
 
-```
-每轮周期 / 每用户
-  └─ 拉 order/history（分页直到覆盖水位线）
-       └─ 用 (time, orderId) 水位线去重，只处理新订单
-            └─ 分类：开仓 / 平仓
-                 └─ 配对（加权平均成本法）→ 生成叶子
-                      └─ 入待上链队列
-```
+现状：`app/services/cycle.py:410` 只在有系统执行时才拉 `order/history`，通知模式下
+这条路径永不触发 —— 用户手动交易完全没有留痕。
 
-**配对用加权平均成本法**（不是 FIFO）：
+改为**独立的常驻监听进程**（`app/streams/listener.py`），与 worker 完全解耦：
 
 ```
-avg_entry = Σ(price×qty) / Σqty      # 加仓时更新，不产生新叶子
-pnl_net = (exit_price − avg_entry) × close_qty × 方向 − 双边费
+常驻 WS 监听器（每用户一条连接）
+  ├─ 订阅 fill / orders / positions / account
+  ├─ 按 (e, d[].id) 去重后落库
+  ├─ 平仓成交到达时 → 生成 ② 结果叶子
+  ├─ account/positions 变化 → 生成 ⑤ 净值曲线叶子
+  └─ 断线自动重连（指数退避），重连后触发一次 REST 对账
 ```
 
-理由：加仓/分批平仓时不产生碎片化小记录，且与交易所 `avgPrice` 语义一致。
+与 worker 解耦的理由：WS 需要长连接，worker 是 5 分钟一轮的短事务；混在一起会让
+worker 的失败面扩大到网络长连接。
 
-**边界情况**：
+**为什么不需要配对算法**：实测确认 `fill` 频道每笔成交自带 `realizePnl`，
+平仓成交就是一次完整往返的结果。**加权平均成本法配对、Δbalance 反推、fee 推算
+全部不需要了** —— 那是早期版本在「REST 拿不到盈亏」前提下的产物。
+
+### 12.2 兜底：REST `order/history` 定期对账
+
+WS 断线期间的事件不会重放，必须靠 REST 补。约束（§2.5）：
+
+- `limit=100` 硬上限，`page` 参数被忽略，**无法翻页回溯**
+- 因此对账频率必须高于「100 笔订单产生的时间」。worker ~9 分钟一轮，
+  9 分钟内产生 100 笔订单不现实，**但 worker 停摆数小时就会漏**
+- **必须检测观测断档**：若本次返回的**最旧**订单号比水位线**新**，说明中间漏了，
+  标记 `observation_gap` 并告警，**不能假装完整**
+
+### 12.3 合约 ID 映射
+
+`positions` 频道的 `symbol` 是内部合约 ID（实测 `20000067`），而 `orders` / `fill`
+频道给的是 `DOGESUSDT`。需要从 `exchangeInfo` 建一份 ID → 交易对映射，
+否则持仓事件无法归属到品种。
+
+### 12.4 净值采样
+
+`account` 频道的 `amount` + `cumDepositAmount` / `cumWithdrawAmount` /
+`cumTransferInAmount` 让第三方能算出「**剔除资金进出后的净值变化**」，
+这是 P1 最硬的证据，也是 §8.2 对账的基准。
+
+### 12.5 边界情况
 
 | 情形 | 处置 |
 |---|---|
-| 交易所自动止损平仓 | 标 `exit_reason: "unknown"`，不猜 |
-| 一轮内订单 > 100 条 | 分页 + 水位线，不能只读 `page=0` |
-| 开仓发生在系统观测之前 | `entry_source: "unobserved"`，PnL 为 `null` 而非 0 |
-| 推导 PnL ≠ Δbalance | 差额单独记录（§8.2），不静默修正 |
+| 条件单触发平仓 | `exit_reason` 由 `orders.source`（`STOP_LOSS`/`STOP_PROFIT`）判定 |
+| 手动市价平仓 | `exit_reason: "manual"`（`reduceOnly=true` 且非条件单来源） |
+| 爆仓 | `exit_reason: "liquidation"`；`account.liquidating` 可辅助判断 |
+| WS 断线期间的成交 | 靠 §12.2 兜底；若兜底也漏 → `observation_gap` |
+| 开仓发生在监听器上线之前 | `entry_source: "unobserved"`，PnL 记 `null` 而非 0 |
+| 净值变化 ≠ Σ净盈亏 | 差额单独记录（§8.2），不静默修正 |
 
 ## 13. 测试策略
 
@@ -441,10 +579,14 @@ pnl_net = (exit_price − avg_entry) × close_qty × 方向 − 双边费
 
 - `merkle.py`：1 个叶子 / 2^n / 非 2^n / 空批次；证明生成与验证互逆
 - `payload.py`：加解密往返、同输入同哈希、字段完整性
-- 配对与 PnL：加权平均、部分平仓、加仓、未观测开仓 → `null`
+- `events.py`：推送 JSON → 领域事件的映射，含 `positions` 合约 ID 映射、
+  `exit_reason` 由 `source` 判定、`realizePnl` 与 `fillFee` 的净额计算
 
 **集成层**
 
+- WS 客户端：断线重连、订阅回执、PONG 心跳（`probe_private_ws.py` 已跑通真实链路）
+- 去重：同一 `d[].id` 重复推送只落一次
+- REST 兜底对账：`observation_gap` 检测（最旧订单号比水位线新 → 告警）
 - 队列状态机 `pending → pinned → committed`，失败重试幂等
 - 封批条件（满 N 条 / 超时）
 - RPC 挂掉后重试**不重复提交**
@@ -460,50 +602,65 @@ pnl_net = (exit_price − avg_entry) × close_qty × 方向 − 双边费
 
 | # | 步骤 | 验证方式 |
 |---|---|---|
-| 0 | **只读探测脚本**（§15） | 确认字段可得性 —— **可能推翻后面的设计** |
-| 1 | `merkle.py` + `payload.py` | 单元测试全绿 |
-| 2 | 采集层改造：拉 order/history + 水位线 + 配对 | 先只入库、不上链，比对 Δbalance |
-| 3 | 队列 + 封批 + 提交器 | Base Sepolia |
-| 4 | 合约 + Foundry 测试 | 测试网 |
-| 5 | subgraph + 前端验证器 | 用真实批次验证 |
-| 6 | 用户补签 | EIP-712 验签 |
-| 7 | 上 Base 主网 | — |
+| 0 | ~~只读探测~~ **已完成**（§15） | 结论：私有 WS 可用，盈亏是交易所回报值 |
+| 1 | `app/streams/`：WS 客户端 + 事件映射 + 落库 | 对着真实账户跑，与 `probe_private_ws.py` 输出比对 |
+| 2 | `merkle.py` + `payload.py` | 单元测试全绿 |
+| 3 | 叶子生成：② 结果叶子 + ⑤ 净值叶子 | 先只入库、不上链，与交易所数据比对 |
+| 4 | REST 兜底对账 + `observation_gap` 检测 | 人为断开 WS 验证补漏 |
+| 5 | 队列 + 封批 + 提交器 | Base Sepolia |
+| 6 | 合约 + Foundry 测试 | 测试网 |
+| 7 | subgraph + 前端验证器 | 用真实批次验证 |
+| 8 | 用户补签 | EIP-712 验签 |
+| 9 | 上 Base 主网 | — |
 
-**第 0 步必须先做**，因为它的结果可能推翻 §12 的推导模型。若前提不成立，退路见 §15.3。
+第 0 步已完成，且结论**推翻了早期版本的推导模型** —— 见 §15。
 
-## 15. 前置实测（第 0 步）
+## 15. 实测记录（第 0 步，2026-10-15 完成）
 
-按 `weex-virtual-api.md` §7 的复验方法论，写**只读**探测脚本
-`backend/scripts/probe_order_history.py`：
+两个只读探测脚本，均已实跑：
 
-- 用 `TradingCycleService._exchange_for_user(user_id)` 造客户端
-- **只调 `order/history`，不下单、不平仓**
-- 打印字段全集、`clientOrderId` 形态、分页行为
-- 使用方式：用户手动开一笔仓 → 跑一次；平仓 → 再跑一次
+- `backend/scripts/probe_order_history.py` —— REST `order/history` 字段与分页行为
+- `backend/scripts/probe_private_ws.py` —— 私有 WS 连接、订阅与推送字段
 
-### 15.1 待确认清单
+### 15.1 实测结论
 
-| # | 问题 | 影响 |
+| 问题 | 结论 |
+|---|---|
+| 手动单在不在 REST `order/history` 里？ | ✅ 在。`clientOrderId` 是 UUID v4，与系统单的 `alpha-<hex>` 可分 |
+| REST 有没有盈亏/费用字段？ | ❌ 没有，18 个字段全无 |
+| REST 分页可用吗？ | ❌ `page` 被忽略，`limit=100` 是硬上限且不可回溯 |
+| REST 能看到条件单吗？ | ❌ 挂单中查不到，触发成交后也不留记录 |
+| 有没有未文档化的平仓/成交流水端点？ | ❌ 探测 8 个候选路径全部 404 |
+| **私有 WS 可用吗？** | ✅ **可用，四个频道全部订阅成功并收到推送** |
+| **WS 给单笔盈亏吗？** | ✅ **给，`fill.realizePnl`，交易所回报值** |
+| **WS 给真实手续费吗？** | ✅ 给，`fill.fillFee` + `orders.takerFeeRate` |
+| **条件单触发可见吗？** | ✅ 可见，含 `triggerPrice` / `source=STOP_LOSS/STOP_PROFIT` / `positionTpsl` |
+| 能识别手动 vs 系统下单吗？ | ✅ `orderSource` + `clientOrderId` 前缀（`orderSource` 枚举不统一，需两者并用） |
+
+### 15.2 被推翻的早期假设
+
+早期版本基于「REST 拿不到盈亏」设计了一整套推导模型，现已全部不需要：
+
+| 早期设计 | 现状 |
+|---|---|
+| 加权平均成本法配对开平仓 | 不需要，每笔 `fill` 自带 `realizePnl` |
+| 按 taker 0.08%/边推算手续费 | 不需要，`fillFee` 是真实值 |
+| Δbalance 反推平仓价（解方程） | 不需要，`cumFillValue` / `cumFillSize` 直接给 |
+| 每分钟轻量采样器提升归属精度 | 降级为兜底手段，不再是主力 |
+| `pnl_source: derived-*` 系列标注 | 全部换成 `exchange-reported` |
+
+### 15.3 仍未验证
+
+| 项 | 影响 | 优先级 |
 |---|---|---|
-| 1 | 手动单**在不在** `order/history` 里？`clientOrderId` 长什么样？ | 决定手动/系统单能否区分；不成立则整个方案前提塌陷 |
-| 2 | 手动平仓单的 `reduceOnly` / `positionSide` / `clientOrderId` | 决定开平仓能否自动分类 |
-| 3 | `slTriggerPrice` 触发平仓后那笔单的形态 | 决定 `exit_reason` 能否自动判定 |
-| 4 | 不带 `symbol` 参数拉 `order/history`：返回全部 symbol 吗？分页怎么用？保留多久？ | 决定水位线策略 |
-| 5 | **order raw 里有没有 `commission` / `fee` / `realizedPnl`？** | 有则 PnL 无需推导，精度大幅提升 |
-| 6 | 虚拟盘能否手动调整余额 | 影响 §8.2 对账基准的解读 |
+| 爆仓时的推送形态 | `exit_reason: "liquidation"` 的判定依据 | 中 |
+| WS 长时间运行的重连行为 | 监听器稳定性 | 中 |
+| REST 对账在订单 >100 条时的漏检 | `observation_gap` 阈值设定 | 低 |
+| 虚拟盘能否手动调整余额 | §8.2 对账基准的解读 | 低 |
 
-第 5 条最值得先查，它直接决定后面写多少代码。
+### 15.4 探测脚本的安全约束（已遵守）
 
-### 15.2 探测脚本的安全约束
-
-- 纯读接口，不调 `POST /order`
-- 输出脱敏：不打印 key/secret，`orderId` 截断显示
-- 用虚拟盘账号（`WEEX_VIRTUAL_ONLY=true`）
-
-### 15.3 退路
-
-若发现**手动单根本不在 `order/history` 里**，方案退回到「只用 Δbalance 做账户级证明」：
-
-- 能证明：账户净值曲线未被事后篡改（P1 的弱化版）
-- 不能证明：单笔盈亏、信号归因（P2 完全不可达）
-- §4.1 的 ①③ 叶子仍成立，② 退化为「账户级区间盈亏」
+- 纯读：只 `GET` 与 `SUBSCRIBE`，不调 `POST /order`，不建仓不平仓
+- 输出脱敏：不打印 key/secret/passphrase，`orderId` 截断显示
+- 断言 `WEEX_VIRTUAL_ONLY=true`，否则拒绝运行
+- 快照文件含完整订单 ID，脚本会提示不要提交到 git
