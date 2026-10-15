@@ -43,7 +43,8 @@ from app.exchange.base import (
     ExchangePosition,
     OrderRequest,
 )
-from app.exchange.weex import WeexClient, WeexCredentials
+from app.exchange.credentials import credentials_for_account
+from app.exchange.weex import WeexClient
 from app.execution.service import ExecutionService, stable_client_order_id
 from app.notifications.lark import LarkNotifier
 from app.positions.manager import CLOSE as POSITION_CLOSE
@@ -1026,22 +1027,7 @@ class TradingCycleService:
         if self.exchange_factory is not None:
             return self.exchange_factory()
         account = self._account_for_user(user_id)
-        credentials = None
-        if (
-            account
-            and account.api_key_ref
-            and account.api_secret_ref
-            and account.passphrase_ref
-            and not any(
-                value.startswith("env:")
-                for value in (account.api_key_ref, account.api_secret_ref, account.passphrase_ref)
-            )
-        ):
-            credentials = WeexCredentials(
-                api_key=account.api_key_ref,
-                api_secret=account.api_secret_ref,
-                passphrase=account.passphrase_ref,
-            )
+        credentials = credentials_for_account(account)
         return WeexClient(self.settings, credentials=credentials)
 
     def _persist(
