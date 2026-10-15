@@ -17,9 +17,6 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
-    if not settings.streams_enabled:
-        logger.info("private stream listener disabled (STREAMS_ENABLED=false)")
-        return
     logger.info("private stream listener starting: url=%s", settings.streams_ws_url)
     asyncio.run(StreamListener(settings=settings).run_forever())
 
