@@ -142,11 +142,17 @@ class StreamListener:
             )
 
     async def _reconcile_forever(self, target: StreamTarget, exchange: WeexClient) -> None:
+        #: 跨轮次持有「已经报过的漏单」。漏掉的订单永远不会出现在我们这边，
+        #: 所以不带这个集合的话，同一个历史缺口会每轮被重报一次 ERROR。
+        #: 进程重启会清空 —— 那只会导致重启后重报一次当前积压，可以接受。
+        reported: set[str] = set()
         while True:
-            await asyncio.to_thread(self._reconcile_once, target, exchange)
+            await asyncio.to_thread(self._reconcile_once, target, exchange, reported)
             await asyncio.sleep(self.settings.streams_reconcile_seconds)
 
-    def _reconcile_once(self, target: StreamTarget, exchange: WeexClient) -> None:
+    def _reconcile_once(
+        self, target: StreamTarget, exchange: WeexClient, reported: set[str]
+    ) -> None:
         """跑一轮对账。
 
         **另开一个 Session**：这个方法由 ``asyncio.to_thread`` 放到工作线程执行，
@@ -159,7 +165,10 @@ class StreamListener:
         with self.session_factory() as db:
             try:
                 outcome = OrderHistoryReconciler(
-                    db, trading_account_id=target.trading_account_id, exchange=exchange
+                    db,
+                    trading_account_id=target.trading_account_id,
+                    exchange=exchange,
+                    reported=reported,
                 ).run_once()
                 db.commit()
             except Exception:
