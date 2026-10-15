@@ -10,6 +10,7 @@ from app.processing.documents import (
     chunk_text,
     detect_assets,
     normalize_asset,
+    normalize_direction,
     normalize_impact_horizon,
     prepare_document,
 )
@@ -59,6 +60,47 @@ def test_impact_horizon_is_normalized_to_shared_taxonomy() -> None:
     assert normalize_impact_horizon("weeks") == "MEDIUM"
     assert normalize_impact_horizon("unknown") == "UNKNOWN"
     assert normalize_impact_horizon("a very long historical horizon label") == "UNKNOWN"
+
+
+def test_direction_is_normalized_to_shared_taxonomy() -> None:
+    assert normalize_direction("bullish") == "BULLISH"
+    assert normalize_direction("BEAR") == "BEARISH"
+    assert normalize_direction("sideways") == "NEUTRAL"
+    assert normalize_direction("unknown") == "UNKNOWN"
+    assert normalize_direction("") == "UNKNOWN"
+
+
+def test_direction_collapses_the_value_that_used_to_crash_the_pipeline() -> None:
+    """线上真实值：``neutral/uncertain``。
+
+    LLM 这么回，而 ``document_summaries.direction`` 是 VARCHAR(16) —— 17 个字符
+    让整条文档流水线抛 StringDataRightTruncation。关键不只是长度：**斜杠也要
+    归一化**，否则 token 会是 ``NEUTRAL/UNCERTAIN``。
+    """
+
+    assert normalize_direction("neutral/uncertain") == "NEUTRAL"
+    assert normalize_direction("Neutral / Uncertain") == "NEUTRAL"
+
+
+def test_direction_never_exceeds_the_column_width() -> None:
+    """这是这条归一化存在的理由 —— 任何输入都不能产出超过 16 字符的值。
+
+    不是「已知的坏值都处理了」，是「**任何**输入都不可能撑爆列宽」。
+    """
+
+    hostile = [
+        "a very long directional label that the model invented",
+        "BULLISH" * 50,
+        "neutral/uncertain/mixed/whatever",
+        "看多",
+        "🚀 to the moon",
+        "NEUTRAL,".join(["X"] * 100),
+    ]
+
+    for value in hostile:
+        result = normalize_direction(value)
+        assert len(result) <= 16, f"{value!r} → {result!r} 超过列宽"
+        assert result in {"BULLISH", "BEARISH", "NEUTRAL", "UNKNOWN"}
 
 
 def test_chunk_text_has_overlap_and_rejects_invalid_configuration() -> None:
