@@ -66,6 +66,18 @@ class Settings(BaseSettings):
     #: 适用于虚拟盘触发行为验证或交易所侧 TP 临时降级。
     exchange_take_profit_enabled: bool = True
 
+    #: 私有 WebSocket 采集层。关掉后 workers/streams.py 直接退出，不起连接。
+    streams_enabled: bool = True
+    #: 私有频道端点。虚拟盘凭证被正式合约的 WS 域名接受（实测见
+    #: docs/weex-virtual-api.md §2.2）—— 不要换成 sim 前缀，那个路径不存在。
+    streams_ws_url: str = "wss://ws-contract.weex.com/v3/ws/private"
+    #: 断线重连的指数退避起点与上限（秒）。
+    streams_reconnect_initial_seconds: float = 1.0
+    streams_reconnect_max_seconds: float = 60.0
+    #: 没有可用账户时的重扫间隔（秒）。进程不退出 —— 退出会被 restart 策略
+    #: 拉起来变成崩溃循环，日志里只剩重启噪音。
+    streams_rescan_seconds: float = 300.0
+
     clerk_jwks_url: str = ""
     clerk_issuer: str = ""
     clerk_audience: str = ""
