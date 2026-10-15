@@ -58,6 +58,20 @@ worker 每 5 分钟（`decision_interval_seconds`）对每个启用的虚拟账�
 
 并行还有一条 `DocumentPipeline`（`app/workers/pipeline.py`）：RSS 新闻 + FRED CSV + 美联储 RSS → 清洗去重 → Ark 摘要 → Doubao 分块嵌入写 Zilliz。RAG 只作为非 HOLD 入场路径的新闻/宏观 veto 证据，不参与规则方向、风控或下单。FRED 月度序列按 `fred_monthly_interval_seconds` 重抓，失败的序列下一轮立刻重试（`_schedule.mark` 只推进成功的）。
 
+### 采集层（`app/streams/`，独立进程 `workers/streams.py`）
+
+订阅 WEEX 私有 WebSocket 的 `fill` / `orders` / `account` 三个频道，把**用户手动交易**的
+成交与盈亏实时落库（`exchange_fills` / `exchange_order_events` / `exchange_account_samples`）。
+这是「交易所回报的单笔盈亏」的唯一来源 —— `ReconciliationService` 的 balance 差分是账户级的，
+且 worker 停摆就断档。
+
+- 与交易路径**完全解耦**：它挂了下单与风控不受影响。单独一个 compose 服务，不塞进 worker。
+- 协议层（`protocol.py`）是纯函数，socket 通过可注入的 `connect` 隔开，所以订阅、心跳、
+  重连退避都能用假 Transport 测完，不用起服务器。
+- **`realizePnl` 不含手续费**，净额是 `realize_pnl − fee`。见 `protocol.net_pnl()`。
+- **`fill` 与 `orders` 推送里都没有 `symbol`**，只有 `coin` 与 `orderId`；靠 REST
+  `order/history` 按 orderId 回填（`reconciler.py`）。刚成交那一瞬 `symbol` 可能还是 NULL。
+
 ## 关键约定与坑
 
 ### 三个 env 文件分工
