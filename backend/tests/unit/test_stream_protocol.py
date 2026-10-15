@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+from decimal import Decimal
 
 from app.streams.protocol import (
     ACK,
@@ -11,7 +12,14 @@ from app.streams.protocol import (
     EVENT,
     PING,
     UNKNOWN,
+    AccountSample,
+    FillEvent,
+    OrderEvent,
     classify,
+    exit_reason,
+    is_system_order,
+    net_pnl,
+    parse_event,
     pong_message,
     subscribe_message,
     ws_auth_headers,
@@ -97,3 +105,148 @@ def test_pong_and_subscribe_message_shapes():
         "params": ["fill"],
         "id": 3,
     }
+
+
+# --- 推送映射 ---
+#
+# 下面三个 ROW 都是 2026-10-15 在虚拟盘上实测抓到的真实推送，字段一个不多一个不少。
+# 注意 FILL_ROW **没有 symbol** —— 实测就是这样，只有 coin 与 orderId。
+
+FILL_ROW = {
+    "id": "805594661539283038",
+    "coin": "SUSDT",
+    "orderId": "805594661514117214",
+    "marginMode": "CROSSED",
+    "separatedMode": "COMBINED",
+    "separatedOpenOrderId": "0",
+    "positionSide": "SHORT",
+    "orderSide": "BUY",
+    "fillSize": "100",
+    "fillValue": "7.99000",
+    "fillFee": "0.00639200",
+    "liquidateFee": "0",
+    "realizePnl": "0.01000000",
+    "direction": "TAKER",
+    "createdTime": "1792069086664",
+    "updatedTime": "1792069086664",
+}
+
+ORDER_ROW = {
+    "id": "805594661514117214",
+    "coin": "SUSDT",
+    "symbol": "DOGESUSDT",
+    "positionSide": "SHORT",
+    "orderSide": "BUY",
+    "price": "0",
+    "size": "100",
+    "clientOrderId": "4b73a61f-483f-457f-9a24-be0e9918cbe4",
+    "type": "TAKE_PROFIT_MARKET",
+    "timeInForce": "IOC",
+    "reduceOnly": True,
+    "triggerPrice": "0.07990",
+    "orderSource": "STOP_PROFIT",
+    "positionTpsl": True,
+    "takerFeeRate": "0.0008",
+    "makerFeeRate": "0.0002",
+    "status": "FILLED",
+    "cumFillSize": "100",
+    "cumFillValue": "7.99000",
+    "cumFillFee": "0.00639200",
+    "cumLiquidateFee": "0",
+    "cumRealizePnl": "0.01000000",
+    "createdTime": "1792069086664",
+    "updatedTime": "1792069086664",
+}
+
+ACCOUNT_ROW = {
+    "coin": "SUSDT",
+    "amount": "59010.73187629",
+    "cumDepositAmount": "0",
+    "cumWithdrawAmount": "0",
+    "cumTransferInAmount": "40000.00000000",
+    "cumTransferOutAmount": "0",
+    "cumPositionFillFeeAmount": "0.00639200",
+    "cumPositionFundingAmount": "-56.35171893",
+    "liquidating": False,
+}
+
+
+def test_parse_fill_event():
+    events = parse_event({"e": "fill", "E": 1, "v": 703, "d": [FILL_ROW]})
+
+    assert len(events) == 1
+    fill = events[0]
+    assert isinstance(fill, FillEvent)
+    assert fill.exchange_fill_id == "805594661539283038"
+    assert fill.exchange_order_id == "805594661514117214"
+    assert fill.position_side == "SHORT"
+    assert fill.order_side == "BUY"
+    assert fill.quantity == Decimal("100")
+    assert fill.value == Decimal("7.99000")
+    assert fill.fee == Decimal("0.00639200")
+    assert fill.realize_pnl == Decimal("0.01000000")
+    assert fill.direction == "TAKER"
+    assert fill.account_version == 703
+    assert fill.filled_at.year == 2026
+    # fill 推送里没有 symbol —— 只能靠 orders 频道按 orderId 补。
+    assert fill.symbol == ""
+
+
+def test_parse_order_event():
+    events = parse_event({"e": "orders", "E": 1, "v": 703, "d": [ORDER_ROW]})
+
+    order = events[0]
+    assert isinstance(order, OrderEvent)
+    assert order.symbol == "DOGESUSDT"
+    assert order.status == "FILLED"
+    assert order.order_source == "STOP_PROFIT"
+    assert order.reduce_only is True
+    assert order.position_tpsl is True
+    assert order.trigger_price == Decimal("0.07990")
+    assert order.client_order_id == "4b73a61f-483f-457f-9a24-be0e9918cbe4"
+    assert order.cum_realize_pnl == Decimal("0.01000000")
+
+
+def test_parse_account_sample():
+    events = parse_event({"e": "account", "E": 1, "v": 703, "d": [ACCOUNT_ROW]})
+
+    sample = events[0]
+    assert isinstance(sample, AccountSample)
+    assert sample.coin == "SUSDT"
+    assert sample.amount == Decimal("59010.73187629")
+    assert sample.cum_transfer_in == Decimal("40000.00000000")
+    assert sample.cum_funding_fee == Decimal("-56.35171893")
+    assert sample.liquidating is False
+
+
+def test_parse_event_skips_unknown_channel_and_malformed_rows():
+    assert parse_event({"e": "positions", "v": 1, "d": [{"symbol": "20000067"}]}) == []
+    assert parse_event({"e": "fill", "v": 1, "d": "not-a-list"}) == []
+    assert parse_event({"e": "fill", "v": 1, "d": [{"id": "1"}]}) == []  # 缺字段的行被跳过
+
+
+def test_net_pnl_subtracts_the_fee():
+    """realizePnl **不含手续费** —— 实测止盈 +0.010 而双边费 0.012792，
+    净额是 −0.002792。直接拿 realizePnl 当净盈亏会系统性高估。
+    """
+
+    fill = parse_event({"e": "fill", "v": 1, "d": [FILL_ROW]})[0]
+    assert net_pnl(fill) == Decimal("0.01000000") - Decimal("0.00639200")
+
+
+def test_exit_reason_from_order_source():
+    assert exit_reason(order_source="STOP_PROFIT", reduce_only=True) == "take_profit"
+    assert exit_reason(order_source="STOP_LOSS", reduce_only=True) == "stop_loss"
+    assert exit_reason(order_source="UNKNOWN_ORDER_SOURCE", reduce_only=True) == "manual"
+    assert exit_reason(order_source="WEB", reduce_only=False) == "entry"
+    assert exit_reason(
+        order_source="UNKNOWN_ORDER_SOURCE", reduce_only=True, cum_liquidate_fee=Decimal("0.5")
+    ) == "liquidation"
+
+
+def test_is_system_order_by_client_id_prefix():
+    """系统单是 alpha-<28位hex>，手动单是 UUID v4。"""
+
+    assert is_system_order("alpha-" + "a" * 28) is True
+    assert is_system_order("4b73a61f-483f-457f-9a24-be0e9918cbe4") is False
+    assert is_system_order("") is False
