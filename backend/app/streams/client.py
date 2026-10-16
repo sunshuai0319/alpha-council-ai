@@ -105,6 +105,8 @@ class PrivateStreamClient:
         #: 连接存活超过这么久才断，就认为它是「被上游掐断」而不是「连不上」，
         #: 退避重置。见 run_forever 的说明。
         self.reset_after_seconds = reset_after_seconds
+        #: 进程级计数只用于可观测性，不参与退避决策。
+        self._disconnect_count = 0
 
     async def run_once(self, on_events: Callable[[list[StreamEvent]], None]) -> None:
         """连一次、订阅、转发，直到连接断开。
@@ -163,7 +165,10 @@ class PrivateStreamClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - 任何连接故障都要退避重试，不能终止进程
-                if self.monotonic() - session_started >= self.reset_after_seconds:
+                session_seconds = self.monotonic() - session_started
+                self._disconnect_count += 1
+                stable_session = session_seconds >= self.reset_after_seconds
+                if stable_session:
                     # 这次连接**稳定存活过一段**才断 —— 那是上游把长连接掐了，
                     # 不是「连不上」。退避要从最短重来。
                     #
@@ -172,11 +177,24 @@ class PrivateStreamClient:
                     # 寿命单调爬到上限。实测后果是每轮「连 3 分钟 + 瞎 60 秒」，
                     # 漏采率 17% —— 而 WS 不重放，漏掉的就是永久丢失。
                     backoff = self.initial_backoff
+                else:
+                    # 长连接被上游定期掐断是已知现象；连上后很快又失败则代表
+                    # 鉴权、网络或端点异常，需要单独提高日志级别，便于告警系统抓取。
+                    logger.error(
+                        "private stream unstable: connection failed after %.0fs "
+                        "(disconnect #%d, threshold=%.0fs)",
+                        session_seconds,
+                        self._disconnect_count,
+                        self.reset_after_seconds,
+                    )
                 logger.warning(
-                    "private stream disconnected after %.0fs (%s: %s); retrying in %.1fs",
-                    self.monotonic() - session_started,
+                    "private stream disconnected after %.0fs (%s: %s, stable=%s, "
+                    "disconnect #%d); retrying in %.1fs",
+                    session_seconds,
                     type(exc).__name__,
                     exc,
+                    stable_session,
+                    self._disconnect_count,
                     backoff,
                 )
                 await self.sleep(backoff)

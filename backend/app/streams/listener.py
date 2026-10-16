@@ -176,7 +176,8 @@ class StreamListener:
                 db.rollback()
                 return
             logger.info(
-                "stream reconcile: inspected=%d symbols_backfilled=%d missed=%d",
+                "stream reconcile: account=%s inspected=%d symbols_backfilled=%d missed=%d",
+                target.trading_account_id,
                 outcome.inspected,
                 outcome.symbols_backfilled,
                 len(outcome.missed_order_ids),

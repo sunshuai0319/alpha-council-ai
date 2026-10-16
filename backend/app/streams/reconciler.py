@@ -85,7 +85,9 @@ class OrderHistoryReconciler:
         if outcome.has_gap:
             # 具体漏了哪些放日志；库里只累加计数。
             logger.error(
-                "private stream missed %d order(s), their PnL is unrecoverable: %s",
+                "private stream observation gap: account=%s missed=%d order(s), "
+                "their PnL is unrecoverable: %s",
+                self.trading_account_id,
                 len(outcome.missed_order_ids),
                 list(outcome.missed_order_ids[:10]),
             )

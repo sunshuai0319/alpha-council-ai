@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import logging
 
 import pytest
 
@@ -151,6 +152,34 @@ def test_run_forever_backs_off_exponentially_and_caps():
     asyncio.run(client.run_forever(lambda events: None, should_stop=lambda: attempts["count"] >= 4))
 
     assert delays == [1.0, 2.0, 4.0, 4.0]
+
+
+def test_run_forever_marks_immediate_failures_as_unstable(caplog):
+    attempts = {"count": 0}
+
+    async def connect(*, url, headers):
+        attempts["count"] += 1
+        raise ConnectionError("unreachable")
+
+    async def sleep(seconds: float) -> None:
+        return None
+
+    client = PrivateStreamClient(
+        url="wss://example.test/v3/ws/private",
+        api_key="k",
+        api_secret="s",
+        passphrase="p",
+        channels=("fill",),
+        connect=connect,
+        clock_ms=lambda: 1700000000000,
+        sleep=sleep,
+        reset_after_seconds=30.0,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(client.run_forever(lambda events: None, should_stop=lambda: attempts["count"] >= 1))
+
+    assert "private stream unstable" in caplog.text
 
 
 class _Clock:
