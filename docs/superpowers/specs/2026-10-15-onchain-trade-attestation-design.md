@@ -10,7 +10,8 @@
 这些手动交易原先完全没有留痕 —— worker 只在有系统执行时才拉 `order/history`
 （`app/services/cycle.py:410`），通知模式下这条路径永不触发。
 
-本设计把「信号 → 用户手动执行 → 实际盈亏」这条链路做成**可被第三方独立验证**的链上存证。
+本设计把「信号 → 用户手动执行 → 实际盈亏」这条链路做成**可被第三方独立验证**的链上存证，
+主要目的是让潜在用户看到：信号在结果出现前已经被承诺，跟随交易与净盈亏可以追溯，系统没有只挑选事后看起来成功的记录。
 
 可行性建立在 2026-10-15 的实测之上（见 §15）：**虚拟盘私有 WebSocket 可用，单笔盈亏与
 手续费都是交易所回报值**。这个发现推翻了早期版本基于 REST 的整套推导模型。
@@ -25,6 +26,9 @@ subgraph）尚未开始**，本 spec 剩下部分描述的就是它。
 |---|---|---|
 | **P1** | 用户参考系统推送后，确实实现了盈利 | 可证明 |
 | **P2** | 系统大部分给的参考信息是正确的 | 可证明，但需额外机制（见 §4.3） |
+
+用户签名是增强信任的辅助证据：它能证明某个钱包持有人看过并认可特定批次，不能单独证明盈利真实，
+也不能替代全量信号承诺、净值曲线和交易所成交证据。签名展示必须标明“用户主动确认”，不能把未签名用户隐藏掉。
 
 **P2 单靠「记录跟随后的盈亏」证明不了**，存在三个漏洞：
 
@@ -79,7 +83,7 @@ REST `order/history` 按 orderId 回填（见 §12.2）。
 **对链上设计的直接影响**：品种这个字段在成交落库的**那一刻是未知的**，要等一轮对账
 （默认 5 分钟）才补上。生成叶子时必须处理 `symbol IS NULL` 的情况 ——
 要么等到对账补上再封批，要么在叶子 payload 里记 `symbol: null` 并保留 orderId 供复算。
-**采用前者**：批次对 30 分钟延迟本来就有容忍度，没必要把不确定性写进链上。
+**采用前者**：批次对 2 小时延迟本来就有容忍度，没必要把不确定性写进链上。
 
 ### 2.3 实测证据（两次完整往返）
 
@@ -133,12 +137,12 @@ REST `order/history` 按 orderId 回填（见 §12.2）。
 
 | 决策点 | 选择 |
 |---|---|
-| 首要目的 | 用户战绩自证（用户能向第三方证明交易与盈亏未被篡改） |
-| 归属模型 | 先锚定、可补签（运营方先上链，用户可事后钱包签名背书） |
-| 批次粒度 | 弹性批次：满 64 条 或 距上次封批 ≥ 30 分钟 |
+| 首要目的 | 让第三方验证信号承诺、用户跟随交易和净盈亏，降低对运营方事后挑选记录的信任要求 |
+| 归属模型 | 运营方先锚定；用户可用离线 EIP-712 签名确认自己认可的批次，不产生链上交易 |
+| 批次粒度 | 默认弹性批次：满 64 条 或 距上次封批 ≥ 2 小时；30 分钟仅作为后续付费档位候选 |
 | IPFS 隐私 | 默认加密（用户钱包公钥），可选择性公开解密密钥 |
 | The Graph 定位 | 公开可验证索引（任何人有地址就能查，不依赖运营方服务器） |
-| 目标链 | Base |
+| 目标链 | 前期 Base Sepolia（chain ID 84532），验收通过后迁移 Base Mainnet（chain ID 8453） |
 | 信号承诺 | 进第一版（P2 的前提） |
 | 未跟随信号 | 上链，链上全量 + 展示克制 |
 
@@ -315,8 +319,10 @@ event BatchCommitted(
     uint32 leafCount, uint64 windowStart, uint64 windowEnd, uint16 schemaVersion
 );
 event UserSubtree(uint256 indexed batchId, address indexed user, bytes32 userRoot, uint32 leafCount);
-event Endorsement(uint256 indexed batchId, address indexed user, bytes32 userRoot, bytes signature);
 ```
+
+用户补签不进入合约接口。补签采用离线 EIP-712 签名，签名内容绑定 `batchId`、`userRoot` 和
+`globalRoot`，由前端或用户自行保存、转发和验证，不产生额外 Gas。
 
 **取舍**：
 
@@ -327,12 +333,15 @@ event Endorsement(uint256 indexed batchId, address indexed user, bytes32 userRoo
 
 ### 6.2 封批
 
-**全局批次内待上链叶子总数** ≥ 64 条 **或** 距上次封批 ≥ 30 分钟 → 封批。
+**全局批次内待上链叶子总数** ≥ 64 条 **或** 距上次封批 ≥ 2 小时 → 封批。
 （阈值针对整批，不是单个用户 —— 单用户一天可能只有几笔，按用户计阈值永远触发不了。）
+
+低流量时每批最多等待 2 小时，因此理论上每天最多 12 个批次；高流量时仍由 64 条叶子阈值触发。
+30 分钟提交频率保留为后续付费服务的候选配置，不作为第一版默认行为。
 
 用**独立进程** `app/web3/committer.py`（asyncio 循环，每 60 秒检查），不复用 worker 周期：
 
-1. worker 周期实测漂移 ~9 分钟，会让「30 分钟」变成 27–36 分钟
+1. worker 周期实测漂移 ~9 分钟，会让「2 小时」窗口产生可接受的分钟级偏差
 2. `docs/web3-roadmap.md` 已定原则：链上组件必须是交易路径之外的旁路服务
 
 ### 6.3 顺序与失败处理
@@ -375,7 +384,6 @@ type Subtree @entity {
   user: Bytes!
   userRoot: Bytes!
   leafCount: Int!
-  endorsements: [Endorsement!]! @derivedFrom(field: "subtree")
 }
 ```
 
@@ -424,34 +432,61 @@ type Subtree @entity {
 第 7 步让第三方能独立验证**成交价是否合理**，而不只是「记录没被改」。
 WEEX 公开行情端点无需鉴权（`weex-virtual-api.md` §1）。
 
-### 7.5 用户补签
+### 7.5 用户补签（离线 EIP-712）
 
-1. 用户从 subgraph 看到自己的批次
-2. 前端构造 EIP-712：
+补签保留为信任增强功能，但只做离线签名，不上链、不由后端代发交易：
 
+```text
+AttestationEndorsement {
+  uint256 batchId;
+  address user;
+  bytes32 userRoot;
+  bytes32 globalRoot;
+  uint256 nonce;
+}
+
+domain: {
+  name: "AlphaCouncilAttestation",
+  version: "1",
+  chainId: 84532,              // Base Sepolia；迁移主网后改为 8453
+  verifyingContract: 0x...     // 已部署的 AttestationRegistry
+}
 ```
-Endorsement { uint256 batchId, address user, bytes32 userRoot, uint256 nonce }
-domain: { name: "AlphaCouncilAttestation", version: "1",
-          chainId: 8453, verifyingContract: 0x... }
-```
 
-3. 用户钱包签名 → 发给后端 → **后端代发** `Endorsement` 事件
+流程：
 
-**代发可接受**：签名由用户私钥产生，第三方验签即可确认背书；代发只是搬运。
-**用户不需要持有 Base 上的 ETH** —— 否则补签门槛太高没人会用。
+1. 用户从 subgraph 或 `eth_getLogs` 找到自己的批次与 `userRoot`；
+2. 用户先完成 Merkle proof、payload 解密和 PnL 复算，再用钱包签名；
+3. 前端保存并展示签名，用户可以下载或转发给第三方；
+4. 验证器用 `ecrecover` / `verify_evm_signature` 检查签名者、批次和两个 root 是否匹配。
 
-`verifyingContract` 与合约地址在部署后写入 `backend/.env` 与前端配置；
-本 spec 中的 `0x...` 均为示意占位。
-
-签名内容含 `userRoot` 与 `batchId`，绑定到具体批次内容，**不可挪用**。
-复用 `app/auth/wallet.py` 的 `verify_evm_signature` 与 `WalletChallenge`。
+签名可以由后端作为**可选的公开索引**保存，但签名原文必须可导出，且验证不能依赖后端接口。
+离线签名证明的是“该钱包持有人认可这批数据”，不证明用户一定盈利，也不应只展示签名用户的成功交易。
+用户与 WEEX 账户的绑定仍需通过现有账户认证流程完成，钱包签名不能取得交易权限。
 
 ### 7.6 前端验证器
 
 **不登录也能用**的页面：输入任意钱包地址 → 查批次 → 取 manifest → 重建树验证 →
-展示交易明细与背书状态。新增文案走 `frontend/lib/i18n.tsx`（中英双语）。
+展示交易明细、验证结果和可选的“用户已签名确认”状态。新增文案走 `frontend/lib/i18n.tsx`（中英双语）。
 
 ### 7.7 成本与降级
+
+#### 成本承担策略
+
+- `BatchCommitted` 与批量 `UserSubtree` 的 Gas 由运营方提交钱包承担；不向用户按交易收取链上 Gas。
+- 默认封批规则为“64 条叶子或 2 小时”，低流量时每日最多约 12 个批次。
+- 用户补签采用离线 EIP-712，不产生逐用户 `Endorsement` 交易；补签数量增长只增加签名存储和索引成本，不增加 Gas。
+- 不把 Gas 费用从用户交易盈亏中隐式扣除；如需转嫁，使用订阅档位或存证服务额度，而不是按每笔交易加价。
+- 运营方必须记录单批 Gas、每日批次数、每日 Gas 总量和月度预算；超过预算时暂停新批次提交并告警，不能影响交易路径。
+- 已有 Hardhat + OpenZeppelin 本地 benchmark：合约部署约 398,549 gas；1/10/100/250/500/1000 个用户子树的提交约为
+  55,262 / 81,830 / 347,510 / 790,310 / 1,534,190 / 3,022,142 gas。该结果不含 Base L1 data fee，
+  详见 `contracts/README.md`；上线前仍需在 Base Sepolia 用 `eth_estimateGas` 和实发交易复测。
+- 2026-10-16 已在 Base Sepolia 实测一笔虚拟批次：10 个用户子树、30 条叶子，实际 `85,946 gas`，
+  gas price `0.006 gwei`，费用 `0.000000515676 ETH`。同一份样例数据的估算报告记录在
+  `contracts/reports/baseSepolia-gas-simulation.json`；该价格仅代表测试网当时的数量级，主网仍需加上
+  Base L1 data fee。
+
+30 分钟封批可作为后续付费档位；离线补签本身不收费，若未来增加即时链上锚定，才需要单独设置额度或用户付费。
 
 Graph Studio 免费额度够实验平台用。Studio 是中心化索引服务，但它只索引、不产生真相；
 挂了可自建 indexer 或直读日志。索引延迟几分钟到十几分钟，前端需显示「最新批次可能仍在索引中」。
@@ -494,7 +529,7 @@ Graph Studio 免费额度够实验平台用。Studio 是中心化索引服务，
   `orderId` 原文、原始行情明细
 - 提交钱包私钥只进 `backend/.env`，不进代码、不进日志
   （参见既有教训：曾把 WEEX key 写进 fixture 推到 GitHub）
-- 钱包地址只用于签名与索引，**不获得任何交易权限**
+- 钱包地址只用于加密、索引与可选的 EIP-712 签名，**不获得任何交易权限**
 - 上链是**旁路**：任何链上故障都不得影响交易路径
 - `WEEX_VIRTUAL_ONLY=true` 保持不变
 
@@ -509,6 +544,7 @@ Graph Studio 免费额度够实验平台用。Studio 是中心化索引服务，
 5. **未平仓的仓位不上链**，开仓到平仓期间无链上痕迹
 6. **合约有 owner**，运营方可以选择停止提交（但停止会留下可见的批次空档）
 7. **`realizePnl` 不含手续费**，对外展示的净盈亏必须扣除 `fillFee`，否则会系统性高估
+8. **用户离线签名是辅助信任证据**，签名用户不是全体用户的随机样本，不能单独用来宣称系统整体盈利能力
 
 对外表述只能用「**可验证的记录**」，不能用「**可验证的盈利能力**」。
 
@@ -543,7 +579,7 @@ backend/app/web3/
   chain.py        # 合约调用（web3.py）
   queue.py        # 待上链队列（DB 表 + 状态机）
   committer.py    # 独立提交进程
-  contracts/AttestationRegistry.sol
+  contracts/src/AttestationRegistry.sol
 ```
 
 `web3.py`、`eth-account` 已在 venv 中，无需新装大依赖。
@@ -563,7 +599,9 @@ backend/app/web3/
 - `attestation_leaves` —— 待上链叶子（signal / result / settlement / correction / equity），
   状态机 `pending → pinned → committed`
 - `attestation_batches` —— batchId / root / cid / txHash / 状态
-- `wallet_endorsements` —— 用户补签
+- `wallet_endorsements` —— 离线 EIP-712 签名及其 `batch_id` / `user` / `user_root` /
+  `global_root` / `nonce` / `signature` / `verified_at`；只做可选公开索引，不参与链上状态，
+  也不作为验证器的唯一数据源
 
 按 `CLAUDE.md` 约定：**新表改两处**（`app/db/models.py` + 一条
 `create_all(checkfirst=True)` 同步迁移），不写 `op.create_table`。
@@ -656,7 +694,7 @@ WS 断线期间的事件不会重放，必须靠 REST 补。实现见 `app/strea
 - 封批条件（满 N 条 / 超时）
 - RPC 挂掉后重试**不重复提交**
 
-**合约层（Foundry）**：重放被拒、`onlyOwner` 生效、事件字段正确
+**合约层（Hardhat + OpenZeppelin）**：重放被拒、`onlyOwner` 生效、事件字段正确、Gas benchmark
 
 **端到端**：Base Sepolia 跑完整链路（造叶子 → 封批 → 上链 → subgraph 索引 → 前端验证）
 
@@ -676,10 +714,11 @@ WS 断线期间的事件不会重放，必须靠 REST 补。实现见 `app/strea
 | 3 | `merkle.py` + `payload.py` | ⬜ 待做 |
 | 4 | `leaves.py`：② 结果叶子 + ⑤ 净值叶子 | ⬜ 待做（接口见 §16） |
 | 5 | 队列 + 封批 + 提交器 | ⬜ 待做 |
-| 6 | 合约 + Foundry 测试 | ⬜ 待做 |
+| 6 | 合约 + Hardhat/OpenZeppelin 测试 + Gas benchmark | ✅ 已完成（本地） |
 | 7 | subgraph + 前端验证器 | ⬜ 待做 |
-| 8 | 用户补签 | ⬜ 待做 |
-| 9 | 上 Base 主网 | ⬜ 待做 |
+| 8 | 用户补签 | ⬜ 待做（离线 EIP-712，不上链） |
+| 9 | Base Sepolia 端到端验收 | ⬜ 待做 |
+| 10 | 上 Base 主网 | ⬜ 待做（Sepolia 验收后） |
 
 第 0–2 步已完成。**下一步从第 4 步的接口契约（§16）开始** —— 叶子长什么样由
 采集层实际存下的字段决定，不是由想象决定。
@@ -811,7 +850,7 @@ WS 回调是异步触发的，会与 worker 的轮次交错 —— SQLAlchemy �
 
 1. **`symbol` 已回填。** 成交落库时它可能是 NULL，要等一轮对账。
    叶子生成器要么等对账跑过，要么跳过 symbol 为 NULL 的行、留到下一批。
-   **不要把 `symbol: null` 写进链上** —— 30 分钟的批次延迟本来就有容忍度。
+   **不要把 `symbol: null` 写进链上** —— 2 小时的批次延迟本来就有容忍度。
 2. **`observation_gap` 出现在批次窗口内时，批次要带上「不完整」标记。**
    否则第三方会以为那段时间真的没有交易。具体字段形式在实现时定，
    但**这个语义必须在**：漏记必须可被看见，不能假装完整。

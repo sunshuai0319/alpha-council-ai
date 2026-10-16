@@ -56,7 +56,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `backend/app/web3/__init__.py` | 包标记（当前 `app/web3/` 只有 README.md） |
+| `backend/app/web3/__init__.py` | 包标记（实现后再创建；当前目录已清理，合约位于根目录 `contracts/`） |
 | `backend/app/web3/payload.py` | 规范化 JSON + 叶子哈希 + schema 常量。**纯函数** |
 | `backend/app/web3/leaves.py` | 成交腿配对、结果叶子与净值叶子的组装、查询层 |
 | `backend/scripts/dump_attestation_leaves.py` | 对着真实库打印叶子，人工核对 |

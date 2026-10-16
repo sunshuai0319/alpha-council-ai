@@ -29,3 +29,7 @@ TestResults.xml
 /.env
 # 前端依赖缓存（正常在 frontend/ 下；防根目录被 npx 误建）
 node_modules/
+/contracts/node_modules/
+/contracts/.env
+/contracts/artifacts/
+/contracts/cache/

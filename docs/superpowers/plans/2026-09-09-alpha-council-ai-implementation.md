@@ -496,16 +496,16 @@ git commit -m "test: verify virtual trading workflow"
 
 ## 任务 11：产品化 Web3 证明边界的设计留档【已完成（文档范围）】
 
-**文件：** `docs/web3-roadmap.md`、`backend/app/web3/README.md`。
+**文件：** `docs/web3-roadmap.md`、`contracts/README.md`。
 
 - [ ] **步骤 1：记录链上证明接口，不接入交易路径**
 
-定义链下 `DecisionAttestation` 数据结构：`decision_id`、`report_hash`、`created_at`、`system_version`、`report_uri`；明确原文、用户数据、行情和 WEEX 凭据不进入 calldata。文档说明未来使用 EVM L2 的 `DecisionAttestation` 合约登记 hash，当前版本不部署合约、不连接用户资金。
+定义链下 `DecisionAttestation` 数据结构：`decision_id`、`report_hash`、`created_at`、`system_version`、`report_uri`；明确原文、用户数据、行情和 WEEX 凭据不进入 calldata。合约开发与部署说明统一放在根目录 `contracts/`，不连接用户资金。
 
 - [ ] **步骤 2：Commit**
 
 ```bash
-git add docs/web3-roadmap.md backend/app/web3/README.md
+git add docs/web3-roadmap.md contracts/README.md
 git commit -m "docs: define verifiable trading roadmap"
 ```
 

@@ -1,0 +1,12 @@
+{
+  "contract": "AttestationRegistry",
+  "network": "baseSepolia",
+  "address": "0x5f11B69800dDe7D2e6157441eBAf648fbbF21ff3",
+  "deployer": "0x5e7A3a87FAd073C7c4D8f1596866bA9433E5CEe3",
+  "chainId": "84532",
+  "deploymentTxHash": "0x4a20741b3fb071311f95b9e0c20c2121411856f51c2d4cf8dce22338b2616948",
+  "deploymentBlock": 48193391,
+  "deployedAt": "2026-10-16T12:51:09.623Z",
+  "explorerAddressUrl": "https://sepolia.basescan.org/address/0x5f11B69800dDe7D2e6157441eBAf648fbbF21ff3",
+  "explorerTxUrl": "https://sepolia.basescan.org/tx/0x4a20741b3fb071311f95b9e0c20c2121411856f51c2d4cf8dce22338b2616948"
+}

@@ -1,0 +1,82 @@
+{
+  "contract": "AttestationRegistry",
+  "network": "baseSepolia",
+  "chainId": "84532",
+  "contractAddress": "0x5f11B69800dDe7D2e6157441eBAf648fbbF21ff3",
+  "deployer": "0x5e7A3a87FAd073C7c4D8f1596866bA9433E5CEe3",
+  "batchId": "1",
+  "sample": {
+    "manifestCid": "bafybeigasimulationbasesepolia",
+    "globalRoot": "0xdd3aea2fa3bf5bfb84f6434be01832ae2b91a08950207038dd5991ee2d10cdc4",
+    "leafCount": 30,
+    "userSubtrees": 10,
+    "leafCountPerUser": 3,
+    "windowStart": 1792152001,
+    "windowEnd": 1792155601,
+    "schemaVersion": 1
+  },
+  "deployerBalanceBeforeWei": "2470036681789471",
+  "gasPriceWei": "6000000",
+  "gasPriceGwei": "0.006",
+  "estimates": [
+    {
+      "userSubtrees": 1,
+      "gas": "56847",
+      "gasPriceWei": "6000000",
+      "estimatedFeeWei": "341082000000",
+      "estimatedFeeEth": "0.000000341082"
+    },
+    {
+      "userSubtrees": 10,
+      "gas": "86870",
+      "gasPriceWei": "6000000",
+      "estimatedFeeWei": "521220000000",
+      "estimatedFeeEth": "0.00000052122"
+    },
+    {
+      "userSubtrees": 100,
+      "gas": "389185",
+      "gasPriceWei": "6000000",
+      "estimatedFeeWei": "2335110000000",
+      "estimatedFeeEth": "0.00000233511"
+    },
+    {
+      "userSubtrees": 250,
+      "gas": "891415",
+      "gasPriceWei": "6000000",
+      "estimatedFeeWei": "5348490000000",
+      "estimatedFeeEth": "0.00000534849"
+    },
+    {
+      "userSubtrees": 500,
+      "gas": "1734502",
+      "gasPriceWei": "6000000",
+      "estimatedFeeWei": "10407012000000",
+      "estimatedFeeEth": "0.000010407012"
+    },
+    {
+      "userSubtrees": 1000,
+      "gas": "3420916",
+      "gasPriceWei": "6000000",
+      "estimatedFeeWei": "20525496000000",
+      "estimatedFeeEth": "0.000020525496"
+    }
+  ],
+  "actualTransaction": {
+    "hash": "0x00d82f22f658f4103ff794bbb1ececf4d69abe82e1ab2cf317d5903243f80361",
+    "blockNumber": 48193661,
+    "status": 1,
+    "gasUsed": "85946",
+    "effectiveGasPriceWei": "6000000",
+    "effectiveGasPriceGwei": "0.006",
+    "feeWei": "515676000000",
+    "feeEth": "0.000000515676",
+    "explorerUrl": "https://sepolia.basescan.org/tx/0x00d82f22f658f4103ff794bbb1ececf4d69abe82e1ab2cf317d5903243f80361"
+  },
+  "recordedAt": "2026-10-16T13:00:08.855Z",
+  "notes": [
+    "估算和实际交易均来自 Base Sepolia RPC；费用仅为测试网 ETH。",
+    "Base L1 data fee 未单独拆分，最终主网费用需按实时 L1 data fee 复测。",
+    "样例 payload 使用虚拟 root、CID 和测试地址，不代表真实业务数据。"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "name": "alpha-council-ai-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "gas": "REPORT_GAS=true hardhat test",
+    "gas:benchmark": "hardhat run scripts/gas-benchmark.js",
+    "gas:simulate:base-sepolia": "hardhat run scripts/gas-simulate-base-sepolia.js --network baseSepolia",
+    "deploy:base-sepolia": "hardhat run scripts/deploy.js --network baseSepolia"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^6.1.0",
+    "@openzeppelin/contracts": "^5.4.0",
+    "dotenv": "^17.2.0",
+    "hardhat": "^2.28.0",
+    "hardhat-gas-reporter": "^2.3.0"
+  }
+}
